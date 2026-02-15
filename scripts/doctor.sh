@@ -69,12 +69,7 @@ fi
 PROJECT_ROOT="$(canon_path "$PROJECT_ROOT")"
 
 extract_server_path() {
-  python3 - <<'PY'
-import re, sys
-text = sys.stdin.read()
-m = re.search(r'(/[^\s]*orchestrator_mcp_server\.py)', text)
-print(m.group(1) if m else '')
-PY
+  rg -o '/[^[:space:]]*orchestrator_mcp_server\.py' | head -n 1 || true
 }
 
 check_server_binary() {
