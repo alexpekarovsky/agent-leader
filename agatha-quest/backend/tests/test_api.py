@@ -9,7 +9,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from app import app, reset_game
-from game_data import SUSPECTS, CLUES, LOCATIONS, CASE_INFO
+from game_data import SUSPECTS, CLUES, LOCATIONS, CASE_INFO, PRESSURE_CLOCK
 
 
 @pytest.fixture
@@ -450,3 +450,126 @@ def test_full_game_flow_with_locations(client):
     response = client.post('/api/game/accuse', json={'suspect_id': 'dr_hartley'})
     data = response.get_json()
     assert data['correct'] is True
+
+
+# --- Pressure clock tests ---
+
+def test_pressure_in_initial_state(client):
+    """Test that initial state includes pressure clock."""
+    response = client.get('/api/game/state')
+    data = response.get_json()
+    assert data['pressure_remaining'] == PRESSURE_CLOCK['initial']
+    assert data['pressure_max'] == PRESSURE_CLOCK['initial']
+    assert data['pressure_warning'] is False
+
+
+def test_pressure_decrements_on_search(client):
+    """Test that searching a location costs pressure."""
+    initial = PRESSURE_CLOCK['initial']
+    client.post('/api/game/locations/study/search')
+
+    response = client.get('/api/game/state')
+    data = response.get_json()
+    assert data['pressure_remaining'] == initial - PRESSURE_CLOCK['cost_search']
+
+
+def test_pressure_decrements_on_interrogate(client):
+    """Test that interrogation costs pressure."""
+    initial = PRESSURE_CLOCK['initial']
+    client.post('/api/game/interrogate', json={'suspect_id': SUSPECTS[0]['id']})
+
+    response = client.get('/api/game/state')
+    data = response.get_json()
+    assert data['pressure_remaining'] == initial - PRESSURE_CLOCK['cost_interrogate']
+
+
+def test_pressure_in_search_response(client):
+    """Test that search response includes pressure_remaining."""
+    response = client.post('/api/game/locations/study/search')
+    data = response.get_json()
+    assert 'pressure_remaining' in data
+
+
+def test_pressure_in_interrogate_response(client):
+    """Test that interrogation response includes pressure_remaining."""
+    response = client.post('/api/game/interrogate', json={'suspect_id': SUSPECTS[0]['id']})
+    data = response.get_json()
+    assert 'pressure_remaining' in data
+
+
+def test_pressure_warning_triggers(client):
+    """Test that pressure warning fires at threshold."""
+    from app import game_state
+    # Set pressure just above warning threshold
+    game_state["pressure_remaining"] = PRESSURE_CLOCK['warning'] + PRESSURE_CLOCK['cost_search']
+
+    response = client.post('/api/game/locations/garden/search')
+    data = response.get_json()
+    assert 'pressure_warning' in data
+    assert data['pressure_remaining'] == PRESSURE_CLOCK['warning']
+
+
+def test_pressure_expired_ends_game_on_search(client):
+    """Test that running out of pressure ends the game during search."""
+    from app import game_state
+    game_state["pressure_remaining"] = 0 + PRESSURE_CLOCK['cost_search']
+
+    response = client.post('/api/game/locations/garden/search')
+    data = response.get_json()
+    assert data['status'] == 'failure'
+    assert data['pressure_remaining'] == 0
+
+    # Verify game is over
+    response = client.get('/api/game/state')
+    data = response.get_json()
+    assert data['phase'] == 'complete'
+    assert data['game_won'] is False
+
+
+def test_pressure_expired_ends_game_on_interrogate(client):
+    """Test that running out of pressure ends the game during interrogation."""
+    from app import game_state
+    game_state["pressure_remaining"] = 1  # Less than cost_interrogate (2)
+
+    response = client.post('/api/game/interrogate', json={'suspect_id': SUSPECTS[0]['id']})
+    data = response.get_json()
+    assert data['status'] == 'failure'
+    assert data['pressure_remaining'] == 0
+
+    # Verify game is over
+    response = client.get('/api/game/state')
+    data = response.get_json()
+    assert data['phase'] == 'complete'
+    assert data['game_won'] is False
+
+
+def test_cannot_search_after_pressure_expired(client):
+    """Test that actions are blocked after game ends from pressure."""
+    from app import game_state
+    game_state["pressure_remaining"] = PRESSURE_CLOCK['cost_search']
+    client.post('/api/game/locations/garden/search')  # Exhausts pressure
+
+    response = client.post('/api/game/locations/study/search')
+    assert response.status_code == 400
+
+
+def test_cannot_interrogate_after_pressure_expired(client):
+    """Test that interrogation is blocked after game ends from pressure."""
+    from app import game_state
+    game_state["pressure_remaining"] = PRESSURE_CLOCK['cost_search']
+    client.post('/api/game/locations/garden/search')  # Exhausts pressure
+
+    response = client.post('/api/game/interrogate', json={'suspect_id': SUSPECTS[0]['id']})
+    assert response.status_code == 400
+
+
+def test_pressure_resets_on_new_game(client):
+    """Test that pressure resets when starting a new game."""
+    from app import game_state
+    game_state["pressure_remaining"] = 1
+
+    client.post('/api/game/new')
+
+    response = client.get('/api/game/state')
+    data = response.get_json()
+    assert data['pressure_remaining'] == PRESSURE_CLOCK['initial']

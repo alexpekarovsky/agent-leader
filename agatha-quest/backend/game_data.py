@@ -111,6 +111,14 @@ CASE_INFO = {
     "culprit": "dr_hartley"  # The correct answer
 }
 
+# Pressure clock settings
+PRESSURE_CLOCK = {
+    "initial": 10,       # Total actions before time runs out
+    "warning": 3,        # Actions remaining when warning triggers
+    "cost_search": 1,    # Cost per location search
+    "cost_interrogate": 2,  # Cost per interrogation
+}
+
 # Game phases
 PHASE_INVESTIGATION = "investigation"
 PHASE_ACCUSATION = "accusation"

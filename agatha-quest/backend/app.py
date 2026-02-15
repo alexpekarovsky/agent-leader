@@ -5,7 +5,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 from game_data import (
-    SUSPECTS, CLUES, LOCATIONS, CASE_INFO,
+    SUSPECTS, CLUES, LOCATIONS, CASE_INFO, PRESSURE_CLOCK,
     PHASE_INVESTIGATION, PHASE_ACCUSATION, PHASE_COMPLETE
 )
 
@@ -20,9 +20,26 @@ game_state = {
     "clues_discovered": [],
     "locations_visited": [],
     "interrogations": [],
+    "pressure_remaining": PRESSURE_CLOCK["initial"],
     "final_accusation": None,
     "game_won": None
 }
+
+
+def spend_pressure(cost):
+    """Decrement pressure clock. Returns dict with warning/expired info."""
+    game_state["pressure_remaining"] = max(0, game_state["pressure_remaining"] - cost)
+    remaining = game_state["pressure_remaining"]
+    result = {"pressure_remaining": remaining}
+    if remaining <= 0 and game_state["phase"] != PHASE_COMPLETE:
+        game_state["phase"] = PHASE_COMPLETE
+        game_state["game_won"] = False
+        result["expired"] = True
+        result["message"] = "Time has run out! The killer escapes into the night..."
+    elif remaining <= PRESSURE_CLOCK["warning"]:
+        result["warning"] = True
+        result["message"] = f"The clock is ticking! Only {remaining} action(s) remain."
+    return result
 
 
 def maybe_unlock_accusation_phase():
@@ -41,6 +58,7 @@ def reset_game():
         "clues_discovered": [],
         "locations_visited": [],
         "interrogations": [],
+        "pressure_remaining": PRESSURE_CLOCK["initial"],
         "final_accusation": None,
         "game_won": None
     }
@@ -68,11 +86,15 @@ def new_game():
 @app.route('/api/game/state', methods=['GET'])
 def get_state():
     """Get current game state."""
+    remaining = game_state["pressure_remaining"]
     return jsonify({
         "phase": game_state["phase"],
         "clues_discovered_count": len(game_state["clues_discovered"]),
         "locations_visited_count": len(game_state["locations_visited"]),
         "interrogations_count": len(game_state["interrogations"]),
+        "pressure_remaining": remaining,
+        "pressure_max": PRESSURE_CLOCK["initial"],
+        "pressure_warning": remaining <= PRESSURE_CLOCK["warning"] and game_state["phase"] != PHASE_COMPLETE,
         "final_accusation": game_state["final_accusation"],
         "game_won": game_state["game_won"]
     })
@@ -136,6 +158,9 @@ def discover_clue(clue_id):
 @app.route('/api/game/interrogate', methods=['POST'])
 def interrogate():
     """Interrogate a suspect."""
+    if game_state["phase"] == PHASE_COMPLETE:
+        return jsonify({"status": "error", "message": "Game is over"}), 400
+
     data = request.get_json(silent=True) or {}
     suspect_id = data.get("suspect_id")
 
@@ -154,6 +179,11 @@ def interrogate():
     if already_interrogated:
         return jsonify({"status": "error", "message": "Suspect already interrogated"}), 400
 
+    # Spend pressure
+    pressure = spend_pressure(PRESSURE_CLOCK["cost_interrogate"])
+    if pressure.get("expired"):
+        return jsonify({"status": "failure", "message": pressure["message"], "pressure_remaining": 0})
+
     # Record interrogation
     interrogation = {
         "suspect_id": suspect_id,
@@ -168,10 +198,10 @@ def interrogate():
     game_state["interrogations"].append(interrogation)
     maybe_unlock_accusation_phase()
 
-    return jsonify({
-        "status": "success",
-        "interrogation": interrogation
-    })
+    response = {"status": "success", "interrogation": interrogation, "pressure_remaining": pressure["pressure_remaining"]}
+    if pressure.get("warning"):
+        response["pressure_warning"] = pressure["message"]
+    return jsonify(response)
 
 
 @app.route('/api/game/locations', methods=['GET'])
@@ -212,9 +242,17 @@ def get_location(location_id):
 @app.route('/api/game/locations/<location_id>/search', methods=['POST'])
 def search_location(location_id):
     """Search a location to discover clues tied to it."""
+    if game_state["phase"] == PHASE_COMPLETE:
+        return jsonify({"status": "error", "message": "Game is over"}), 400
+
     loc = next((l for l in LOCATIONS if l["id"] == location_id), None)
     if not loc:
         return jsonify({"status": "error", "message": "Location not found"}), 404
+
+    # Spend pressure
+    pressure = spend_pressure(PRESSURE_CLOCK["cost_search"])
+    if pressure.get("expired"):
+        return jsonify({"status": "failure", "message": pressure["message"], "pressure_remaining": 0})
 
     # Mark as visited
     if location_id not in game_state["locations_visited"]:
@@ -231,20 +269,19 @@ def search_location(location_id):
 
     maybe_unlock_accusation_phase()
 
+    response = {
+        "status": "success",
+        "clues_found": newly_found,
+        "location": loc["name"],
+        "pressure_remaining": pressure["pressure_remaining"]
+    }
     if newly_found:
-        return jsonify({
-            "status": "success",
-            "message": f"You found {len(newly_found)} clue(s)!",
-            "clues_found": newly_found,
-            "location": loc["name"]
-        })
+        response["message"] = f"You found {len(newly_found)} clue(s)!"
     else:
-        return jsonify({
-            "status": "success",
-            "message": "Nothing new found here.",
-            "clues_found": [],
-            "location": loc["name"]
-        })
+        response["message"] = "Nothing new found here."
+    if pressure.get("warning"):
+        response["pressure_warning"] = pressure["message"]
+    return jsonify(response)
 
 
 @app.route('/api/game/accuse', methods=['POST'])
