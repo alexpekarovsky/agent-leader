@@ -1,0 +1,16 @@
+{
+  "task_id": "TASK-12345678",
+  "agent": "gemini",
+  "commit_sha": "abc1234",
+  "status": "done",
+  "test_summary": {
+    "command": "npm test -- --runInBand",
+    "passed": 42,
+    "failed": 0
+  },
+  "artifacts": [
+    "frontend/src/components/Checkout.tsx",
+    "frontend/src/services/api.ts"
+  ],
+  "notes": "Implemented checkout UI, added validation and loading/error states."
+}

@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "required": ["task_id", "agent", "commit_sha", "test_summary", "status"],
+  "properties": {
+    "task_id": {"type": "string"},
+    "agent": {"type": "string", "enum": ["codex", "claude_code", "gemini"]},
+    "commit_sha": {"type": "string"},
+    "status": {"type": "string", "enum": ["done", "blocked", "needs_review"]},
+    "test_summary": {
+      "type": "object",
+      "required": ["command", "passed", "failed"],
+      "properties": {
+        "command": {"type": "string"},
+        "passed": {"type": "integer"},
+        "failed": {"type": "integer"}
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "notes": {"type": "string"}
+  }
+}
