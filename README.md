@@ -252,3 +252,70 @@ connect to leader. Then wait for tasks, implement only assigned scope, run tests
 - Installer: `scripts/install_agent_leader_mcp.sh`
 - Doctor: `scripts/doctor.sh`
 - Roadmap: `ROADMAP.md`
+
+## MCP Tools Reference
+This is the complete tool contract exposed by `agent-leader-orchestrator`.
+
+### System and Roles
+| Tool | Purpose | Key Inputs | Returns |
+|---|---|---|---|
+| `orchestrator_guide` | Returns orchestration playbook and required manager/team member sequences. | none | Guidance object with sequences and report contract. |
+| `orchestrator_status` | Returns current system status. Default output redacts absolute paths. | none | Server/version, `root_name`, `policy_name`, manager, counts, active agents, roles. |
+| `orchestrator_get_roles` | Reads runtime role assignment. | none | `leader`, `team_members`, `default_leader`. |
+| `orchestrator_set_role` | Sets runtime role for an agent. | `agent`, `role` (`leader` or `team_member`), optional `source` | Updated role map. |
+| `orchestrator_list_audit_logs` | Reads append-only MCP audit records. | optional `limit`, `tool`, `status` | Filtered audit entries from `bus/audit.jsonl`. |
+| `orchestrator_live_status_report` | Builds standardized progress report text and structured metrics. | optional percent/task overrides | `report_text`, structured report fields, recommended cadence. |
+
+### Presence and Connection
+| Tool | Purpose | Key Inputs | Returns |
+|---|---|---|---|
+| `orchestrator_register_agent` | Registers agent in tenant pool. | `agent`, optional `metadata` | Agent entry with `last_seen`/metadata. |
+| `orchestrator_heartbeat` | Updates presence metadata and `last_seen`. | `agent`, optional `metadata` | Updated agent entry. |
+| `orchestrator_connect_team_members` | Manager handshake. Counts connected only if verified and same-project. | `source`, `team_members`, optional timeouts | `status`, `connected`, `missing`, per-agent `diagnostics`. |
+| `orchestrator_connect_to_leader` | Team member attach + verification + optional announce + auto-claim attempt. | `agent`, optional `metadata`, `status`, `announce`, `source` | `connected`, `verified`, `reason`, `identity`, manager, optional auto-claimed task. |
+| `orchestrator_list_agents` | Lists registered agents with verification identity details. | optional `active_only`, `stale_after_seconds` | Agent list with identity fields and `verified` status. |
+| `orchestrator_discover_agents` | Lists registered + inferred agents with identity/verification details. | optional `active_only`, `stale_after_seconds` | Discovery object with counts and combined list. |
+
+Compatibility note:
+- Legacy alias `orchestrator_connect_workers` is still accepted, but `orchestrator_connect_team_members` is the canonical name.
+
+### Planning and Tasks
+| Tool | Purpose | Key Inputs | Returns |
+|---|---|---|---|
+| `orchestrator_bootstrap` | Initializes runtime files/state for a session. | none | `ok`, policy, manager. |
+| `orchestrator_create_task` | Creates routed task (or returns existing open duplicate). | `title`, `workstream`, optional `description`, `acceptance_criteria`, `owner` | Task object; may include `deduplicated=true`. |
+| `orchestrator_dedupe_tasks` | Closes duplicate open tasks and keeps canonical oldest task. | optional `source` | Deduped count and mappings. |
+| `orchestrator_list_tasks` | Lists tasks, optionally filtered. | optional `status`, `owner` | Task array. |
+| `orchestrator_get_tasks_for_agent` | Lists tasks for one owner/agent. | `agent`, optional `status` | Task array. |
+| `orchestrator_claim_next_task` | Claims next eligible task for agent (honors manager override first). | `agent` | Task object or no-task retry hint. |
+| `orchestrator_set_claim_override` | Forces next claim for an agent to a specific task. | `agent`, `task_id`, optional `source` | Override confirmation. |
+| `orchestrator_update_task_status` | Sets task lifecycle status with note. | `task_id`, `status`, `source`, optional `note` | Updated task. |
+
+### Delivery, Validation, and Bugs
+| Tool | Purpose | Key Inputs | Returns |
+|---|---|---|---|
+| `orchestrator_submit_report` | Submits delivery report for task owner. | `task_id`, `agent`, `commit_sha`, `status`, `test_summary`, optional `artifacts`, `notes` | Stored report payload. |
+| `orchestrator_validate_task` | Manager pass/fail validation. | `task_id`, `passed`, `notes` | Validation result; fail opens bug loop. |
+| `orchestrator_list_bugs` | Lists bugs (optionally filtered). | optional `status`, `owner` | Bug array. |
+
+### Blockers and Decisions
+| Tool | Purpose | Key Inputs | Returns |
+|---|---|---|---|
+| `orchestrator_raise_blocker` | Raises structured blocker and marks task blocked. | `task_id`, `agent`, `question`, optional `options`, `severity` | Blocker object. |
+| `orchestrator_list_blockers` | Lists blockers. | optional `status`, `agent` | Blocker array. |
+| `orchestrator_resolve_blocker` | Resolves blocker and resumes task safely. | `blocker_id`, `resolution`, `source` | Updated blocker. |
+| `orchestrator_decide_architecture` | Records equal-rights architecture decision to ADR file. | `topic`, `options`, `votes`, optional `rationale` | Decision path. |
+
+### Event Bus and Coordination
+| Tool | Purpose | Key Inputs | Returns |
+|---|---|---|---|
+| `orchestrator_publish_event` | Publishes event (broadcast or targeted). | `type`, `source`, optional `payload`, `audience` | Event record. |
+| `orchestrator_poll_events` | Polls events with optional long-poll and cursor handling. | `agent`, optional `cursor`, `limit`, `timeout_ms`, `auto_advance` | Polled events + cursor info. |
+| `orchestrator_ack_event` | Acknowledges event by id for an agent. | `agent`, `event_id` | Ack result. |
+| `orchestrator_get_agent_cursor` | Gets current cursor offset for agent event stream. | `agent` | Cursor value. |
+
+### Manager Automation and Recovery
+| Tool | Purpose | Key Inputs | Returns |
+|---|---|---|---|
+| `orchestrator_manager_cycle` | Runs one manager automation cycle (validate reports, summarize pending). | optional `strict` | Processed reports, by-owner summary, blockers, requeues. |
+| `orchestrator_reassign_stale_tasks` | Reassigns stale-owner tasks to active team members to continue flow. | optional `source`, `stale_after_seconds`, `include_blocked` | Reassignment summary and details. |
