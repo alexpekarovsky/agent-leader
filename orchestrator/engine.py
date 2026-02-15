@@ -382,6 +382,76 @@ class Orchestrator:
             self._write_json(self.tasks_path, tasks)
         return requeued
 
+    def reassign_stale_tasks_to_active_workers(
+        self,
+        source: str,
+        stale_after_seconds: Optional[int] = None,
+        include_blocked: bool = True,
+    ) -> Dict[str, Any]:
+        threshold = stale_after_seconds if stale_after_seconds is not None else self._heartbeat_timeout_seconds()
+        tasks = self._read_json(self.tasks_path)
+        active_agents = self.list_agents(active_only=True, stale_after_seconds=threshold)
+        active_names = [a.get("agent") for a in active_agents if isinstance(a.get("agent"), str)]
+        task_statuses = {"in_progress", "reported"}
+        if include_blocked:
+            task_statuses.add("blocked")
+
+        reassigned: List[Dict[str, Any]] = []
+        changed = False
+        now = datetime.now(timezone.utc)
+
+        for task in tasks:
+            if task.get("status") not in task_statuses:
+                continue
+            owner = str(task.get("owner", ""))
+            if not owner:
+                continue
+
+            owner_diag = self._worker_connect_diagnostic(worker=owner, stale_after_seconds=threshold)
+            owner_active = bool(owner_diag.get("active"))
+            if owner_active:
+                continue
+
+            new_owner = self._pick_reassignment_owner(
+                task=task,
+                active_names=active_names,
+                tasks=tasks,
+            )
+            if not new_owner:
+                continue
+
+            old_owner = owner
+            task["owner"] = new_owner
+            task["status"] = "assigned"
+            task["updated_at"] = self._now()
+            task["reassigned_from"] = old_owner
+            task["reassigned_reason"] = f"owner stale (> {threshold}s)"
+            task["degraded_comm"] = True
+            task["degraded_comm_reason"] = "stale owner auto-reassigned"
+            changed = True
+
+            payload = {
+                "task_id": task.get("id"),
+                "from_owner": old_owner,
+                "to_owner": new_owner,
+                "reason": "owner_stale",
+                "threshold_seconds": threshold,
+                "owner_diagnostic": owner_diag,
+            }
+            reassigned.append(payload)
+            self.bus.emit("task.reassigned_stale", payload, source=source)
+
+        if changed:
+            self._write_json(self.tasks_path, tasks)
+
+        return {
+            "reassigned_count": len(reassigned),
+            "threshold_seconds": threshold,
+            "reassigned": reassigned,
+            "active_agents": active_names,
+            "timestamp": now.isoformat(),
+        }
+
     def validate_task(self, task_id: str, passed: bool, notes: str) -> Dict[str, Any]:
         tasks = self._read_json(self.tasks_path)
         task = next((t for t in tasks if t["id"] == task_id), None)
@@ -1061,6 +1131,31 @@ class Orchestrator:
         )
         stale_notices[agent] = self._now()
         return True
+
+    def _pick_reassignment_owner(
+        self,
+        task: Dict[str, Any],
+        active_names: List[str],
+        tasks: List[Dict[str, Any]],
+    ) -> Optional[str]:
+        owner = str(task.get("owner", ""))
+        candidates = [name for name in active_names if name and name != owner]
+        if not candidates:
+            return None
+
+        # Prefer policy-routed owner for this workstream if active.
+        preferred = self.policy.task_owner_for(str(task.get("workstream", "default")))
+        if preferred in candidates:
+            return preferred
+
+        def load(agent: str) -> int:
+            return sum(
+                1
+                for t in tasks
+                if t.get("owner") == agent and t.get("status") in {"assigned", "in_progress", "reported", "bug_open", "blocked"}
+            )
+
+        return sorted(candidates, key=load)[0]
 
     def _age_seconds(self, iso_timestamp: str, now: Optional[datetime] = None) -> Optional[int]:
         try:

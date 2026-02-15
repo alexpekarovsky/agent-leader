@@ -449,6 +449,18 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
             },
         },
         {
+            "name": "orchestrator_reassign_stale_tasks",
+            "description": "Re-advertise and reassign stale-owner tasks to other active workers so execution continues when one worker is degraded.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string", "default": "codex"},
+                    "stale_after_seconds": {"type": "integer", "default": 600},
+                    "include_blocked": {"type": "boolean", "default": True},
+                },
+            },
+        },
+        {
             "name": "orchestrator_decide_architecture",
             "description": "Record equal-rights architecture decision and create ADR artifact under decisions/.",
             "inputSchema": {
@@ -936,6 +948,14 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             strict = bool(args.get("strict", False))
             cycle = _manager_cycle(strict=strict)
             return _ok(request_id, cycle)
+
+        if name == "orchestrator_reassign_stale_tasks":
+            result = ORCH.reassign_stale_tasks_to_active_workers(
+                source=args.get("source", POLICY.manager()),
+                stale_after_seconds=int(args.get("stale_after_seconds", 600)),
+                include_blocked=bool(args.get("include_blocked", True)),
+            )
+            return _ok(request_id, result)
 
         if name == "orchestrator_decide_architecture":
             votes = args.get("votes", {})
