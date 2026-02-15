@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -115,6 +116,18 @@ class Orchestrator:
         tasks = self._read_json(self.tasks_path)
         task_id = f"TASK-{uuid.uuid4().hex[:8]}"
         resolved_owner = owner or self.policy.task_owner_for(workstream)
+        duplicate = self._find_duplicate_open_task(
+            tasks=tasks,
+            title=title,
+            workstream=workstream,
+            owner=resolved_owner,
+        )
+        if duplicate is not None:
+            echoed = dict(duplicate)
+            echoed["deduplicated"] = True
+            echoed["dedupe_reason"] = "matching open task already exists"
+            return echoed
+
         task = {
             "id": task_id,
             "title": title,
@@ -159,6 +172,43 @@ class Orchestrator:
             source=self.policy.manager(),
         )
         return task
+
+    def dedupe_open_tasks(self, source: str) -> Dict[str, Any]:
+        tasks = self._read_json(self.tasks_path)
+        open_statuses = {"assigned", "in_progress", "reported", "bug_open", "blocked"}
+        groups: Dict[str, List[Dict[str, Any]]] = {}
+
+        for task in tasks:
+            if task.get("status") not in open_statuses:
+                continue
+            key = self._task_fingerprint(
+                title=str(task.get("title", "")),
+                workstream=str(task.get("workstream", "")),
+                owner=str(task.get("owner", "")),
+            )
+            groups.setdefault(key, []).append(task)
+
+        changed = False
+        deduped: List[Dict[str, str]] = []
+        for _, group in groups.items():
+            if len(group) <= 1:
+                continue
+            # Keep the oldest task as canonical; close newer duplicates.
+            ordered = sorted(group, key=lambda item: str(item.get("created_at", "")))
+            keeper = ordered[0]
+            for dup in ordered[1:]:
+                dup["status"] = "duplicate_closed"
+                dup["duplicate_of"] = keeper.get("id")
+                dup["updated_at"] = self._now()
+                changed = True
+                entry = {"task_id": str(dup.get("id", "")), "duplicate_of": str(keeper.get("id", ""))}
+                deduped.append(entry)
+                self.bus.emit("task.duplicate_closed", entry, source=source)
+
+        if changed:
+            self._write_json(self.tasks_path, tasks)
+
+        return {"deduped_count": len(deduped), "deduped": deduped}
 
     def list_tasks(self) -> List[Dict[str, Any]]:
         return self._read_json(self.tasks_path)
@@ -785,6 +835,31 @@ class Orchestrator:
             raise ValueError("test_summary.passed must be a non-negative integer")
         if not isinstance(failed, int) or failed < 0:
             raise ValueError("test_summary.failed must be a non-negative integer")
+
+    def _task_fingerprint(self, title: str, workstream: str, owner: str) -> str:
+        norm_title = re.sub(r"\s+", " ", title.strip().lower())
+        return f"{owner.strip().lower()}::{workstream.strip().lower()}::{norm_title}"
+
+    def _find_duplicate_open_task(
+        self,
+        tasks: List[Dict[str, Any]],
+        title: str,
+        workstream: str,
+        owner: str,
+    ) -> Optional[Dict[str, Any]]:
+        open_statuses = {"assigned", "in_progress", "reported", "bug_open", "blocked"}
+        candidate_key = self._task_fingerprint(title=title, workstream=workstream, owner=owner)
+        for task in tasks:
+            if task.get("status") not in open_statuses:
+                continue
+            existing_key = self._task_fingerprint(
+                title=str(task.get("title", "")),
+                workstream=str(task.get("workstream", "")),
+                owner=str(task.get("owner", "")),
+            )
+            if existing_key == candidate_key:
+                return task
+        return None
 
     def _refresh_agent_presence(self, agent: str) -> None:
         """Update last_seen/status without emitting extra heartbeat events."""

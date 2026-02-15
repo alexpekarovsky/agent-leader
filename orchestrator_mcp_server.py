@@ -223,6 +223,16 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
             },
         },
         {
+            "name": "orchestrator_dedupe_tasks",
+            "description": "Close duplicate open tasks (same normalized title/workstream/owner), keeping oldest canonical task.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string", "description": "Actor applying dedupe (usually manager).", "default": "codex"},
+                },
+            },
+        },
+        {
             "name": "orchestrator_list_tasks",
             "description": "List tasks, optionally filtered by status or owner. Use for planning dashboards and polling.",
             "inputSchema": {
@@ -773,6 +783,10 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 acceptance_criteria=acceptance,
             )
             return _ok(request_id, task)
+
+        if name == "orchestrator_dedupe_tasks":
+            result = ORCH.dedupe_open_tasks(source=args.get("source", POLICY.manager()))
+            return _ok(request_id, result)
 
         if name == "orchestrator_list_tasks":
             status = args.get("status")
