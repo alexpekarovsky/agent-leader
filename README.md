@@ -63,6 +63,15 @@ cd /path/to/repo
 
 This binds all CLIs to this same project/repo as `ORCHESTRATOR_ROOT`.
 All participating agents (manager + team members) must operate on that same project root.
+By default, installer deploys the MCP server to a stable location:
+- `~/.local/share/agent-leader/<version>`
+It refuses ephemeral `--server-root` paths under `/tmp` unless you pass `--allow-ephemeral`.
+
+Important installer flags:
+- `--mode project|global` (default: `project`)
+- `--confirm-global` (required with `--mode global`)
+- `--replace-legacy` (explicitly remove legacy MCP name `orchestrator`)
+- `--rollback <backup-id>` (restore config backup from failed/previous install)
 
 ## Verify install
 ```bash
@@ -73,7 +82,21 @@ gemini mcp list | rg "agent-leader-orchestrator"
 
 In any agent, call `orchestrator_status` and verify:
 - `server = agent-leader-orchestrator`
-- `root = <this repo path>`
+- `root_name = <project folder name>`
+
+For full path debugging only:
+- set `ORCHESTRATOR_STATUS_VERBOSE_PATHS=1`
+- then `orchestrator_status` includes `root` and `policy` absolute paths.
+
+## Doctor Check
+Run post-install verification against actual MCP client bindings:
+```bash
+./scripts/doctor.sh --all --project-root /path/to/repo
+```
+This checks:
+- MCP entry exists per CLI
+- registered command path exists
+- server responds to JSON-RPC health call
 
 ## Exact run workflow (manual, recommended)
 Open 3 terminals in this repo.
@@ -215,4 +238,5 @@ connect to leader. Then wait for tasks, implement only assigned scope, run tests
 - Server: `orchestrator_mcp_server.py`
 - Engine: `orchestrator/engine.py`
 - Installer: `scripts/install_agent_leader_mcp.sh`
+- Doctor: `scripts/doctor.sh`
 - Roadmap: `ROADMAP.md`

@@ -25,6 +25,7 @@ EXPECTED_ROOT_RAW = os.getenv("ORCHESTRATOR_EXPECTED_ROOT", "").strip()
 POLICY_PATH = Path(
     os.getenv("ORCHESTRATOR_POLICY", str(ROOT_DIR / "config" / "policy.codex-manager.json"))
 ).resolve()
+STATUS_VERBOSE_PATHS = os.getenv("ORCHESTRATOR_STATUS_VERBOSE_PATHS", "").strip().lower() in {"1", "true", "yes"}
 
 if EXPECTED_ROOT_RAW:
     expected_root = Path(EXPECTED_ROOT_RAW).resolve()
@@ -86,7 +87,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_status",
-            "description": "Show server root, active policy, manager role, task counts by status, and bug counts. Use this first in every session.",
+            "description": "Show redacted status (root_name/policy_name), manager role, task counts by status, and bug counts. Set ORCHESTRATOR_STATUS_VERBOSE_PATHS=1 for full paths.",
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
@@ -777,22 +778,25 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             by_status: Dict[str, int] = {}
             for task in tasks:
                 by_status[task["status"]] = by_status.get(task["status"], 0) + 1
+            payload: Dict[str, Any] = {
+                "server": "agent-leader-orchestrator",
+                "version": __version__,
+                "root_name": ROOT_DIR.name,
+                "policy_name": POLICY.name,
+                "manager": POLICY.manager(),
+                "task_count": len(tasks),
+                "task_status_counts": by_status,
+                "bug_count": len(bugs),
+                "active_agents": [agent["agent"] for agent in agents],
+            }
+            if STATUS_VERBOSE_PATHS:
+                payload["root"] = str(ROOT_DIR)
+                payload["policy"] = str(POLICY_PATH)
             return _ok_and_audit(
                 request_id,
                 name,
                 args,
-                {
-                    "server": "agent-leader-orchestrator",
-                    "version": __version__,
-                    "root": str(ROOT_DIR),
-                    "policy": str(POLICY_PATH),
-                    "policy_name": POLICY.name,
-                    "manager": POLICY.manager(),
-                    "task_count": len(tasks),
-                    "task_status_counts": by_status,
-                    "bug_count": len(bugs),
-                    "active_agents": [agent["agent"] for agent in agents],
-                },
+                payload,
             )
 
         if name == "orchestrator_list_audit_logs":
@@ -822,8 +826,10 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             entry = ORCH.heartbeat(agent=args["agent"], metadata=metadata)
             return _ok_and_audit(request_id, name, args, entry)
 
-        if name == "orchestrator_connect_team_members":
+        if name in {"orchestrator_connect_team_members", "orchestrator_connect_workers"}:
             team_members = args.get("team_members", [])
+            if not team_members:
+                team_members = args.get("workers", [])
             if isinstance(team_members, str):
                 team_members = _parse_json_argument(team_members, "array")
             result = ORCH.connect_team_members(
