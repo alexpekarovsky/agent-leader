@@ -260,7 +260,7 @@ This is the complete tool contract exposed by `agent-leader-orchestrator`.
 | Tool | Purpose | Key Inputs | Returns |
 |---|---|---|---|
 | `orchestrator_guide` | Returns orchestration playbook and required manager/team member sequences. | none | Guidance object with sequences and report contract. |
-| `orchestrator_status` | Returns current system status. Default output redacts absolute paths. | none | Server/version, `root_name`, `policy_name`, manager, counts, active agents, roles, and `live_status_text` (human-readable status block). |
+| `orchestrator_status` | Returns current system status. Default output redacts absolute paths. | none | Server/version, `root_name`, `policy_name`, manager, counts, active agents, roles, `live_status_text` (human-readable status block), structured `live_status`, and `recommended_status_cadence_seconds` (default 600). |
 | `orchestrator_get_roles` | Reads runtime role assignment. | none | `leader`, `team_members`, `default_leader`. |
 | `orchestrator_set_role` | Sets runtime role for an agent. | `agent`, `role` (`leader` or `team_member`), optional `source` | Updated role map. |
 | `orchestrator_list_audit_logs` | Reads append-only MCP audit records. | optional `limit`, `tool`, `status` | Filtered audit entries from `bus/audit.jsonl`. |
@@ -317,5 +317,5 @@ Compatibility note:
 ### Manager Automation and Recovery
 | Tool | Purpose | Key Inputs | Returns |
 |---|---|---|---|
-| `orchestrator_manager_cycle` | Runs one manager automation cycle (validate reports, summarize pending). | optional `strict` | Processed reports, by-owner summary, blockers, requeues. |
+| `orchestrator_manager_cycle` | Runs one manager automation cycle (validate reports first, then summarize pending). Also auto-attempts reconnect for stale team members with active tasks before fallback reassignment/requeue. | optional `strict` | Processed reports, `auto_connect` result, by-owner summary, blockers, stale reassignments/requeues. |
 | `orchestrator_reassign_stale_tasks` | Reassigns stale-owner tasks to active team members to continue flow. | optional `source`, `stale_after_seconds`, `include_blocked` | Reassignment summary and details. |

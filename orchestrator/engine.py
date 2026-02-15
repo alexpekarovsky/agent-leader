@@ -404,7 +404,8 @@ class Orchestrator:
         tasks = self._read_json(self.tasks_path)
         active_agents = self.list_agents(active_only=True, stale_after_seconds=threshold)
         active_names = [a.get("agent") for a in active_agents if isinstance(a.get("agent"), str)]
-        task_statuses = {"in_progress", "reported"}
+        # Do not reassign reported tasks: manager validation should run first.
+        task_statuses = {"in_progress"}
         if include_blocked:
             task_statuses.add("blocked")
 

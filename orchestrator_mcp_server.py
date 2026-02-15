@@ -87,7 +87,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_status",
-            "description": "Show redacted status (root_name/policy_name), manager role, task counts by status, and bug counts. Set ORCHESTRATOR_STATUS_VERBOSE_PATHS=1 for full paths.",
+            "description": "Show redacted status plus ready-to-paste live status report. When user asks for status updates, return live_status_text verbatim. Set ORCHESTRATOR_STATUS_VERBOSE_PATHS=1 for full paths.",
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
@@ -472,7 +472,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_manager_cycle",
-            "description": "Run one manager cycle automatically: validate all reported tasks and summarize remaining work by owner.",
+            "description": "Run one manager cycle automatically: validate reported tasks first, auto-connect stale team members with active tasks, then summarize remaining work by owner.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -625,7 +625,7 @@ def _guide_payload() -> Dict[str, Any]:
 
 
 def _manager_cycle(strict: bool) -> Dict[str, Any]:
-    stale_requeues = ORCH.requeue_stale_in_progress_tasks(stale_after_seconds=1800)
+    stale_after_seconds = ORCH._heartbeat_timeout_seconds()
     tasks = ORCH.list_tasks()
     processed: List[Dict[str, Any]] = []
 
@@ -655,6 +655,60 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
         )
         result = ORCH.validate_task(task_id=task["id"], passed=passed, notes=notes)
         processed.append({"task_id": task["id"], "passed": passed, "result": result})
+
+    reconnect_statuses = {"in_progress", "blocked"}
+    reconnect_candidates: List[str] = []
+    seen_candidates = set()
+    team_members = set(ORCH.get_roles().get("team_members", []) or [])
+    for task in ORCH.list_tasks():
+        if task.get("status") not in reconnect_statuses:
+            continue
+        owner = str(task.get("owner", "")).strip()
+        if not owner or owner == ORCH.manager_agent():
+            continue
+        if team_members and owner not in team_members:
+            continue
+        if owner in seen_candidates:
+            continue
+        diag = ORCH._team_member_connect_diagnostic(team_member=owner, stale_after_seconds=stale_after_seconds)
+        if not bool(diag.get("active")):
+            reconnect_candidates.append(owner)
+            seen_candidates.add(owner)
+
+    auto_connect: Dict[str, Any] = {
+        "attempted": False,
+        "requested": reconnect_candidates,
+        "status": "skipped",
+        "reason": "no_stale_team_members_with_active_tasks",
+    }
+    if reconnect_candidates:
+        reconnect_timeout = int(ORCH.policy.triggers.get("manager_cycle_auto_connect_timeout_seconds", 15))
+        reconnect_timeout = max(5, min(reconnect_timeout, 60))
+        reconnect_poll = int(ORCH.policy.triggers.get("manager_cycle_auto_connect_poll_seconds", 2))
+        reconnect_poll = max(1, min(reconnect_poll, 10))
+        connect_result = ORCH.connect_team_members(
+            source=ORCH.manager_agent(),
+            team_members=reconnect_candidates,
+            timeout_seconds=reconnect_timeout,
+            poll_interval_seconds=reconnect_poll,
+            stale_after_seconds=stale_after_seconds,
+        )
+        auto_connect = {
+            "attempted": True,
+            "requested": reconnect_candidates,
+            "status": connect_result.get("status", "timeout"),
+            "connected": connect_result.get("connected", []),
+            "missing": connect_result.get("missing", []),
+            "elapsed_seconds": connect_result.get("elapsed_seconds", 0),
+            "timeout_seconds": reconnect_timeout,
+        }
+
+    stale_reassignments = ORCH.reassign_stale_tasks_to_active_workers(
+        source=ORCH.manager_agent(),
+        stale_after_seconds=stale_after_seconds,
+        include_blocked=True,
+    )
+    stale_requeues = ORCH.requeue_stale_in_progress_tasks(stale_after_seconds=stale_after_seconds)
 
     latest_tasks = ORCH.list_tasks()
     open_blockers = ORCH.list_blockers(status="open")
@@ -688,6 +742,8 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
 
     return {
         "processed_reports": processed,
+        "auto_connect": auto_connect,
+        "stale_reassignments": stale_reassignments,
         "stale_requeues": stale_requeues,
         "remaining_by_owner": by_owner,
         "pending_total": sum(bucket["pending"] for bucket in by_owner.values()),
@@ -831,6 +887,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             bugs = ORCH.list_bugs()
             agents = ORCH.list_agents(active_only=True)
             roles = ORCH.get_roles()
+            live_status = _live_status_report({})
             by_status: Dict[str, int] = {}
             for task in tasks:
                 by_status[task["status"]] = by_status.get(task["status"], 0) + 1
@@ -845,7 +902,9 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "task_status_counts": by_status,
                 "bug_count": len(bugs),
                 "active_agents": [agent["agent"] for agent in agents],
-                "live_status_text": _live_status_report({}).get("report_text", ""),
+                "live_status_text": live_status.get("report_text", ""),
+                "live_status": live_status.get("report", {}),
+                "recommended_status_cadence_seconds": live_status.get("recommended_cadence_seconds", 600),
             }
             if STATUS_VERBOSE_PATHS:
                 payload["root"] = str(ROOT_DIR)
