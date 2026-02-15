@@ -137,6 +137,7 @@ Call orchestrator_live_status_report with overall_percent=14 phase_1_percent=35 
 To minimize token burn:
 - workers call `orchestrator_connect_to_leader` once at session start
 - workers use `orchestrator_poll_events(timeout_ms=120000)`
+- worker presence is auto-refreshed by normal worker actions (`poll_events`, `claim_next_task`, `submit_report`, `ack_event`)
 - avoid rapid `claim_next_task` loops when idle
 - manager uses `orchestrator_connect_workers` instead of repeated manual ping events
 

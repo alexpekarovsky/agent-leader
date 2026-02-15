@@ -170,6 +170,8 @@ class Orchestrator:
         return tasks
 
     def claim_next_task(self, owner: str) -> Optional[Dict[str, Any]]:
+        # Treat a claim attempt as proof-of-life from the worker.
+        self._refresh_agent_presence(owner)
         tasks = self._read_json(self.tasks_path)
         for task in tasks:
             if task.get("owner") != owner:
@@ -212,6 +214,7 @@ class Orchestrator:
         self._validate_report_payload(report)
 
         task_id = report["task_id"]
+        self._refresh_agent_presence(str(report["agent"]))
         tasks = self._read_json(self.tasks_path)
         task = next((item for item in tasks if item["id"] == task_id), None)
         if task is None:
@@ -599,6 +602,8 @@ class Orchestrator:
         timeout_ms: int = 0,
         auto_advance: bool = True,
     ) -> Dict[str, Any]:
+        # Long-poll calls are the normal worker loop heartbeat in practice.
+        self._refresh_agent_presence(agent)
         events = list(self.bus.poll_events(timeout_ms=timeout_ms))
         start = self.get_agent_cursor(agent) if cursor is None else max(0, int(cursor))
         filtered: List[Dict[str, Any]] = []
@@ -630,6 +635,7 @@ class Orchestrator:
         }
 
     def ack_event(self, agent: str, event_id: str) -> Dict[str, Any]:
+        self._refresh_agent_presence(agent)
         acks = self._read_json(self.acks_path)
         if not isinstance(acks, dict):
             acks = {}
@@ -775,6 +781,19 @@ class Orchestrator:
             raise ValueError("test_summary.passed must be a non-negative integer")
         if not isinstance(failed, int) or failed < 0:
             raise ValueError("test_summary.failed must be a non-negative integer")
+
+    def _refresh_agent_presence(self, agent: str) -> None:
+        """Update last_seen/status without emitting extra heartbeat events."""
+        if not isinstance(agent, str) or not agent.strip():
+            return
+        agents = self._read_json(self.agents_path)
+        if not isinstance(agents, dict):
+            agents = {}
+        entry = agents.get(agent, {"agent": agent, "metadata": {}})
+        entry["status"] = "active"
+        entry["last_seen"] = self._now()
+        agents[agent] = entry
+        self._write_json(self.agents_path, agents)
 
     def _age_seconds(self, iso_timestamp: str, now: Optional[datetime] = None) -> Optional[int]:
         try:
