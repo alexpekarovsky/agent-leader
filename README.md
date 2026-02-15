@@ -260,7 +260,7 @@ This is the complete tool contract exposed by `agent-leader-orchestrator`.
 | Tool | Purpose | Key Inputs | Returns |
 |---|---|---|---|
 | `orchestrator_guide` | Returns orchestration playbook and required manager/team member sequences. | none | Guidance object with sequences and report contract. |
-| `orchestrator_status` | Returns current system status. Default output redacts absolute paths. | none | Server/version, `root_name`, `policy_name`, manager, counts, active agents, roles. |
+| `orchestrator_status` | Returns current system status. Default output redacts absolute paths. | none | Server/version, `root_name`, `policy_name`, manager, counts, active agents, roles, and `live_status_text` (human-readable status block). |
 | `orchestrator_get_roles` | Reads runtime role assignment. | none | `leader`, `team_members`, `default_leader`. |
 | `orchestrator_set_role` | Sets runtime role for an agent. | `agent`, `role` (`leader` or `team_member`), optional `source` | Updated role map. |
 | `orchestrator_list_audit_logs` | Reads append-only MCP audit records. | optional `limit`, `tool`, `status` | Filtered audit entries from `bus/audit.jsonl`. |

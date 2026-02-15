@@ -705,6 +705,9 @@ def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
     tasks = ORCH.list_tasks()
     blockers_open = ORCH.list_blockers(status="open")
     bugs_open = ORCH.list_bugs(status="open")
+    roles = ORCH.get_roles()
+    agents_all = ORCH.list_agents(active_only=False)
+    by_agent = {item.get("agent"): item for item in agents_all}
 
     total_tasks = len(tasks)
     done_tasks = len([task for task in tasks if task.get("status") == "done"])
@@ -765,6 +768,33 @@ def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
         f"- Open bugs: {len(bugs_open)}",
     ]
 
+    # Team member operational summary for manager-friendly status checks.
+    lines.extend(["", "Team members:"])
+    role_by_agent: Dict[str, str] = {}
+    leader = str(roles.get("leader", ""))
+    if leader:
+        role_by_agent[leader] = "manager"
+    for member in roles.get("team_members", []) or []:
+        if isinstance(member, str) and member and member not in role_by_agent:
+            role_by_agent[member] = "team member"
+
+    # Include discovered agents even if roles file doesn't list them yet.
+    all_agent_names = sorted({*(role_by_agent.keys()), *(a for a in by_agent.keys() if isinstance(a, str))})
+    for agent in all_agent_names:
+        info = by_agent.get(agent, {})
+        status = str(info.get("status", "unknown"))
+        role = role_by_agent.get(agent, "team member")
+
+        in_progress_ids = [t.get("id") for t in tasks if t.get("owner") == agent and t.get("status") == "in_progress"]
+        reported_ids = [t.get("id") for t in tasks if t.get("owner") == agent and t.get("status") == "reported"]
+        chunks: List[str] = []
+        if in_progress_ids:
+            chunks.append("in_progress on " + ", ".join(in_progress_ids))
+        if reported_ids:
+            chunks.append("reported: " + ", ".join(reported_ids))
+        tail = "; " + "; ".join(chunks) if chunks else ""
+        lines.append(f"- {agent} ({role}): {status}{tail}")
+
     payload = {
         "report_text": "\n".join(lines),
         "report": {
@@ -815,6 +845,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "task_status_counts": by_status,
                 "bug_count": len(bugs),
                 "active_agents": [agent["agent"] for agent in agents],
+                "live_status_text": _live_status_report({}).get("report_text", ""),
             }
             if STATUS_VERBOSE_PATHS:
                 payload["root"] = str(ROOT_DIR)
