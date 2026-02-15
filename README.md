@@ -5,7 +5,7 @@
 ## What you get
 - MCP control plane: tasks, reports, validation, bug loops, events.
 - One-shot worker attach: `orchestrator_connect_to_leader`.
-- One-shot manager activation gate: `orchestrator_connect_workers`.
+- Optional manager readiness gate: `orchestrator_connect_workers`.
 - Manual workflow first (recommended).
 
 ## MCP server name
@@ -51,7 +51,7 @@ codex
 ```
 Prompt:
 ```text
-You are the manager for this repo. Use agent-leader-orchestrator MCP. Bootstrap, connect workers, create milestones/tasks, delegate, validate in loop, and block only when user input is required.
+You are the manager for this repo. Use agent-leader-orchestrator MCP. Bootstrap, create milestones/tasks, delegate, validate in loop, and block only when user input is required.
 ```
 
 ### Terminal B: Claude worker
@@ -74,7 +74,7 @@ Prompt:
 connect to leader
 ```
 
-### Manager activation gate
+### Connection handshake (single place)
 In Codex manager:
 ```text
 Call orchestrator_connect_workers with source=codex workers=["claude_code","gemini"] timeout_seconds=90
@@ -85,7 +85,7 @@ Proceed only if:
 
 ### LLM install/run instruction (copy/paste)
 ```text
-Install MCP server `agent-leader-orchestrator` from this repository with `./scripts/install_agent_leader_mcp.sh --all`, verify via `mcp list`, then call `orchestrator_status` and confirm `server=agent-leader-orchestrator` and `root` is this repository. Then run manager/worker flow (manager: bootstrap/connect_workers/create tasks; workers: connect to leader, claim, report, ask manager to validate).
+Install MCP server `agent-leader-orchestrator` from this repository with `./scripts/install_agent_leader_mcp.sh --all`, verify via `mcp list`, then call `orchestrator_status` and confirm `server=agent-leader-orchestrator` and `root` is this repository. Then run manager/worker flow (workers connect to leader; manager performs the connection handshake once; then manager bootstraps/creates tasks; workers claim/report; manager validates).
 ```
 
 ### 10-minute status updates
@@ -131,7 +131,7 @@ cd /path/to/repo && gemini --approval-mode yolo
 ## Prompt Examples
 Manager prompt example:
 ```text
-Use agent-leader-orchestrator. Bootstrap, connect workers, create a 3-phase plan, split backend to claude_code and frontend to gemini, enforce reports with tests/commit SHA, validate each task, open bugs on failure, and continue until all tasks are done.
+Use agent-leader-orchestrator. After connection handshake, bootstrap, create a 3-phase plan, split backend to claude_code and frontend to gemini, enforce reports with tests/commit SHA, validate each task, open bugs on failure, and continue until all tasks are done.
 ```
 
 Worker prompt example:
