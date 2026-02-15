@@ -29,6 +29,7 @@ class Orchestrator:
         self.acks_path = self.state_dir / "event_acks.json"
         self.agents_path = self.state_dir / "agents.json"
         self.stale_notices_path = self.state_dir / "stale_notices.json"
+        self.claim_overrides_path = self.state_dir / "claim_overrides.json"
         self.decisions_dir = self.root / "decisions"
         self.decisions_dir.mkdir(parents=True, exist_ok=True)
 
@@ -47,6 +48,8 @@ class Orchestrator:
             self.agents_path.write_text("{}\n", encoding="utf-8")
         if not self.stale_notices_path.exists():
             self.stale_notices_path.write_text("{}\n", encoding="utf-8")
+        if not self.claim_overrides_path.exists():
+            self.claim_overrides_path.write_text("{}\n", encoding="utf-8")
         self.bus.emit(
             "orchestrator.bootstrapped",
             {"policy": self.policy.name, "manager": self.policy.manager()},
@@ -232,6 +235,29 @@ class Orchestrator:
         # Treat a claim attempt as proof-of-life from the worker.
         self._refresh_agent_presence(owner)
         tasks = self._read_json(self.tasks_path)
+        overrides = self._read_json(self.claim_overrides_path)
+        if not isinstance(overrides, dict):
+            overrides = {}
+
+        override_task_id = overrides.get(owner)
+        if isinstance(override_task_id, str) and override_task_id.strip():
+            forced = next((t for t in tasks if t.get("id") == override_task_id and t.get("owner") == owner), None)
+            if forced and forced.get("status") in {"assigned", "bug_open"}:
+                forced["status"] = "in_progress"
+                forced["updated_at"] = self._now()
+                self._write_json(self.tasks_path, tasks)
+                del overrides[owner]
+                self._write_json(self.claim_overrides_path, overrides)
+                self.bus.emit(
+                    "task.claimed",
+                    {"task_id": forced["id"], "owner": owner, "via": "manager_override"},
+                    source=owner,
+                )
+                return forced
+            # Override no longer valid; clear it and continue normal claim order.
+            del overrides[owner]
+            self._write_json(self.claim_overrides_path, overrides)
+
         for task in tasks:
             if task.get("owner") != owner:
                 continue
@@ -248,6 +274,26 @@ class Orchestrator:
             )
             return task
         return None
+
+    def set_claim_override(self, agent: str, task_id: str, source: str) -> Dict[str, Any]:
+        tasks = self._read_json(self.tasks_path)
+        task = next((t for t in tasks if t.get("id") == task_id), None)
+        if task is None:
+            raise ValueError(f"Task not found: {task_id}")
+        if task.get("owner") != agent:
+            raise ValueError(f"Task owner '{task.get('owner')}' does not match target agent '{agent}'")
+
+        overrides = self._read_json(self.claim_overrides_path)
+        if not isinstance(overrides, dict):
+            overrides = {}
+        overrides[agent] = task_id
+        self._write_json(self.claim_overrides_path, overrides)
+        self.bus.emit(
+            "manager.claim_override",
+            {"agent": agent, "task_id": task_id},
+            source=source,
+        )
+        return {"ok": True, "agent": agent, "task_id": task_id}
 
     def set_task_status(self, task_id: str, status: str, source: str, note: str = "") -> Dict[str, Any]:
         tasks = self._read_json(self.tasks_path)

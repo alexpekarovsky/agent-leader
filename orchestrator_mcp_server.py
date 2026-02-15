@@ -267,6 +267,19 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
             },
         },
         {
+            "name": "orchestrator_set_claim_override",
+            "description": "Manager-enforced claim target: force next claim by agent to pick specific task_id first.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "agent": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "source": {"type": "string", "default": "codex"},
+                },
+                "required": ["agent", "task_id"],
+            },
+        },
+        {
             "name": "orchestrator_update_task_status",
             "description": "Update task lifecycle status (in_progress, blocked, etc.) with note metadata.",
             "inputSchema": {
@@ -818,6 +831,14 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                     },
                 },
             )
+
+        if name == "orchestrator_set_claim_override":
+            result = ORCH.set_claim_override(
+                agent=args["agent"],
+                task_id=args["task_id"],
+                source=args.get("source", POLICY.manager()),
+            )
+            return _ok(request_id, result)
 
         if name == "orchestrator_update_task_status":
             task = ORCH.set_task_status(
