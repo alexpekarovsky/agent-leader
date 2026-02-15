@@ -144,6 +144,22 @@ To minimize token burn:
 - avoid rapid `claim_next_task` loops when idle
 - manager uses `orchestrator_connect_team_members` instead of repeated manual ping events
 
+## Auditing and Traceability
+You now have append-only audit logs for operations:
+- MCP tool-call audit log: `bus/audit.jsonl`
+- Collaboration event log: `bus/events.jsonl`
+- Task/blocker/bug state: `state/tasks.json`, `state/blockers.json`, `state/bugs.json`
+- Installer audit log: `state/install_audit.jsonl`
+
+Use MCP to query recent tool-call audit records:
+```text
+Call orchestrator_list_audit_logs with limit=200
+```
+Optional filters:
+```text
+Call orchestrator_list_audit_logs with tool="orchestrator_submit_report" status="ok" limit=100
+```
+
 ## Safety and permission modes
 Preferred mode:
 - keep normal approval/sandbox settings

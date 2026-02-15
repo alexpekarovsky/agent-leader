@@ -14,6 +14,7 @@ class EventBus:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.events_path = root / "events.jsonl"
+        self.audit_path = root / "audit.jsonl"
         self.commands_dir = root / "commands"
         self.reports_dir = root / "reports"
 
@@ -73,3 +74,37 @@ class EventBus:
 
         with path.open("r", encoding="utf-8") as fh:
             return json.load(fh)
+
+    def append_audit(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        entry = dict(record)
+        entry.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+        with self.audit_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+        return entry
+
+    def read_audit(
+        self,
+        limit: int = 100,
+        tool_name: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> Iterable[Dict[str, Any]]:
+        if not self.audit_path.exists():
+            return []
+        rows: list[Dict[str, Any]] = []
+        with self.audit_path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    item = json.loads(line)
+                except Exception:
+                    continue
+                if tool_name and item.get("tool") != tool_name:
+                    continue
+                if status and item.get("status") != status:
+                    continue
+                rows.append(item)
+        if limit <= 0:
+            return rows
+        return rows[-limit:]

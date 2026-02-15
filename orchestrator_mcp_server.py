@@ -90,6 +90,18 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
+            "name": "orchestrator_list_audit_logs",
+            "description": "List append-only MCP audit records (tool calls, status, args, results/errors).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "default": 100},
+                    "tool": {"type": "string"},
+                    "status": {"type": "string", "description": "ok|error"},
+                },
+            },
+        },
+        {
             "name": "orchestrator_live_status_report",
             "description": "Generate the manager's live status update in the standard percentage + pipeline format. Call every 10 minutes (600s).",
             "inputSchema": {
@@ -494,6 +506,53 @@ def _ok(request_id: Any, payload: Any) -> Dict[str, Any]:
     }
 
 
+_AUDIT_REDACT_KEYS = {"token", "secret", "password", "api_key", "authorization", "auth"}
+
+
+def _sanitize_for_audit(value: Any) -> Any:
+    if isinstance(value, dict):
+        cleaned: Dict[str, Any] = {}
+        for key, item in value.items():
+            key_l = str(key).lower()
+            if any(part in key_l for part in _AUDIT_REDACT_KEYS):
+                cleaned[key] = "***redacted***"
+            else:
+                cleaned[key] = _sanitize_for_audit(item)
+        return cleaned
+    if isinstance(value, list):
+        return [_sanitize_for_audit(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _audit_tool_call(
+    tool_name: str,
+    args: Dict[str, Any],
+    status: str,
+    result: Optional[Any] = None,
+    error: Optional[str] = None,
+) -> None:
+    try:
+        ORCH.bus.append_audit(
+            {
+                "category": "mcp_tool_call",
+                "tool": tool_name,
+                "status": status,
+                "args": _sanitize_for_audit(args),
+                "result": _sanitize_for_audit(result) if result is not None else None,
+                "error": error,
+            }
+        )
+    except Exception:
+        pass
+
+
+def _ok_and_audit(request_id: Any, tool_name: str, args: Dict[str, Any], payload: Any) -> Dict[str, Any]:
+    _audit_tool_call(tool_name=tool_name, args=args, status="ok", result=payload)
+    return _ok(request_id, payload)
+
+
 def _guide_payload() -> Dict[str, Any]:
     return {
         "purpose": "MCP-first multi-agent orchestration for manager/team member loops.",
@@ -709,7 +768,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         if name == "orchestrator_guide":
-            return _ok(request_id, _guide_payload())
+            return _ok_and_audit(request_id, name, args, _guide_payload())
 
         if name == "orchestrator_status":
             tasks = ORCH.list_tasks()
@@ -718,8 +777,10 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             by_status: Dict[str, int] = {}
             for task in tasks:
                 by_status[task["status"]] = by_status.get(task["status"], 0) + 1
-            return _ok(
+            return _ok_and_audit(
                 request_id,
+                name,
+                args,
                 {
                     "server": "agent-leader-orchestrator",
                     "version": __version__,
@@ -734,22 +795,32 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 },
             )
 
+        if name == "orchestrator_list_audit_logs":
+            logs = list(
+                ORCH.bus.read_audit(
+                    limit=int(args.get("limit", 100)),
+                    tool_name=args.get("tool"),
+                    status=args.get("status"),
+                )
+            )
+            return _ok_and_audit(request_id, name, args, logs)
+
         if name == "orchestrator_live_status_report":
-            return _ok(request_id, _live_status_report(args))
+            return _ok_and_audit(request_id, name, args, _live_status_report(args))
 
         if name == "orchestrator_register_agent":
             metadata = args.get("metadata", {})
             if isinstance(metadata, str):
                 metadata = _parse_json_argument(metadata, "object")
             entry = ORCH.register_agent(agent=args["agent"], metadata=metadata)
-            return _ok(request_id, entry)
+            return _ok_and_audit(request_id, name, args, entry)
 
         if name == "orchestrator_heartbeat":
             metadata = args.get("metadata", {})
             if isinstance(metadata, str):
                 metadata = _parse_json_argument(metadata, "object")
             entry = ORCH.heartbeat(agent=args["agent"], metadata=metadata)
-            return _ok(request_id, entry)
+            return _ok_and_audit(request_id, name, args, entry)
 
         if name == "orchestrator_connect_team_members":
             team_members = args.get("team_members", [])
@@ -762,7 +833,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 poll_interval_seconds=int(args.get("poll_interval_seconds", 2)),
                 stale_after_seconds=int(args.get("stale_after_seconds", 600)),
             )
-            return _ok(request_id, result)
+            return _ok_and_audit(request_id, name, args, result)
 
         if name == "orchestrator_connect_to_leader":
             metadata = args.get("metadata", {})
@@ -774,25 +845,25 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 status=args.get("status", "idle"),
                 announce=bool(args.get("announce", True)),
             )
-            return _ok(request_id, result)
+            return _ok_and_audit(request_id, name, args, result)
 
         if name == "orchestrator_list_agents":
             agents = ORCH.list_agents(
                 active_only=bool(args.get("active_only", False)),
                 stale_after_seconds=int(args.get("stale_after_seconds", 600)),
             )
-            return _ok(request_id, agents)
+            return _ok_and_audit(request_id, name, args, agents)
 
         if name == "orchestrator_discover_agents":
             discovered = ORCH.discover_agents(
                 active_only=bool(args.get("active_only", False)),
                 stale_after_seconds=int(args.get("stale_after_seconds", 600)),
             )
-            return _ok(request_id, discovered)
+            return _ok_and_audit(request_id, name, args, discovered)
 
         if name == "orchestrator_bootstrap":
             ORCH.bootstrap()
-            return _ok(request_id, {"ok": True, "policy": POLICY.name, "manager": POLICY.manager()})
+            return _ok_and_audit(request_id, name, args, {"ok": True, "policy": POLICY.name, "manager": POLICY.manager()})
 
         if name == "orchestrator_create_task":
             acceptance = args.get("acceptance_criteria")
@@ -807,11 +878,11 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 owner=args.get("owner"),
                 acceptance_criteria=acceptance,
             )
-            return _ok(request_id, task)
+            return _ok_and_audit(request_id, name, args, task)
 
         if name == "orchestrator_dedupe_tasks":
             result = ORCH.dedupe_open_tasks(source=args.get("source", POLICY.manager()))
-            return _ok(request_id, result)
+            return _ok_and_audit(request_id, name, args, result)
 
         if name == "orchestrator_list_tasks":
             status = args.get("status")
@@ -821,16 +892,16 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 tasks = [task for task in tasks if task.get("status") == status]
             if owner:
                 tasks = [task for task in tasks if task.get("owner") == owner]
-            return _ok(request_id, tasks)
+            return _ok_and_audit(request_id, name, args, tasks)
 
         if name == "orchestrator_get_tasks_for_agent":
             tasks = ORCH.list_tasks_for_owner(owner=args["agent"], status=args.get("status"))
-            return _ok(request_id, tasks)
+            return _ok_and_audit(request_id, name, args, tasks)
 
         if name == "orchestrator_claim_next_task":
             task = ORCH.claim_next_task(owner=args["agent"])
             if task:
-                return _ok(request_id, task)
+                return _ok_and_audit(request_id, name, args, task)
             return _ok(
                 request_id,
                 {
@@ -850,7 +921,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 task_id=args["task_id"],
                 source=args.get("source", POLICY.manager()),
             )
-            return _ok(request_id, result)
+            return _ok_and_audit(request_id, name, args, result)
 
         if name == "orchestrator_update_task_status":
             task = ORCH.set_task_status(
@@ -859,7 +930,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 source=args["source"],
                 note=args.get("note", ""),
             )
-            return _ok(request_id, task)
+            return _ok_and_audit(request_id, name, args, task)
 
         if name == "orchestrator_submit_report":
             test_summary = args.get("test_summary", {})
@@ -875,7 +946,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "notes": args.get("notes", ""),
             }
             result = ORCH.ingest_report(report)
-            return _ok(request_id, result)
+            return _ok_and_audit(request_id, name, args, result)
 
         if name == "orchestrator_validate_task":
             result = ORCH.validate_task(
@@ -883,11 +954,11 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 passed=bool(args["passed"]),
                 notes=args["notes"],
             )
-            return _ok(request_id, result)
+            return _ok_and_audit(request_id, name, args, result)
 
         if name == "orchestrator_list_bugs":
             bugs = ORCH.list_bugs(status=args.get("status"), owner=args.get("owner"))
-            return _ok(request_id, bugs)
+            return _ok_and_audit(request_id, name, args, bugs)
 
         if name == "orchestrator_raise_blocker":
             blocker = ORCH.raise_blocker(
@@ -897,11 +968,11 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 options=args.get("options", []),
                 severity=args.get("severity", "medium"),
             )
-            return _ok(request_id, blocker)
+            return _ok_and_audit(request_id, name, args, blocker)
 
         if name == "orchestrator_list_blockers":
             blockers = ORCH.list_blockers(status=args.get("status"), agent=args.get("agent"))
-            return _ok(request_id, blockers)
+            return _ok_and_audit(request_id, name, args, blockers)
 
         if name == "orchestrator_resolve_blocker":
             blocker = ORCH.resolve_blocker(
@@ -909,7 +980,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 resolution=args["resolution"],
                 source=args["source"],
             )
-            return _ok(request_id, blocker)
+            return _ok_and_audit(request_id, name, args, blocker)
 
         if name == "orchestrator_publish_event":
             payload = args.get("payload", {})
@@ -924,7 +995,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 payload=payload,
                 audience=audience,
             )
-            return _ok(request_id, event)
+            return _ok_and_audit(request_id, name, args, event)
 
         if name == "orchestrator_poll_events":
             polled = ORCH.poll_events(
@@ -934,20 +1005,20 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 timeout_ms=int(args.get("timeout_ms", 0)),
                 auto_advance=bool(args.get("auto_advance", True)),
             )
-            return _ok(request_id, polled)
+            return _ok_and_audit(request_id, name, args, polled)
 
         if name == "orchestrator_ack_event":
             ack = ORCH.ack_event(agent=args["agent"], event_id=args["event_id"])
-            return _ok(request_id, ack)
+            return _ok_and_audit(request_id, name, args, ack)
 
         if name == "orchestrator_get_agent_cursor":
             cursor = ORCH.get_agent_cursor(agent=args["agent"])
-            return _ok(request_id, {"agent": args["agent"], "cursor": cursor})
+            return _ok_and_audit(request_id, name, args, {"agent": args["agent"], "cursor": cursor})
 
         if name == "orchestrator_manager_cycle":
             strict = bool(args.get("strict", False))
             cycle = _manager_cycle(strict=strict)
-            return _ok(request_id, cycle)
+            return _ok_and_audit(request_id, name, args, cycle)
 
         if name == "orchestrator_reassign_stale_tasks":
             result = ORCH.reassign_stale_tasks_to_active_workers(
@@ -955,7 +1026,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 stale_after_seconds=int(args.get("stale_after_seconds", 600)),
                 include_blocked=bool(args.get("include_blocked", True)),
             )
-            return _ok(request_id, result)
+            return _ok_and_audit(request_id, name, args, result)
 
         if name == "orchestrator_decide_architecture":
             votes = args.get("votes", {})
@@ -974,10 +1045,16 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 votes=votes,
                 rationale=rationale,
             )
-            return _ok(request_id, {"decision_path": str(path)})
+            return _ok_and_audit(request_id, name, args, {"decision_path": str(path)})
 
         raise ValueError(f"Unknown tool: {name}")
     except Exception as exc:
+        _audit_tool_call(
+            tool_name=str(name),
+            args=args if isinstance(args, dict) else {"raw_arguments": args},
+            status="error",
+            error=str(exc),
+        )
         return {
             "jsonrpc": "2.0",
             "id": request_id,

@@ -105,6 +105,34 @@ ENV_EXPECTED_ROOT="ORCHESTRATOR_EXPECTED_ROOT=$PROJECT_ROOT"
 ENV_POLICY="ORCHESTRATOR_POLICY=$POLICY_PATH"
 
 SERVER_NAME="agent-leader-orchestrator"
+INSTALL_AUDIT_PATH="$PROJECT_ROOT/state/install_audit.jsonl"
+mkdir -p "$(dirname "$INSTALL_AUDIT_PATH")"
+
+log_install_audit() {
+  local target_cli="$1"
+  local status="$2"
+  python3 - "$INSTALL_AUDIT_PATH" "$target_cli" "$status" "$SCOPE" "$SERVER_NAME" "$SERVER_PATH" "$POLICY_PATH" "$PROJECT_ROOT" <<'PY'
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+audit_path = Path(sys.argv[1])
+entry = {
+    "timestamp": datetime.now(timezone.utc).isoformat(),
+    "category": "install",
+    "target_cli": sys.argv[2],
+    "status": sys.argv[3],
+    "scope": sys.argv[4],
+    "server_name": sys.argv[5],
+    "server_path": sys.argv[6],
+    "policy_path": sys.argv[7],
+    "project_root": sys.argv[8],
+}
+with audit_path.open("a", encoding="utf-8") as fh:
+    fh.write(json.dumps(entry) + "\n")
+PY
+}
 
 if [[ "$INSTALL_CLAUDE" == true ]]; then
   echo "Installing for Claude Code ($SCOPE scope)..."
@@ -112,6 +140,7 @@ if [[ "$INSTALL_CLAUDE" == true ]]; then
   claude mcp remove "$SERVER_NAME" >/dev/null 2>&1 || true
   claude mcp add --scope "$SCOPE" "$SERVER_NAME" env "$ENV_ROOT" "$ENV_EXPECTED_ROOT" "$ENV_POLICY" python3 "$SERVER_PATH"
   claude mcp list | sed -n '/agent-leader-orchestrator/p'
+  log_install_audit "claude" "ok"
 fi
 
 if [[ "$INSTALL_GEMINI" == true ]]; then
@@ -120,6 +149,7 @@ if [[ "$INSTALL_GEMINI" == true ]]; then
   gemini mcp remove "$SERVER_NAME" >/dev/null 2>&1 || true
   gemini mcp add "$SERVER_NAME" env "$ENV_ROOT" "$ENV_EXPECTED_ROOT" "$ENV_POLICY" python3 "$SERVER_PATH"
   gemini mcp list | sed -n '/agent-leader-orchestrator/p'
+  log_install_audit "gemini" "ok"
 fi
 
 if [[ "$INSTALL_CODEX" == true ]]; then
@@ -128,6 +158,7 @@ if [[ "$INSTALL_CODEX" == true ]]; then
   codex mcp remove "$SERVER_NAME" >/dev/null 2>&1 || true
   codex mcp add "$SERVER_NAME" --env "$ENV_ROOT" --env "$ENV_EXPECTED_ROOT" --env "$ENV_POLICY" -- python3 "$SERVER_PATH"
   codex mcp list | sed -n '/agent-leader-orchestrator/p'
+  log_install_audit "codex" "ok"
 fi
 
 echo "Done."
