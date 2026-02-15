@@ -2,11 +2,40 @@
 
 `agent-leader` is an MCP orchestration server for multi-agent software delivery (Codex manager + Claude/Gemini workers).
 
+## In plain language
+`agent-leader` helps multiple AI coding agents work on one software project like a real team instead of random parallel chats.
+
+It gives you:
+- one manager agent that plans and delegates work
+- worker agents that implement tasks and report results
+- one shared system of record for task state, reports, blockers, bugs, and decisions
+
+So instead of "who did what?" or "did anyone validate this?", everything is tracked through the same control plane.
+
 ## What you get
 - MCP control plane: tasks, reports, validation, bug loops, events.
 - One-shot worker attach: `orchestrator_connect_to_leader`.
 - Optional manager readiness gate: `orchestrator_connect_workers`.
 - Manual workflow first (recommended).
+
+## How it works (general flow)
+1. Workers attach to the leader (`connect to leader`).
+2. Manager confirms workers are live (optional handshake).
+3. Manager creates tasks and assigns them.
+4. Workers implement, run tests, commit, and submit structured reports.
+5. Manager validates reports:
+  - pass -> task closes
+  - fail -> bug opens and worker loops on fix
+6. Repeat until all tasks are done.
+
+This creates a predictable delivery loop instead of ad-hoc prompting.
+
+## Why this is powerful
+- Reliability: every task has a lifecycle, not just chat text.
+- Accountability: reports include commit SHA + test outcomes.
+- Speed with control: workers can execute in parallel while manager keeps quality gates.
+- Fewer coordination failures: shared event/task state reduces missed handoffs.
+- Scalable team pattern: same flow works as you add more agents/tools later.
 
 ## MCP server name
 - `agent-leader-orchestrator`
