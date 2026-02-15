@@ -56,27 +56,27 @@ class Orchestrator:
             source="orchestrator",
         )
 
-    def connect_workers(
+    def connect_team_members(
         self,
         source: str,
-        workers: List[str],
+        team_members: List[str],
         timeout_seconds: int = 60,
         poll_interval_seconds: int = 2,
         stale_after_seconds: Optional[int] = None,
     ) -> Dict[str, Any]:
         stale_after = stale_after_seconds if stale_after_seconds is not None else self._heartbeat_timeout_seconds()
-        requested = sorted({w.strip() for w in workers if isinstance(w, str) and w.strip()})
+        requested = sorted({w.strip() for w in team_members if isinstance(w, str) and w.strip()})
         if not requested:
-            raise ValueError("workers must contain at least one non-empty agent id")
+            raise ValueError("team_members must contain at least one non-empty agent id")
 
         started_at = time.time()
         deadline = started_at + max(1, int(timeout_seconds))
 
-        # One manager signal that workers should register + heartbeat now.
+        # One manager signal that team_members should register + heartbeat now.
         self.publish_event(
-            event_type="manager.connect_workers",
+            event_type="manager.connect_team_members",
             source=source,
-            payload={"workers": requested, "timeout_seconds": int(timeout_seconds)},
+            payload={"team_members": requested, "timeout_seconds": int(timeout_seconds)},
             audience=requested,
         )
 
@@ -93,15 +93,15 @@ class Orchestrator:
                 break
             time.sleep(max(1, int(poll_interval_seconds)))
 
-        missing = [worker for worker in requested if worker not in set(connected)]
+        missing = [team_member for team_member in requested if team_member not in set(connected)]
         status = "connected" if not missing else "timeout"
         diagnostics = {
-            worker: self._worker_connect_diagnostic(worker=worker, stale_after_seconds=stale_after)
-            for worker in requested
+            team_member: self._team_member_connect_diagnostic(team_member=team_member, stale_after_seconds=stale_after)
+            for team_member in requested
         }
 
         self.publish_event(
-            event_type="manager.connect_workers.result",
+            event_type="manager.connect_team_members.result",
             source=source,
             payload={"status": status, "connected": connected, "missing": missing, "diagnostics": diagnostics},
             audience=requested,
@@ -232,7 +232,7 @@ class Orchestrator:
         return tasks
 
     def claim_next_task(self, owner: str) -> Optional[Dict[str, Any]]:
-        # Treat a claim attempt as proof-of-life from the worker.
+        # Treat a claim attempt as proof-of-life from the team_member.
         self._refresh_agent_presence(owner)
         tasks = self._read_json(self.tasks_path)
         overrides = self._read_json(self.claim_overrides_path)
@@ -407,7 +407,7 @@ class Orchestrator:
             if not owner:
                 continue
 
-            owner_diag = self._worker_connect_diagnostic(worker=owner, stale_after_seconds=threshold)
+            owner_diag = self._team_member_connect_diagnostic(team_member=owner, stale_after_seconds=threshold)
             owner_active = bool(owner_diag.get("active"))
             if owner_active:
                 continue
@@ -567,18 +567,18 @@ class Orchestrator:
         task = next((item for item in tasks if item["id"] == blocker["task_id"]), None)
         if task is not None and task.get("status") == "blocked":
             owner = str(task.get("owner", ""))
-            owner_diag = self._worker_connect_diagnostic(
-                worker=owner,
+            owner_diag = self._team_member_connect_diagnostic(
+                team_member=owner,
                 stale_after_seconds=self._heartbeat_timeout_seconds(),
             )
             owner_active = bool(owner_diag.get("active"))
             task["status"] = "in_progress" if owner_active else "assigned"
             if not owner_active:
-                # Avoid false "worker is progressing" signal when owner appears offline.
+                # Avoid false "team_member is progressing" signal when owner appears offline.
                 task["degraded_comm"] = True
                 task["degraded_comm_reason"] = "blocker resolved while owner not active"
                 self.bus.emit(
-                    "worker.degraded_comm",
+                    "team_member.degraded_comm",
                     {
                         "task_id": task.get("id"),
                         "owner": owner,
@@ -647,7 +647,7 @@ class Orchestrator:
         announce: bool = True,
     ) -> Dict[str, Any]:
         details = dict(metadata or {})
-        details.setdefault("role", "worker")
+        details.setdefault("role", "team_member")
         details["status"] = status
 
         self.register_agent(agent=agent, metadata=details)
@@ -662,7 +662,7 @@ class Orchestrator:
         }
         if announce:
             self.publish_event(
-                event_type="worker.connected",
+                event_type="team_member.connected",
                 source=agent,
                 payload=event_payload,
                 audience=[manager],
@@ -822,7 +822,7 @@ class Orchestrator:
         timeout_ms: int = 0,
         auto_advance: bool = True,
     ) -> Dict[str, Any]:
-        # Long-poll calls are the normal worker loop heartbeat in practice.
+        # Long-poll calls are the normal team_member loop heartbeat in practice.
         self._refresh_agent_presence(agent)
         events = list(self.bus.poll_events(timeout_ms=timeout_ms))
         start = self.get_agent_cursor(agent) if cursor is None else max(0, int(cursor))
@@ -1048,11 +1048,11 @@ class Orchestrator:
             value = 10
         return max(60, value * 60)
 
-    def _worker_connect_diagnostic(self, worker: str, stale_after_seconds: int) -> Dict[str, Any]:
+    def _team_member_connect_diagnostic(self, team_member: str, stale_after_seconds: int) -> Dict[str, Any]:
         agents = self._read_json(self.agents_path)
         if not isinstance(agents, dict):
             agents = {}
-        entry = agents.get(worker, {})
+        entry = agents.get(team_member, {})
         now = datetime.now(timezone.utc)
 
         last_seen = entry.get("last_seen")
@@ -1060,7 +1060,7 @@ class Orchestrator:
         active = age is not None and age <= stale_after_seconds
 
         open_statuses = {"assigned", "in_progress", "reported", "bug_open", "blocked"}
-        owned_open_tasks = [t for t in self.list_tasks() if t.get("owner") == worker and t.get("status") in open_statuses]
+        owned_open_tasks = [t for t in self.list_tasks() if t.get("owner") == team_member and t.get("status") in open_statuses]
         latest_task_update_age: Optional[int] = None
         for task in owned_open_tasks:
             updated_at = task.get("updated_at")
@@ -1113,8 +1113,8 @@ class Orchestrator:
         manager = self.policy.manager()
         audience = [agent, manager]
         if agent == manager:
-            workers = [a for a in known_agents if a and a != manager]
-            audience = sorted(set(workers + [manager]))
+            team_members = [a for a in known_agents if a and a != manager]
+            audience = sorted(set(team_members + [manager]))
 
         self.bus.emit(
             "agent.stale_reconnect_required",
@@ -1123,8 +1123,8 @@ class Orchestrator:
                 "age_seconds": age_seconds,
                 "stale_after_seconds": stale_after_seconds,
                 "action": "rerun handshake",
-                "worker_action": "run 'connect to leader'",
-                "manager_action": "run orchestrator_connect_workers",
+                "team_member_action": "run 'connect to leader'",
+                "manager_action": "run orchestrator_connect_team_members",
                 "audience": audience,
             },
             source="orchestrator",

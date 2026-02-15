@@ -81,7 +81,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
     tools = [
         {
             "name": "orchestrator_guide",
-            "description": "Return the orchestration playbook and exact MCP-only workflow for manager and workers.",
+            "description": "Return the orchestration playbook and exact MCP-only workflow for manager and team members.",
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
@@ -141,28 +141,28 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
             },
         },
         {
-            "name": "orchestrator_connect_workers",
-            "description": "Manager one-shot worker activation handshake: ping workers, wait for register+heartbeat, return connected/missing.",
+            "name": "orchestrator_connect_team_members",
+            "description": "Manager one-shot team member activation handshake: ping team members, wait for register+heartbeat, return connected/missing.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "source": {"type": "string", "description": "Manager/source agent id (usually codex)."},
-                    "workers": {"type": "array", "items": {"type": "string"}, "description": "Target worker agent IDs."},
+                    "team_members": {"type": "array", "items": {"type": "string"}, "description": "Target team member agent IDs."},
                     "timeout_seconds": {"type": "integer", "default": 60},
                     "poll_interval_seconds": {"type": "integer", "default": 2},
                     "stale_after_seconds": {"type": "integer", "default": 600},
                 },
-                "required": ["source", "workers"],
+                "required": ["source", "team_members"],
             },
         },
         {
             "name": "orchestrator_connect_to_leader",
-            "description": "Worker one-shot attach flow: register agent, heartbeat, and announce readiness to manager.",
+            "description": "Team member one-shot attach flow: register agent, heartbeat, and announce readiness to manager.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "agent": {"type": "string", "description": "Worker agent id (e.g., claude_code, gemini)."},
-                    "metadata": {"type": "object", "default": {}, "description": "Optional worker metadata (client/model/cwd)."},
+                    "agent": {"type": "string", "description": "Team member agent id (e.g., claude_code, gemini)."},
+                    "metadata": {"type": "object", "default": {}, "description": "Optional team member metadata (client/model/cwd)."},
                     "status": {"type": "string", "default": "idle"},
                     "announce": {"type": "boolean", "default": True},
                 },
@@ -245,7 +245,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_get_tasks_for_agent",
-            "description": "Get tasks for a specific agent. Workers should use this when they need full queue visibility.",
+            "description": "Get tasks for a specific agent. Team members should use this when they need full queue visibility.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -257,7 +257,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_claim_next_task",
-            "description": "Claim next task for an agent and move it to in_progress. Workers should call this before coding.",
+            "description": "Claim next task for an agent and move it to in_progress. Team members should call this before coding.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -295,7 +295,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_submit_report",
-            "description": "Submit worker delivery report. Mandatory before claiming task completion. Rejects wrong owner/task mismatches.",
+            "description": "Submit team_member delivery report. Mandatory before claiming task completion. Rejects wrong owner/task mismatches.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -345,7 +345,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_raise_blocker",
-            "description": "Worker raises structured blocker requiring manager/user input. Marks task as blocked.",
+            "description": "Team member raises structured blocker requiring manager/user input. Marks task as blocked.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -360,7 +360,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_list_blockers",
-            "description": "List blockers raised by workers. Manager polls this to ask user for missing input.",
+            "description": "List blockers raised by team members. Manager polls this to ask user for missing input.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -388,7 +388,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "type": {"type": "string", "description": "Event type, e.g., task.note, manager.announcement, worker.ready."},
+                    "type": {"type": "string", "description": "Event type, e.g., task.note, manager.announcement, team_member.ready."},
                     "source": {"type": "string", "description": "Agent/source publishing the event."},
                     "payload": {"type": "object", "description": "Arbitrary event payload body.", "default": {}},
                     "audience": {"type": "array", "items": {"type": "string"}, "description": "Optional target agents. Omit for broadcast."},
@@ -450,7 +450,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_reassign_stale_tasks",
-            "description": "Re-advertise and reassign stale-owner tasks to other active workers so execution continues when one worker is degraded.",
+            "description": "Re-advertise and reassign stale-owner tasks to other active team members so execution continues when one team member is degraded.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -496,10 +496,10 @@ def _ok(request_id: Any, payload: Any) -> Dict[str, Any]:
 
 def _guide_payload() -> Dict[str, Any]:
     return {
-        "purpose": "MCP-first multi-agent orchestration for manager/worker loops.",
+        "purpose": "MCP-first multi-agent orchestration for manager/team member loops.",
         "roles": {
             "manager": POLICY.manager(),
-            "worker_agents": ["claude_code", "gemini", "codex"],
+            "team_member_agents": ["claude_code", "gemini", "codex"],
         },
         "required_sequences": {
             "manager": [
@@ -510,7 +510,7 @@ def _guide_payload() -> Dict[str, Any]:
                 "orchestrator_manager_cycle (poll until no pending tasks)",
                 "orchestrator_decide_architecture (when a decision is required)",
             ],
-            "worker": [
+            "team_member": [
                 "orchestrator_claim_next_task",
                 "orchestrator_poll_events (wait for manager instructions/updates)",
                 "implement + test + commit",
@@ -751,13 +751,13 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             entry = ORCH.heartbeat(agent=args["agent"], metadata=metadata)
             return _ok(request_id, entry)
 
-        if name == "orchestrator_connect_workers":
-            workers = args.get("workers", [])
-            if isinstance(workers, str):
-                workers = _parse_json_argument(workers, "array")
-            result = ORCH.connect_workers(
+        if name == "orchestrator_connect_team_members":
+            team_members = args.get("team_members", [])
+            if isinstance(team_members, str):
+                team_members = _parse_json_argument(team_members, "array")
+            result = ORCH.connect_team_members(
                 source=args["source"],
-                workers=workers,
+                team_members=team_members,
                 timeout_seconds=int(args.get("timeout_seconds", 60)),
                 poll_interval_seconds=int(args.get("poll_interval_seconds", 2)),
                 stale_after_seconds=int(args.get("stale_after_seconds", 600)),

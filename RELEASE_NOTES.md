@@ -5,9 +5,9 @@ Date: 2026-02-15
 
 ### Highlights
 - Released `agent-leader` as a public MCP orchestration project.
-- Added manager/worker collaboration flow for `codex`, `claude_code`, and `gemini`.
-- Added one-shot worker attach: `orchestrator_connect_to_leader`.
-- Added one-shot manager worker gate: `orchestrator_connect_workers`.
+- Added manager/team member collaboration flow for `codex`, `claude_code`, and `gemini`.
+- Added one-shot team member attach: `orchestrator_connect_to_leader`.
+- Added one-shot manager team member gate: `orchestrator_connect_team_members`.
 - Added live progress summary tool: `orchestrator_live_status_report`.
 
 ### Core Components

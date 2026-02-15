@@ -5,7 +5,7 @@ This document tracks planned direction for `agent-leader`.
 ## v0.2 - Stability
 - Finalize one-shot connection workflow:
   - `orchestrator_connect_to_leader`
-  - `orchestrator_connect_workers`
+  - `orchestrator_connect_team_members`
 - Add server-side anti-spam guard for `claim_next_task` (cooldown/retry hint).
 - Add `orchestrator_doctor` for root/policy/auth/connectivity checks.
 - Harden docs for manual MCP-first workflow.
@@ -14,13 +14,13 @@ This document tracks planned direction for `agent-leader`.
 - Add slash-command bundles for common actions:
   - `/connect-to-leader`
   - `/manager-start`
-  - `/worker-loop`
+  - `/team-member-loop`
 - Add clearer status summaries:
-  - active workers
+  - active team members
   - pending tasks
   - blockers
   - next actions
-- Improve prompts/templates for manager and worker startup.
+- Improve prompts/templates for manager and team member startup.
 
 ## v0.4 - Reliability
 - Add stale-task reassignment policies (configurable thresholds).
