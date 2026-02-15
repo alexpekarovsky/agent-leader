@@ -173,7 +173,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_connect_team_members",
-            "description": "Manager one-shot team member activation handshake: ping team members, wait for register+heartbeat, return connected/missing.",
+            "description": "Manager one-shot team member activation handshake. Returns connected only for verified, same-project team members.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -188,21 +188,26 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_connect_to_leader",
-            "description": "Team member one-shot attach flow: register agent, heartbeat, and announce readiness to manager.",
+            "description": "Team member one-shot attach flow with identity verification. Connection is considered valid only when identity is verified for this project.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "agent": {"type": "string", "description": "Team member agent id (e.g., claude_code, gemini)."},
-                    "metadata": {"type": "object", "default": {}, "description": "Optional team member metadata (client/model/cwd)."},
+                    "metadata": {
+                        "type": "object",
+                        "default": {},
+                        "description": "Identity payload. Required for verified=true: client, model, cwd, permissions_mode, sandbox_mode, session_id, connection_id, server_version, verification_source.",
+                    },
                     "status": {"type": "string", "default": "idle"},
                     "announce": {"type": "boolean", "default": True},
+                    "source": {"type": "string", "description": "Caller/source agent id. Must match agent for verified connection."},
                 },
                 "required": ["agent"],
             },
         },
         {
             "name": "orchestrator_list_agents",
-            "description": "List discovered tenants in pool with active/offline status.",
+            "description": "List discovered tenants in pool with active/offline status plus identity and verification details.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -213,7 +218,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_discover_agents",
-            "description": "Deep discovery view: registered agents plus inferred tenants from events/tasks, with metadata and task-load details.",
+            "description": "Deep discovery view: registered agents plus inferred tenants, including identity and verification details.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -883,6 +888,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 metadata=metadata,
                 status=args.get("status", "idle"),
                 announce=bool(args.get("announce", True)),
+                source=args.get("source"),
             )
             return _ok_and_audit(request_id, name, args, result)
 

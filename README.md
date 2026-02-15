@@ -26,7 +26,7 @@ So instead of "who did what?" or "did anyone validate this?", everything is trac
 - Manual workflow first (recommended).
 
 ## How it works (general flow)
-1. Team members attach to the leader (`connect to leader`).
+1. Team members attach to the leader (`connect to leader`) with identity payload.
 2. Manager confirms team members are live (optional handshake).
 3. Manager creates tasks and assigns them.
 4. Team members implement, run tests, commit, and submit structured reports.
@@ -130,7 +130,7 @@ claude
 ```
 Prompt:
 ```text
-connect to leader
+connect to leader with metadata: client, model, cwd, permissions_mode, sandbox_mode, session_id, connection_id, server_version, verification_source
 ```
 
 ### Terminal C: Gemini team member
@@ -140,7 +140,7 @@ gemini
 ```
 Prompt:
 ```text
-connect to leader
+connect to leader with metadata: client, model, cwd, permissions_mode, sandbox_mode, session_id, connection_id, server_version, verification_source
 ```
 
 ### Connection handshake (single place)
@@ -152,6 +152,7 @@ Proceed only if:
 - `status: connected`
 - `missing: []`
 If `status: timeout`, inspect `diagnostics` in the response for per-team member reason (`not_registered`, `no_recent_heartbeat`, task activity hints).
+Only verified same-project team members are counted as connected.
 
 ### LLM install/run instruction (copy/paste)
 ```text

@@ -19,6 +19,7 @@ class Orchestrator:
     policy: Policy
 
     def __post_init__(self) -> None:
+        self.root = self.root.resolve()
         self.bus = EventBus(self.root / "bus")
         self.state_dir = self.root / "state"
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -92,7 +93,12 @@ class Orchestrator:
             active = {
                 item.get("agent")
                 for item in agents
-                if item.get("agent") in requested and item.get("status") == "active"
+                if (
+                    item.get("agent") in requested
+                    and item.get("status") == "active"
+                    and bool(item.get("verified"))
+                    and bool(item.get("same_project"))
+                )
             }
             connected = sorted(active)
             if len(connected) == len(requested):
@@ -714,13 +720,31 @@ class Orchestrator:
         metadata: Optional[Dict[str, Any]] = None,
         status: str = "idle",
         announce: bool = True,
+        source: Optional[str] = None,
     ) -> Dict[str, Any]:
         details = dict(metadata or {})
         details.setdefault("role", "team_member")
         details["status"] = status
+        details.setdefault("project_root", str(self.root))
+        details.setdefault("cwd", str(self.root))
+        details.setdefault("client", agent)
+        details.setdefault("server_version", "0.1.0")
+        details.setdefault("verification_source", "connect_to_leader")
 
         self.register_agent(agent=agent, metadata=details)
         entry = self.heartbeat(agent=agent, metadata={"status": status})
+        effective_source = source if isinstance(source, str) and source.strip() else agent
+
+        identity = self._identity_snapshot(entry=entry, stale_after_seconds=self._heartbeat_timeout_seconds())
+        verification = {
+            "verified": bool(identity.get("verified")),
+            "same_project": bool(identity.get("same_project")),
+            "reason": identity.get("reason"),
+        }
+        if effective_source != agent:
+            verification["verified"] = False
+            verification["reason"] = "source_agent_mismatch"
+        connected = bool(verification.get("verified")) and bool(verification.get("same_project"))
 
         manager = self.manager_agent()
         event_payload = {
@@ -728,6 +752,8 @@ class Orchestrator:
             "status": status,
             "manager": manager,
             "next_action": "poll_events_then_claim_once",
+            "verified": verification.get("verified"),
+            "reason": verification.get("reason"),
         }
         if announce:
             self.publish_event(
@@ -738,13 +764,16 @@ class Orchestrator:
             )
 
         # Default reconnect behavior: claim one available task immediately if present.
-        auto_claimed = self.claim_next_task(owner=agent)
+        auto_claimed = self.claim_next_task(owner=agent) if connected else None
 
         return {
-            "connected": True,
+            "connected": connected,
             "agent": agent,
             "manager": manager,
             "entry": entry,
+            "identity": identity,
+            "verified": verification.get("verified"),
+            "reason": verification.get("reason"),
             "auto_claimed_task": auto_claimed,
             "next": [
                 f"orchestrator_poll_events(agent={agent}, timeout_ms=120000)",
@@ -780,11 +809,15 @@ class Orchestrator:
                 age = stale_after + 1
 
             computed_status = "active" if age <= stale_after else "offline"
+            identity = self._identity_snapshot(entry=item, stale_after_seconds=stale_after)
+            if not bool(identity.get("verified")) or not bool(identity.get("same_project")):
+                computed_status = "offline"
             if item.get("status") != computed_status:
                 item["status"] = computed_status
                 agents[item["agent"]] = item
                 changed = True
             item["age_seconds"] = max(0, age)
+            item.update(identity)
             if computed_status == "active":
                 if item.get("agent") in stale_notices:
                     del stale_notices[item["agent"]]
@@ -865,6 +898,22 @@ class Orchestrator:
                     "metadata": {},
                     "inferred": True,
                     "inferred_from": ["events", "tasks"],
+                    "agent_id": name,
+                    "client": None,
+                    "model": None,
+                    "project_root": None,
+                    "cwd": None,
+                    "permissions_mode": None,
+                    "sandbox_mode": None,
+                    "session_id": None,
+                    "connection_id": None,
+                    "server_version": None,
+                    "verification_source": "inferred_only",
+                    "verified": False,
+                    "reason": "not_registered",
+                    "same_project": False,
+                    "last_seen": None,
+                    "age_seconds": None,
                 }
             )
 
@@ -1145,6 +1194,10 @@ class Orchestrator:
         if not entry:
             reason = "not_registered"
 
+        identity = self._identity_snapshot(entry=entry, stale_after_seconds=stale_after_seconds)
+        if not identity.get("verified"):
+            active = False
+            reason = str(identity.get("reason", reason))
         return {
             "registered": bool(entry),
             "active": bool(active),
@@ -1154,7 +1207,79 @@ class Orchestrator:
             "reason": reason,
             "owned_open_tasks": len(owned_open_tasks),
             "latest_open_task_update_age_seconds": latest_task_update_age,
+            "identity": identity,
         }
+
+    def _identity_snapshot(self, entry: Dict[str, Any], stale_after_seconds: int) -> Dict[str, Any]:
+        metadata = entry.get("metadata", {}) if isinstance(entry, dict) else {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        now = datetime.now(timezone.utc)
+        last_seen = entry.get("last_seen")
+        age = self._age_seconds(str(last_seen), now=now) if last_seen else None
+
+        project_root = str(metadata.get("project_root", ""))
+        cwd = str(metadata.get("cwd", ""))
+        same_project = False
+        if project_root:
+            same_project = self._safe_resolve(project_root) == self.root
+        elif cwd:
+            same_project = self._safe_resolve(cwd) == self.root
+
+        verification = self._verification_for_entry(entry=entry, stale_after_seconds=stale_after_seconds)
+        verification["same_project"] = same_project
+        if verification.get("verified") and not same_project:
+            verification["verified"] = False
+            verification["reason"] = "project_mismatch"
+
+        return {
+            "agent_id": entry.get("agent"),
+            "client": metadata.get("client"),
+            "model": metadata.get("model"),
+            "project_root": project_root or cwd,
+            "cwd": cwd,
+            "permissions_mode": metadata.get("permissions_mode"),
+            "sandbox_mode": metadata.get("sandbox_mode"),
+            "session_id": metadata.get("session_id"),
+            "connection_id": metadata.get("connection_id"),
+            "server_version": metadata.get("server_version"),
+            "verification_source": metadata.get("verification_source"),
+            "verified": bool(verification.get("verified")),
+            "reason": verification.get("reason"),
+            "same_project": same_project,
+            "last_seen": last_seen,
+            "age_seconds": age,
+        }
+
+    def _verification_for_entry(self, entry: Dict[str, Any], stale_after_seconds: int) -> Dict[str, Any]:
+        metadata = entry.get("metadata", {}) if isinstance(entry, dict) else {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        required = [
+            "client",
+            "model",
+            "cwd",
+            "permissions_mode",
+            "sandbox_mode",
+            "session_id",
+            "connection_id",
+            "server_version",
+            "verification_source",
+        ]
+        missing = [key for key in required if not str(metadata.get(key, "")).strip()]
+        last_seen = entry.get("last_seen")
+        age = self._age_seconds(str(last_seen)) if last_seen else None
+        if missing:
+            return {"verified": False, "reason": f"missing_identity_fields:{','.join(missing)}"}
+        if age is None or age > stale_after_seconds:
+            return {"verified": False, "reason": "no_recent_heartbeat"}
+        return {"verified": True, "reason": "verified_identity"}
+
+    def _safe_resolve(self, raw_path: str) -> Optional[Path]:
+        try:
+            return Path(raw_path).expanduser().resolve()
+        except Exception:
+            return None
 
     def _emit_stale_notice_if_due(
         self,
