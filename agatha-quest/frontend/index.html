@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Blackwood Manor Mystery</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="fog"></div>
+    <header class="hero">
+      <p class="eyebrow">A Parlour Room Mystery</p>
+      <h1>Blackwood Manor</h1>
+      <p class="subtitle">An Agatha-style web quest of clues, suspects, and one final accusation.</p>
+      <button id="new-game" class="btn btn-primary">Start New Investigation</button>
+    </header>
+
+    <main class="layout">
+      <section class="panel case-panel">
+        <h2>Case Brief</h2>
+        <div id="case-info" class="case-info">Begin a new investigation to reveal the case file.</div>
+        <div id="status-strip" class="status-strip">Phase: Investigation</div>
+      </section>
+
+      <section class="panel">
+        <h2>Clue Locations</h2>
+        <div id="locations" class="grid"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Suspects</h2>
+        <div id="suspects" class="grid"></div>
+      </section>
+
+      <section class="panel wide">
+        <h2>Discovered Clues</h2>
+        <ul id="clues" class="log"></ul>
+      </section>
+
+      <section class="panel wide">
+        <h2>Interrogation Notes</h2>
+        <ul id="interrogations" class="log"></ul>
+      </section>
+
+      <section class="panel accusation-panel">
+        <h2>Final Accusation</h2>
+        <p>When you have enough evidence, accuse the murderer.</p>
+        <div class="accusation-controls">
+          <select id="accused-select"></select>
+          <button id="accuse-btn" class="btn btn-danger">Accuse</button>
+        </div>
+        <div id="verdict" class="verdict"></div>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

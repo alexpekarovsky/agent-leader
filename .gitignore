@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.env
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+credentials.json
+config.ini
+.mcp.json
+.gemini/settings.json
+.claude/
+!.claude/
+.claude/*
+!.claude/commands/
+!.claude/commands/*.md
+
+# API keys and secrets
+*.key
+*.pem
+.env.*
+secrets.json
+
+# Orchestrator runtime artifacts
+bus/
+state/
+decisions/

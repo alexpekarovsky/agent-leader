@@ -1,0 +1,297 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$ROOT_DIR"
+POLICY_PATH="$ROOT_DIR/config/policy.codex-manager.json"
+AGENTS_CSV="codex,claude_code,gemini"
+LEADER="codex"
+NO_RESTRICTIONS=0
+MODE="terminal"
+MISSION="Research, plan, delegate backend to claude_code and frontend to gemini, validate reports, and drive bug-fix loops to completion."
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/agent-leader [options]
+
+Starts multiple agent sessions without tmux.
+- Uses iTerm tabs when available.
+- Falls back to Terminal windows.
+
+Options:
+  --mission "<text>"         Initial manager objective prompt.
+  --agents "<csv>"           Agent IDs to launch (default: codex,claude_code,gemini).
+  --leader <agent>            Manager agent id (default: codex).
+  --project-root <path>       Target project directory for all agent sessions.
+  --policy <path>             Policy file path (default: config/policy.codex-manager.json).
+  --no-restrictions           Run all agents in no-approval mode until stopped.
+  --mode auto|iterm|terminal|print  Launcher mode (default: auto).
+  -h, --help                  Show help.
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --mission)
+      MISSION="${2:-}"
+      shift 2
+      ;;
+    --agents)
+      AGENTS_CSV="${2:-}"
+      shift 2
+      ;;
+    --leader)
+      LEADER="${2:-}"
+      shift 2
+      ;;
+    --project-root)
+      PROJECT_ROOT="${2:-}"
+      shift 2
+      ;;
+    --policy)
+      POLICY_PATH="${2:-}"
+      shift 2
+      ;;
+    --no-restrictions)
+      NO_RESTRICTIONS=1
+      shift
+      ;;
+    --mode)
+      MODE="${2:-}"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "Missing required command: $1" >&2
+    exit 1
+  }
+}
+
+require_cmd python3
+
+POLICY_ABS="$POLICY_PATH"
+if [[ "$POLICY_PATH" != /* ]]; then
+  POLICY_ABS="$ROOT_DIR/$POLICY_PATH"
+fi
+if [[ ! -f "$POLICY_ABS" ]]; then
+  echo "Policy file not found: $POLICY_ABS" >&2
+  exit 1
+fi
+if [[ ! -d "$PROJECT_ROOT" ]]; then
+  echo "Project root not found: $PROJECT_ROOT" >&2
+  exit 1
+fi
+
+case "$LEADER" in
+  codex|claude_code|claude|gemini) ;;
+  *)
+    echo "Unsupported --leader value: $LEADER" >&2
+    echo "Supported values: codex, claude_code, gemini" >&2
+    exit 1
+    ;;
+esac
+if [[ "$LEADER" == "claude" ]]; then
+  LEADER="claude_code"
+fi
+
+python3 -m orchestrator.cli --root "$PROJECT_ROOT" --policy "$POLICY_ABS" bootstrap >/dev/null
+
+CODEX_FLAGS=(--cd "$PROJECT_ROOT")
+CLAUDE_FLAGS=(--add-dir "$PROJECT_ROOT")
+GEMINI_FLAGS=()
+
+if [[ $NO_RESTRICTIONS -eq 1 ]]; then
+  CODEX_FLAGS+=(--dangerously-bypass-approvals-and-sandbox)
+  CLAUDE_FLAGS+=(--dangerously-skip-permissions)
+  GEMINI_FLAGS+=(--approval-mode yolo)
+fi
+
+read -r -d '' MANAGER_PROMPT <<'PROMPT' || true
+You are the manager agent. Immediately:
+1) Call orchestrator_bootstrap.
+2) Register yourself via orchestrator_register_agent(agent=<LEADER>) and heartbeat metadata (client/model/cwd/session role=manager).
+3) Discover active agents and publish manager.ready event.
+4) Create task breakdown from the mission, route backend to claude_code and frontend to gemini.
+5) Run manager loop: poll reported tasks, validate, open/close bug loops, and only ask user if blockers are truly unresolved.
+6) Use event bus (publish_event/poll_events) and avoid tight claim polling loops.
+PROMPT
+
+read -r -d '' CLAUDE_PROMPT <<'PROMPT' || true
+You are claude_code worker. Start worker loop now:
+1) register_agent(agent=claude_code) + heartbeat with metadata.
+2) poll_events(agent=claude_code, timeout_ms=120000, auto_advance=true).
+3) On relevant manager/task event, claim_next_task(agent=claude_code) once.
+4) If no task: do NOT tight-loop claim; go back to long-poll events.
+5) If task exists: implement scoped work, run tests, commit, submit_report with exact test summary and ask manager to validate.
+PROMPT
+
+read -r -d '' GEMINI_PROMPT <<'PROMPT' || true
+You are gemini worker. Start worker loop now:
+1) register_agent(agent=gemini) + heartbeat with metadata.
+2) poll_events(agent=gemini, timeout_ms=120000, auto_advance=true).
+3) On relevant manager/task event, claim_next_task(agent=gemini) once.
+4) If no task: do NOT tight-loop claim; return to long-poll events.
+5) If task exists: implement scoped work, run tests, commit, submit_report with exact test summary and ask manager to validate.
+PROMPT
+
+shell_join() {
+  local out=""
+  for arg in "$@"; do
+    out+=$(printf '%q ' "$arg")
+  done
+  printf '%s' "${out% }"
+}
+
+build_command_for_agent() {
+  local agent="$1"
+  local manager_prompt="${MANAGER_PROMPT/<LEADER>/$LEADER}"
+  case "$agent" in
+    codex)
+      require_cmd codex
+      if [[ "$LEADER" == "codex" ]]; then
+        shell_join codex ${CODEX_FLAGS[@]+"${CODEX_FLAGS[@]}"} "$manager_prompt Mission: $MISSION"
+      else
+        shell_join codex ${CODEX_FLAGS[@]+"${CODEX_FLAGS[@]}"} "You are codex worker. Register agent=codex, long-poll orchestrator events, claim only when relevant events arrive, avoid claim tight-loops, and submit MCP report after test+commit."
+      fi
+      ;;
+    claude_code|claude)
+      require_cmd claude
+      if [[ "$LEADER" == "claude_code" ]]; then
+        shell_join claude ${CLAUDE_FLAGS[@]+"${CLAUDE_FLAGS[@]}"} "$manager_prompt Mission: $MISSION"
+      else
+        shell_join claude ${CLAUDE_FLAGS[@]+"${CLAUDE_FLAGS[@]}"} "$CLAUDE_PROMPT"
+      fi
+      ;;
+    gemini)
+      require_cmd gemini
+      if [[ "$LEADER" == "gemini" ]]; then
+        shell_join gemini ${GEMINI_FLAGS[@]+"${GEMINI_FLAGS[@]}"} "$manager_prompt Mission: $MISSION"
+      else
+        shell_join gemini ${GEMINI_FLAGS[@]+"${GEMINI_FLAGS[@]}"} "$GEMINI_PROMPT"
+      fi
+      ;;
+    *)
+      echo "Unsupported agent in --agents: $agent" >&2
+      echo "Supported for now: codex, claude_code, gemini" >&2
+      exit 1
+      ;;
+  esac
+}
+
+IFS=',' read -r -a AGENTS <<< "$AGENTS_CSV"
+if [[ ${#AGENTS[@]} -eq 0 ]]; then
+  echo "No agents provided via --agents" >&2
+  exit 1
+fi
+
+leader_found=0
+COMMANDS=()
+AGENT_NAMES=()
+for raw in "${AGENTS[@]}"; do
+  agent="$(echo "$raw" | xargs)"
+  canonical="$agent"
+  if [[ "$canonical" == "claude" ]]; then
+    canonical="claude_code"
+  fi
+  if [[ "$agent" == "$LEADER" || "$canonical" == "$LEADER" ]]; then
+    leader_found=1
+  fi
+  COMMANDS+=("$(build_command_for_agent "$agent")")
+  AGENT_NAMES+=("$agent")
+done
+if [[ $leader_found -ne 1 ]]; then
+  echo "--leader '$LEADER' is not present in --agents '$AGENTS_CSV'" >&2
+  exit 1
+fi
+
+launch_iterm() {
+  osascript - "$@" <<'APPLESCRIPT'
+on run argv
+  tell application "iTerm"
+    activate
+    set firstWindow to (create window with default profile command (item 1 of argv))
+    repeat with idx from 2 to count of argv
+      tell current window
+        create tab with default profile command (item idx of argv)
+      end tell
+    end repeat
+  end tell
+end run
+APPLESCRIPT
+}
+
+launch_terminal_tabs() {
+  osascript - "$@" <<'APPLESCRIPT'
+on run argv
+  tell application "Terminal"
+    activate
+    if (count of argv) is 0 then return
+    repeat with idx from 1 to count of argv
+      do script (item idx of argv)
+      delay 0.2
+    end repeat
+  end tell
+end run
+APPLESCRIPT
+}
+
+decorate_terminal_cmd() {
+  local agent="$1"
+  local raw="$2"
+  local file="/tmp/agent-leader-${agent}.sh"
+  cat >"$file" <<EOF
+#!/usr/bin/env bash
+cd "$(printf '%s' "$PROJECT_ROOT")"
+printf "\\n[agent-leader] launching %s in %s\\n" "$(printf '%s' "$agent")" "$(printf '%s' "$PROJECT_ROOT")"
+$raw
+ec=\$?
+if [ \$ec -ne 0 ]; then
+  printf "\\n[agent-leader] %s exited with code %s\\n" "$(printf '%s' "$agent")" "\$ec"
+fi
+exec "\${SHELL:-/bin/zsh}" -l
+EOF
+  chmod +x "$file"
+  printf 'bash %q' "$file"
+}
+
+FINAL_COMMANDS=()
+for i in "${!COMMANDS[@]}"; do
+  FINAL_COMMANDS+=("$(decorate_terminal_cmd "${AGENT_NAMES[$i]}" "${COMMANDS[$i]}")")
+done
+
+if [[ "$MODE" == "print" ]]; then
+  for i in "${!FINAL_COMMANDS[@]}"; do
+    echo "[$((i+1))] ${FINAL_COMMANDS[$i]}"
+  done
+  exit 0
+fi
+
+if [[ "$MODE" == "iterm" || ( "$MODE" == "auto" && -d "/Applications/iTerm.app" ) ]]; then
+  require_cmd osascript
+  launch_iterm "${FINAL_COMMANDS[@]}"
+  launcher="iTerm tabs"
+elif [[ "$MODE" == "terminal" || "$MODE" == "auto" ]]; then
+  require_cmd osascript
+  launch_terminal_tabs "${FINAL_COMMANDS[@]}"
+  launcher="Terminal tabs"
+else
+  echo "Unsupported --mode: $MODE" >&2
+  exit 1
+fi
+
+echo "Started agent sessions via: $launcher"
+echo "Leader: $LEADER"
+echo "Project root: $PROJECT_ROOT"
+echo "No restrictions mode: $([[ $NO_RESTRICTIONS -eq 1 ]] && echo enabled || echo disabled)"
