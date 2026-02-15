@@ -473,11 +473,15 @@ class Orchestrator:
                 audience=[manager],
             )
 
+        # Default reconnect behavior: claim one available task immediately if present.
+        auto_claimed = self.claim_next_task(owner=agent)
+
         return {
             "connected": True,
             "agent": agent,
             "manager": manager,
             "entry": entry,
+            "auto_claimed_task": auto_claimed,
             "next": [
                 f"orchestrator_poll_events(agent={agent}, timeout_ms=120000)",
                 f"orchestrator_claim_next_task(agent={agent})",
