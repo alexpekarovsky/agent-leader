@@ -4,6 +4,7 @@ import json
 import re
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +12,11 @@ from typing import Any, Dict, List, Optional
 
 from orchestrator.bus import EventBus
 from orchestrator.policy import Policy
+
+try:
+    import fcntl
+except Exception:  # pragma: no cover
+    fcntl = None
 
 
 @dataclass
@@ -34,6 +40,19 @@ class Orchestrator:
         self.roles_path = self.state_dir / "roles.json"
         self.decisions_dir = self.root / "decisions"
         self.decisions_dir.mkdir(parents=True, exist_ok=True)
+        self.state_lock_path = self.state_dir / ".state.lock"
+
+    @contextmanager
+    def _state_lock(self) -> Any:
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        with self.state_lock_path.open("a+", encoding="utf-8") as fh:
+            if fcntl is not None:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
     def bootstrap(self) -> None:
         if not self.tasks_path.exists():
@@ -137,34 +156,35 @@ class Orchestrator:
         description: str = "",
         owner: Optional[str] = None,
     ) -> Dict[str, Any]:
-        tasks = self._read_json(self.tasks_path)
-        task_id = f"TASK-{uuid.uuid4().hex[:8]}"
-        resolved_owner = owner or self.policy.task_owner_for(workstream)
-        duplicate = self._find_duplicate_open_task(
-            tasks=tasks,
-            title=title,
-            workstream=workstream,
-            owner=resolved_owner,
-        )
-        if duplicate is not None:
-            echoed = dict(duplicate)
-            echoed["deduplicated"] = True
-            echoed["dedupe_reason"] = "matching open task already exists"
-            return echoed
+        with self._state_lock():
+            tasks = self._read_json(self.tasks_path)
+            task_id = f"TASK-{uuid.uuid4().hex[:8]}"
+            resolved_owner = owner or self.policy.task_owner_for(workstream)
+            duplicate = self._find_duplicate_open_task(
+                tasks=tasks,
+                title=title,
+                workstream=workstream,
+                owner=resolved_owner,
+            )
+            if duplicate is not None:
+                echoed = dict(duplicate)
+                echoed["deduplicated"] = True
+                echoed["dedupe_reason"] = "matching open task already exists"
+                return echoed
 
-        task = {
-            "id": task_id,
-            "title": title,
-            "description": description,
-            "workstream": workstream,
-            "owner": resolved_owner,
-            "status": "assigned",
-            "acceptance_criteria": acceptance_criteria,
-            "created_at": self._now(),
-            "updated_at": self._now(),
-        }
-        tasks.append(task)
-        self._write_json(self.tasks_path, tasks)
+            task = {
+                "id": task_id,
+                "title": title,
+                "description": description,
+                "workstream": workstream,
+                "owner": resolved_owner,
+                "status": "assigned",
+                "acceptance_criteria": acceptance_criteria,
+                "created_at": self._now(),
+                "updated_at": self._now(),
+            }
+            tasks.append(task)
+            self._write_json(self.tasks_path, tasks)
 
         self.bus.write_command(
             task_id,
@@ -198,39 +218,40 @@ class Orchestrator:
         return task
 
     def dedupe_open_tasks(self, source: str) -> Dict[str, Any]:
-        tasks = self._read_json(self.tasks_path)
-        open_statuses = {"assigned", "in_progress", "reported", "bug_open", "blocked"}
-        groups: Dict[str, List[Dict[str, Any]]] = {}
+        with self._state_lock():
+            tasks = self._read_json(self.tasks_path)
+            open_statuses = {"assigned", "in_progress", "reported", "bug_open", "blocked"}
+            groups: Dict[str, List[Dict[str, Any]]] = {}
 
-        for task in tasks:
-            if task.get("status") not in open_statuses:
-                continue
-            key = self._task_fingerprint(
-                title=str(task.get("title", "")),
-                workstream=str(task.get("workstream", "")),
-                owner=str(task.get("owner", "")),
-            )
-            groups.setdefault(key, []).append(task)
+            for task in tasks:
+                if task.get("status") not in open_statuses:
+                    continue
+                key = self._task_fingerprint(
+                    title=str(task.get("title", "")),
+                    workstream=str(task.get("workstream", "")),
+                    owner=str(task.get("owner", "")),
+                )
+                groups.setdefault(key, []).append(task)
 
-        changed = False
-        deduped: List[Dict[str, str]] = []
-        for _, group in groups.items():
-            if len(group) <= 1:
-                continue
-            # Keep the oldest task as canonical; close newer duplicates.
-            ordered = sorted(group, key=lambda item: str(item.get("created_at", "")))
-            keeper = ordered[0]
-            for dup in ordered[1:]:
-                dup["status"] = "duplicate_closed"
-                dup["duplicate_of"] = keeper.get("id")
-                dup["updated_at"] = self._now()
-                changed = True
-                entry = {"task_id": str(dup.get("id", "")), "duplicate_of": str(keeper.get("id", ""))}
-                deduped.append(entry)
-                self.bus.emit("task.duplicate_closed", entry, source=source)
+            changed = False
+            deduped: List[Dict[str, str]] = []
+            for _, group in groups.items():
+                if len(group) <= 1:
+                    continue
+                # Keep the oldest task as canonical; close newer duplicates.
+                ordered = sorted(group, key=lambda item: str(item.get("created_at", "")))
+                keeper = ordered[0]
+                for dup in ordered[1:]:
+                    dup["status"] = "duplicate_closed"
+                    dup["duplicate_of"] = keeper.get("id")
+                    dup["updated_at"] = self._now()
+                    changed = True
+                    entry = {"task_id": str(dup.get("id", "")), "duplicate_of": str(keeper.get("id", ""))}
+                    deduped.append(entry)
+                    self.bus.emit("task.duplicate_closed", entry, source=source)
 
-        if changed:
-            self._write_json(self.tasks_path, tasks)
+            if changed:
+                self._write_json(self.tasks_path, tasks)
 
         return {"deduped_count": len(deduped), "deduped": deduped}
 
@@ -245,61 +266,62 @@ class Orchestrator:
 
     def claim_next_task(self, owner: str) -> Optional[Dict[str, Any]]:
         # Treat a claim attempt as proof-of-life from the team_member.
-        self._refresh_agent_presence(owner)
-        tasks = self._read_json(self.tasks_path)
-        overrides = self._read_json(self.claim_overrides_path)
-        if not isinstance(overrides, dict):
-            overrides = {}
-
-        override_task_id = overrides.get(owner)
-        if isinstance(override_task_id, str) and override_task_id.strip():
-            forced = next((t for t in tasks if t.get("id") == override_task_id and t.get("owner") == owner), None)
-            if forced and forced.get("status") in {"assigned", "bug_open"}:
-                forced["status"] = "in_progress"
-                forced["updated_at"] = self._now()
-                self._write_json(self.tasks_path, tasks)
+        with self._state_lock():
+            self._refresh_agent_presence(owner)
+            tasks = self._read_json(self.tasks_path)
+            overrides = self._read_json(self.claim_overrides_path)
+            if not isinstance(overrides, dict):
+                overrides = {}
+            override_task_id = overrides.get(owner)
+            if isinstance(override_task_id, str) and override_task_id.strip():
+                forced = next((t for t in tasks if t.get("id") == override_task_id and t.get("owner") == owner), None)
+                if forced and forced.get("status") in {"assigned", "bug_open"}:
+                    forced["status"] = "in_progress"
+                    forced["updated_at"] = self._now()
+                    self._write_json(self.tasks_path, tasks)
+                    del overrides[owner]
+                    self._write_json(self.claim_overrides_path, overrides)
+                    self.bus.emit(
+                        "task.claimed",
+                        {"task_id": forced["id"], "owner": owner, "via": "manager_override"},
+                        source=owner,
+                    )
+                    return forced
+                # Override no longer valid; clear it and continue normal claim order.
                 del overrides[owner]
                 self._write_json(self.claim_overrides_path, overrides)
+
+            for task in tasks:
+                if task.get("owner") != owner:
+                    continue
+                if task.get("status") not in {"assigned", "bug_open"}:
+                    continue
+
+                task["status"] = "in_progress"
+                task["updated_at"] = self._now()
+                self._write_json(self.tasks_path, tasks)
                 self.bus.emit(
                     "task.claimed",
-                    {"task_id": forced["id"], "owner": owner, "via": "manager_override"},
+                    {"task_id": task["id"], "owner": owner},
                     source=owner,
                 )
-                return forced
-            # Override no longer valid; clear it and continue normal claim order.
-            del overrides[owner]
-            self._write_json(self.claim_overrides_path, overrides)
-
-        for task in tasks:
-            if task.get("owner") != owner:
-                continue
-            if task.get("status") not in {"assigned", "bug_open"}:
-                continue
-
-            task["status"] = "in_progress"
-            task["updated_at"] = self._now()
-            self._write_json(self.tasks_path, tasks)
-            self.bus.emit(
-                "task.claimed",
-                {"task_id": task["id"], "owner": owner},
-                source=owner,
-            )
-            return task
+                return task
         return None
 
     def set_claim_override(self, agent: str, task_id: str, source: str) -> Dict[str, Any]:
-        tasks = self._read_json(self.tasks_path)
-        task = next((t for t in tasks if t.get("id") == task_id), None)
-        if task is None:
-            raise ValueError(f"Task not found: {task_id}")
-        if task.get("owner") != agent:
-            raise ValueError(f"Task owner '{task.get('owner')}' does not match target agent '{agent}'")
+        with self._state_lock():
+            tasks = self._read_json(self.tasks_path)
+            task = next((t for t in tasks if t.get("id") == task_id), None)
+            if task is None:
+                raise ValueError(f"Task not found: {task_id}")
+            if task.get("owner") != agent:
+                raise ValueError(f"Task owner '{task.get('owner')}' does not match target agent '{agent}'")
 
-        overrides = self._read_json(self.claim_overrides_path)
-        if not isinstance(overrides, dict):
-            overrides = {}
-        overrides[agent] = task_id
-        self._write_json(self.claim_overrides_path, overrides)
+            overrides = self._read_json(self.claim_overrides_path)
+            if not isinstance(overrides, dict):
+                overrides = {}
+            overrides[agent] = task_id
+            self._write_json(self.claim_overrides_path, overrides)
         self.bus.emit(
             "manager.claim_override",
             {"agent": agent, "task_id": task_id},
@@ -308,14 +330,15 @@ class Orchestrator:
         return {"ok": True, "agent": agent, "task_id": task_id}
 
     def set_task_status(self, task_id: str, status: str, source: str, note: str = "") -> Dict[str, Any]:
-        tasks = self._read_json(self.tasks_path)
-        task = next((t for t in tasks if t["id"] == task_id), None)
-        if task is None:
-            raise ValueError(f"Task not found: {task_id}")
+        with self._state_lock():
+            tasks = self._read_json(self.tasks_path)
+            task = next((t for t in tasks if t["id"] == task_id), None)
+            if task is None:
+                raise ValueError(f"Task not found: {task_id}")
 
-        task["status"] = status
-        task["updated_at"] = self._now()
-        self._write_json(self.tasks_path, tasks)
+            task["status"] = status
+            task["updated_at"] = self._now()
+            self._write_json(self.tasks_path, tasks)
         self.bus.emit(
             "task.status_changed",
             {"task_id": task_id, "status": status, "owner": task["owner"], "note": note},
@@ -331,23 +354,24 @@ class Orchestrator:
         self._validate_report_payload(report)
 
         task_id = report["task_id"]
-        self._refresh_agent_presence(str(report["agent"]))
-        tasks = self._read_json(self.tasks_path)
-        task = next((item for item in tasks if item["id"] == task_id), None)
-        if task is None:
-            raise ValueError(f"Task not found: {task_id}")
-        if task.get("owner") != report["agent"]:
-            raise ValueError(
-                f"Report agent '{report['agent']}' does not match task owner '{task.get('owner')}'"
-            )
+        with self._state_lock():
+            self._refresh_agent_presence(str(report["agent"]))
+            tasks = self._read_json(self.tasks_path)
+            task = next((item for item in tasks if item["id"] == task_id), None)
+            if task is None:
+                raise ValueError(f"Task not found: {task_id}")
+            if task.get("owner") != report["agent"]:
+                raise ValueError(
+                    f"Report agent '{report['agent']}' does not match task owner '{task.get('owner')}'"
+                )
 
-        report_path = self.bus.reports_dir / f"{task_id}.json"
-        with report_path.open("w", encoding="utf-8") as fh:
-            json.dump(report, fh, indent=2)
+            report_path = self.bus.reports_dir / f"{task_id}.json"
+            with report_path.open("w", encoding="utf-8") as fh:
+                json.dump(report, fh, indent=2)
 
-        task["status"] = "reported"
-        task["updated_at"] = self._now()
-        self._write_json(self.tasks_path, tasks)
+            task["status"] = "reported"
+            task["updated_at"] = self._now()
+            self._write_json(self.tasks_path, tasks)
 
         self.bus.emit(
             "task.reported",
@@ -357,42 +381,43 @@ class Orchestrator:
         return report
 
     def requeue_stale_in_progress_tasks(self, stale_after_seconds: int = 1800) -> List[Dict[str, Any]]:
-        tasks = self._read_json(self.tasks_path)
-        agents = self._read_json(self.agents_path)
-        if not isinstance(agents, dict):
-            agents = {}
-        now = datetime.now(timezone.utc)
-        requeued: List[Dict[str, Any]] = []
-        changed = False
+        with self._state_lock():
+            tasks = self._read_json(self.tasks_path)
+            agents = self._read_json(self.agents_path)
+            if not isinstance(agents, dict):
+                agents = {}
+            now = datetime.now(timezone.utc)
+            requeued: List[Dict[str, Any]] = []
+            changed = False
 
-        for task in tasks:
-            if task.get("status") != "in_progress":
-                continue
+            for task in tasks:
+                if task.get("status") != "in_progress":
+                    continue
 
-            owner = task.get("owner")
-            agent = agents.get(owner, {}) if isinstance(owner, str) else {}
-            last_seen_raw = agent.get("last_seen")
-            if not last_seen_raw:
-                continue
+                owner = task.get("owner")
+                agent = agents.get(owner, {}) if isinstance(owner, str) else {}
+                last_seen_raw = agent.get("last_seen")
+                if not last_seen_raw:
+                    continue
 
-            age = self._age_seconds(last_seen_raw, now=now)
-            if age is None or age <= stale_after_seconds:
-                continue
+                age = self._age_seconds(last_seen_raw, now=now)
+                if age is None or age <= stale_after_seconds:
+                    continue
 
-            task["status"] = "assigned"
-            task["updated_at"] = self._now()
-            changed = True
-            record = {
-                "task_id": task.get("id"),
-                "owner": owner,
-                "reason": f"owner heartbeat stale ({age}s > {stale_after_seconds}s)",
-            }
-            requeued.append(record)
-            self.bus.emit("task.requeued", record, source="orchestrator")
+                task["status"] = "assigned"
+                task["updated_at"] = self._now()
+                changed = True
+                record = {
+                    "task_id": task.get("id"),
+                    "owner": owner,
+                    "reason": f"owner heartbeat stale ({age}s > {stale_after_seconds}s)",
+                }
+                requeued.append(record)
+                self.bus.emit("task.requeued", record, source="orchestrator")
 
-        if changed:
-            self._write_json(self.tasks_path, tasks)
-        return requeued
+            if changed:
+                self._write_json(self.tasks_path, tasks)
+            return requeued
 
     def reassign_stale_tasks_to_active_workers(
         self,
@@ -401,101 +426,103 @@ class Orchestrator:
         include_blocked: bool = True,
     ) -> Dict[str, Any]:
         threshold = stale_after_seconds if stale_after_seconds is not None else self._heartbeat_timeout_seconds()
-        tasks = self._read_json(self.tasks_path)
-        active_agents = self.list_agents(active_only=True, stale_after_seconds=threshold)
-        active_names = [a.get("agent") for a in active_agents if isinstance(a.get("agent"), str)]
-        # Do not reassign reported tasks: manager validation should run first.
-        task_statuses = {"in_progress"}
-        if include_blocked:
-            task_statuses.add("blocked")
+        with self._state_lock():
+            tasks = self._read_json(self.tasks_path)
+            active_agents = self.list_agents(active_only=True, stale_after_seconds=threshold)
+            active_names = [a.get("agent") for a in active_agents if isinstance(a.get("agent"), str)]
+            # Do not reassign reported tasks: manager validation should run first.
+            task_statuses = {"in_progress"}
+            if include_blocked:
+                task_statuses.add("blocked")
 
-        reassigned: List[Dict[str, Any]] = []
-        changed = False
-        now = datetime.now(timezone.utc)
+            reassigned: List[Dict[str, Any]] = []
+            changed = False
+            now = datetime.now(timezone.utc)
 
-        for task in tasks:
-            if task.get("status") not in task_statuses:
-                continue
-            owner = str(task.get("owner", ""))
-            if not owner:
-                continue
+            for task in tasks:
+                if task.get("status") not in task_statuses:
+                    continue
+                owner = str(task.get("owner", ""))
+                if not owner:
+                    continue
 
-            owner_diag = self._team_member_connect_diagnostic(team_member=owner, stale_after_seconds=threshold)
-            owner_active = bool(owner_diag.get("active"))
-            if owner_active:
-                continue
+                owner_diag = self._team_member_connect_diagnostic(team_member=owner, stale_after_seconds=threshold)
+                owner_active = bool(owner_diag.get("active"))
+                if owner_active:
+                    continue
 
-            new_owner = self._pick_reassignment_owner(
-                task=task,
-                active_names=active_names,
-                tasks=tasks,
-            )
-            if not new_owner:
-                continue
+                new_owner = self._pick_reassignment_owner(
+                    task=task,
+                    active_names=active_names,
+                    tasks=tasks,
+                )
+                if not new_owner:
+                    continue
 
-            old_owner = owner
-            task["owner"] = new_owner
-            task["status"] = "assigned"
-            task["updated_at"] = self._now()
-            task["reassigned_from"] = old_owner
-            task["reassigned_reason"] = f"owner stale (> {threshold}s)"
-            task["degraded_comm"] = True
-            task["degraded_comm_reason"] = "stale owner auto-reassigned"
-            changed = True
+                old_owner = owner
+                task["owner"] = new_owner
+                task["status"] = "assigned"
+                task["updated_at"] = self._now()
+                task["reassigned_from"] = old_owner
+                task["reassigned_reason"] = f"owner stale (> {threshold}s)"
+                task["degraded_comm"] = True
+                task["degraded_comm_reason"] = "stale owner auto-reassigned"
+                changed = True
 
-            payload = {
-                "task_id": task.get("id"),
-                "from_owner": old_owner,
-                "to_owner": new_owner,
-                "reason": "owner_stale",
+                payload = {
+                    "task_id": task.get("id"),
+                    "from_owner": old_owner,
+                    "to_owner": new_owner,
+                    "reason": "owner_stale",
+                    "threshold_seconds": threshold,
+                    "owner_diagnostic": owner_diag,
+                }
+                reassigned.append(payload)
+                self.bus.emit("task.reassigned_stale", payload, source=source)
+
+            if changed:
+                self._write_json(self.tasks_path, tasks)
+
+            return {
+                "reassigned_count": len(reassigned),
                 "threshold_seconds": threshold,
-                "owner_diagnostic": owner_diag,
+                "reassigned": reassigned,
+                "active_agents": active_names,
+                "timestamp": now.isoformat(),
             }
-            reassigned.append(payload)
-            self.bus.emit("task.reassigned_stale", payload, source=source)
-
-        if changed:
-            self._write_json(self.tasks_path, tasks)
-
-        return {
-            "reassigned_count": len(reassigned),
-            "threshold_seconds": threshold,
-            "reassigned": reassigned,
-            "active_agents": active_names,
-            "timestamp": now.isoformat(),
-        }
 
     def validate_task(self, task_id: str, passed: bool, notes: str) -> Dict[str, Any]:
-        tasks = self._read_json(self.tasks_path)
-        task = next((t for t in tasks if t["id"] == task_id), None)
-        if task is None:
-            raise ValueError(f"Task not found: {task_id}")
+        with self._state_lock():
+            tasks = self._read_json(self.tasks_path)
+            task = next((t for t in tasks if t["id"] == task_id), None)
+            if task is None:
+                raise ValueError(f"Task not found: {task_id}")
 
-        if passed:
-            task["status"] = "done"
-            self._close_bugs_for_task(task_id=task_id, note=notes)
-            event = "validation.passed"
-            payload = {"task_id": task_id, "owner": task["owner"], "notes": notes}
-        else:
-            task["status"] = "bug_open"
-            bug = self._open_bug(
-                source_task=task_id,
-                owner=task["owner"],
-                severity="high",
-                repro_steps=notes,
-                expected="Task meets acceptance criteria",
-                actual="Validation failed",
-            )
-            event = "validation.failed"
-            payload = {
-                "task_id": task_id,
-                "bug_id": bug["id"],
-                "owner": task["owner"],
-                "notes": notes,
-            }
+            if passed:
+                task["status"] = "done"
+                self._close_bugs_for_task(task_id=task_id, note=notes)
+                event = "validation.passed"
+                payload = {"task_id": task_id, "owner": task["owner"], "notes": notes}
+            else:
+                task["status"] = "bug_open"
+                bug = self._open_bug(
+                    source_task=task_id,
+                    owner=task["owner"],
+                    severity="high",
+                    repro_steps=notes,
+                    expected="Task meets acceptance criteria",
+                    actual="Validation failed",
+                )
+                event = "validation.failed"
+                payload = {
+                    "task_id": task_id,
+                    "bug_id": bug["id"],
+                    "owner": task["owner"],
+                    "notes": notes,
+                }
 
-        task["updated_at"] = self._now()
-        self._write_json(self.tasks_path, tasks)
+            task["updated_at"] = self._now()
+            self._write_json(self.tasks_path, tasks)
         self.bus.emit(event, payload, source=self.manager_agent())
         return payload
 
@@ -515,16 +542,17 @@ class Orchestrator:
         options: Optional[List[str]] = None,
         severity: str = "medium",
     ) -> Dict[str, Any]:
-        tasks = self._read_json(self.tasks_path)
-        task = next((item for item in tasks if item["id"] == task_id), None)
-        if task is None:
-            raise ValueError(f"Task not found: {task_id}")
-        if task.get("owner") != agent:
-            raise ValueError(f"Blocker agent '{agent}' does not match task owner '{task.get('owner')}'")
+        with self._state_lock():
+            tasks = self._read_json(self.tasks_path)
+            task = next((item for item in tasks if item["id"] == task_id), None)
+            if task is None:
+                raise ValueError(f"Task not found: {task_id}")
+            if task.get("owner") != agent:
+                raise ValueError(f"Blocker agent '{agent}' does not match task owner '{task.get('owner')}'")
 
-        task["status"] = "blocked"
-        task["updated_at"] = self._now()
-        self._write_json(self.tasks_path, tasks)
+            task["status"] = "blocked"
+            task["updated_at"] = self._now()
+            self._write_json(self.tasks_path, tasks)
 
         blocker_id = f"BLK-{uuid.uuid4().hex[:8]}"
         blocker = {
@@ -538,9 +566,10 @@ class Orchestrator:
             "created_at": self._now(),
         }
 
-        blockers = self._read_json(self.blockers_path)
-        blockers.append(blocker)
-        self._write_json(self.blockers_path, blockers)
+        with self._state_lock():
+            blockers = self._read_json(self.blockers_path)
+            blockers.append(blocker)
+            self._write_json(self.blockers_path, blockers)
         self.bus.emit(
             "blocker.raised",
             {
@@ -563,45 +592,46 @@ class Orchestrator:
         return blockers
 
     def resolve_blocker(self, blocker_id: str, resolution: str, source: str) -> Dict[str, Any]:
-        blockers = self._read_json(self.blockers_path)
-        blocker = next((item for item in blockers if item["id"] == blocker_id), None)
-        if blocker is None:
-            raise ValueError(f"Blocker not found: {blocker_id}")
-        if blocker.get("status") == "resolved":
-            return blocker
+        with self._state_lock():
+            blockers = self._read_json(self.blockers_path)
+            blocker = next((item for item in blockers if item["id"] == blocker_id), None)
+            if blocker is None:
+                raise ValueError(f"Blocker not found: {blocker_id}")
+            if blocker.get("status") == "resolved":
+                return blocker
 
-        blocker["status"] = "resolved"
-        blocker["resolution"] = resolution
-        blocker["resolved_by"] = source
-        blocker["resolved_at"] = self._now()
-        self._write_json(self.blockers_path, blockers)
+            blocker["status"] = "resolved"
+            blocker["resolution"] = resolution
+            blocker["resolved_by"] = source
+            blocker["resolved_at"] = self._now()
+            self._write_json(self.blockers_path, blockers)
 
-        tasks = self._read_json(self.tasks_path)
-        task = next((item for item in tasks if item["id"] == blocker["task_id"]), None)
-        if task is not None and task.get("status") == "blocked":
-            owner = str(task.get("owner", ""))
-            owner_diag = self._team_member_connect_diagnostic(
-                team_member=owner,
-                stale_after_seconds=self._heartbeat_timeout_seconds(),
-            )
-            owner_active = bool(owner_diag.get("active"))
-            task["status"] = "in_progress" if owner_active else "assigned"
-            if not owner_active:
-                # Avoid false "team_member is progressing" signal when owner appears offline.
-                task["degraded_comm"] = True
-                task["degraded_comm_reason"] = "blocker resolved while owner not active"
-                self.bus.emit(
-                    "team_member.degraded_comm",
-                    {
-                        "task_id": task.get("id"),
-                        "owner": owner,
-                        "reason": "blocker resolved while owner offline/stale",
-                        "diagnostic": owner_diag,
-                    },
-                    source="orchestrator",
+            tasks = self._read_json(self.tasks_path)
+            task = next((item for item in tasks if item["id"] == blocker["task_id"]), None)
+            if task is not None and task.get("status") == "blocked":
+                owner = str(task.get("owner", ""))
+                owner_diag = self._team_member_connect_diagnostic(
+                    team_member=owner,
+                    stale_after_seconds=self._heartbeat_timeout_seconds(),
                 )
-            task["updated_at"] = self._now()
-            self._write_json(self.tasks_path, tasks)
+                owner_active = bool(owner_diag.get("active"))
+                task["status"] = "in_progress" if owner_active else "assigned"
+                if not owner_active:
+                    # Avoid false "team_member is progressing" signal when owner appears offline.
+                    task["degraded_comm"] = True
+                    task["degraded_comm_reason"] = "blocker resolved while owner not active"
+                    self.bus.emit(
+                        "team_member.degraded_comm",
+                        {
+                            "task_id": task.get("id"),
+                            "owner": owner,
+                            "reason": "blocker resolved while owner offline/stale",
+                            "diagnostic": owner_diag,
+                        },
+                        source="orchestrator",
+                    )
+                task["updated_at"] = self._now()
+                self._write_json(self.tasks_path, tasks)
 
         self.bus.emit(
             "blocker.resolved",
@@ -660,24 +690,25 @@ class Orchestrator:
         if normalized_role not in {"leader", "team_member"}:
             raise ValueError("role must be one of: leader, team_member")
 
-        roles = self._read_json(self.roles_path)
-        if not isinstance(roles, dict):
-            roles = {}
-        current = self.get_roles()
-        leader = current["leader"]
-        team_members = set(current["team_members"])
-        target = agent.strip()
+        with self._state_lock():
+            roles = self._read_json(self.roles_path)
+            if not isinstance(roles, dict):
+                roles = {}
+            current = self.get_roles()
+            leader = current["leader"]
+            team_members = set(current["team_members"])
+            target = agent.strip()
 
-        if normalized_role == "leader":
-            leader = target
-            team_members.discard(target)
-        else:
-            if target == leader:
-                raise ValueError("current leader cannot be assigned as team_member")
-            team_members.add(target)
+            if normalized_role == "leader":
+                leader = target
+                team_members.discard(target)
+            else:
+                if target == leader:
+                    raise ValueError("current leader cannot be assigned as team_member")
+                team_members.add(target)
 
-        updated = {"leader": leader, "team_members": sorted(team_members)}
-        self._write_json(self.roles_path, updated)
+            updated = {"leader": leader, "team_members": sorted(team_members)}
+            self._write_json(self.roles_path, updated)
         self.bus.emit(
             "role.updated",
             {"agent": target, "role": normalized_role, "leader": leader, "team_members": sorted(team_members)},
@@ -686,32 +717,34 @@ class Orchestrator:
         return self.get_roles()
 
     def register_agent(self, agent: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        agents = self._read_json(self.agents_path)
-        if not isinstance(agents, dict):
-            agents = {}
-        entry = agents.get(agent, {})
-        entry["agent"] = agent
-        entry["status"] = "active"
-        entry["metadata"] = metadata or entry.get("metadata", {})
-        entry["last_seen"] = self._now()
-        agents[agent] = entry
-        self._write_json(self.agents_path, agents)
+        with self._state_lock():
+            agents = self._read_json(self.agents_path)
+            if not isinstance(agents, dict):
+                agents = {}
+            entry = agents.get(agent, {})
+            entry["agent"] = agent
+            entry["status"] = "active"
+            entry["metadata"] = metadata or entry.get("metadata", {})
+            entry["last_seen"] = self._now()
+            agents[agent] = entry
+            self._write_json(self.agents_path, agents)
         self.bus.emit("agent.registered", {"agent": agent, "metadata": entry["metadata"]}, source=agent)
         return entry
 
     def heartbeat(self, agent: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        agents = self._read_json(self.agents_path)
-        if not isinstance(agents, dict):
-            agents = {}
-        entry = agents.get(agent, {"agent": agent, "metadata": {}})
-        entry["status"] = "active"
-        if metadata:
-            merged = dict(entry.get("metadata", {}))
-            merged.update(metadata)
-            entry["metadata"] = merged
-        entry["last_seen"] = self._now()
-        agents[agent] = entry
-        self._write_json(self.agents_path, agents)
+        with self._state_lock():
+            agents = self._read_json(self.agents_path)
+            if not isinstance(agents, dict):
+                agents = {}
+            entry = agents.get(agent, {"agent": agent, "metadata": {}})
+            entry["status"] = "active"
+            if metadata:
+                merged = dict(entry.get("metadata", {}))
+                merged.update(metadata)
+                entry["metadata"] = merged
+            entry["last_seen"] = self._now()
+            agents[agent] = entry
+            self._write_json(self.agents_path, agents)
         self.bus.emit("agent.heartbeat", {"agent": agent}, source=agent)
         return entry
 
@@ -782,7 +815,12 @@ class Orchestrator:
             ],
         }
 
-    def list_agents(self, active_only: bool = False, stale_after_seconds: Optional[int] = None) -> List[Dict[str, Any]]:
+    def list_agents(
+        self,
+        active_only: bool = False,
+        stale_after_seconds: Optional[int] = None,
+        emit_stale_notices: bool = False,
+    ) -> List[Dict[str, Any]]:
         stale_after = stale_after_seconds if stale_after_seconds is not None else self._heartbeat_timeout_seconds()
         agents = self._read_json(self.agents_path)
         if not isinstance(agents, dict):
@@ -790,7 +828,6 @@ class Orchestrator:
 
         now = datetime.now(timezone.utc)
         results: List[Dict[str, Any]] = []
-        changed = False
         tasks = self.list_tasks()
         stale_notices = self._read_json(self.stale_notices_path)
         if not isinstance(stale_notices, dict):
@@ -813,10 +850,7 @@ class Orchestrator:
             identity = self._identity_snapshot(entry=item, stale_after_seconds=stale_after)
             if not bool(identity.get("verified")) or not bool(identity.get("same_project")):
                 computed_status = "offline"
-            if item.get("status") != computed_status:
-                item["status"] = computed_status
-                agents[item["agent"]] = item
-                changed = True
+            item["status"] = computed_status
             item["age_seconds"] = max(0, age)
             item.update(identity)
             if computed_status == "active":
@@ -824,7 +858,7 @@ class Orchestrator:
                     del stale_notices[item["agent"]]
                     stale_changed = True
             else:
-                if self._emit_stale_notice_if_due(
+                if emit_stale_notices and self._emit_stale_notice_if_due(
                     agent=item.get("agent", ""),
                     age_seconds=max(0, age),
                     stale_after_seconds=stale_after,
@@ -859,8 +893,6 @@ class Orchestrator:
             }
             results.append(item)
 
-        if changed:
-            self._write_json(self.agents_path, agents)
         if stale_changed:
             self._write_json(self.stale_notices_path, stale_notices)
         results.sort(key=lambda x: x.get("agent", ""))
@@ -993,11 +1025,12 @@ class Orchestrator:
         return {"agent": agent, "event_id": event_id, "acked": True}
 
     def _set_agent_cursor(self, agent: str, cursor: int) -> None:
-        cursors = self._read_json(self.cursors_path)
-        if not isinstance(cursors, dict):
-            cursors = {}
-        cursors[agent] = max(0, int(cursor))
-        self._write_json(self.cursors_path, cursors)
+        with self._state_lock():
+            cursors = self._read_json(self.cursors_path)
+            if not isinstance(cursors, dict):
+                cursors = {}
+            cursors[agent] = max(0, int(cursor))
+            self._write_json(self.cursors_path, cursors)
 
     def _close_bugs_for_task(self, task_id: str, note: str) -> None:
         bugs = self._read_json(self.bugs_path)
@@ -1369,8 +1402,11 @@ class Orchestrator:
 
     @staticmethod
     def _write_json(path: Path, value: Any) -> None:
-        with path.open("w", encoding="utf-8") as fh:
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with tmp.open("w", encoding="utf-8") as fh:
             json.dump(value, fh, indent=2)
+            fh.flush()
+        tmp.replace(path)
 
     @staticmethod
     def _now() -> str:

@@ -3,9 +3,15 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
+
+try:
+    import fcntl
+except Exception:  # pragma: no cover
+    fcntl = None
 
 
 class EventBus:
@@ -21,6 +27,20 @@ class EventBus:
         self.root.mkdir(parents=True, exist_ok=True)
         self.commands_dir.mkdir(parents=True, exist_ok=True)
         self.reports_dir.mkdir(parents=True, exist_ok=True)
+        self._events_lock = root / ".events.lock"
+        self._audit_lock = root / ".audit.lock"
+
+    @contextmanager
+    def _file_lock(self, path: Path) -> Iterable[None]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a+", encoding="utf-8") as fh:
+            if fcntl is not None:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
     def emit(self, event_type: str, payload: Dict[str, Any], source: str) -> Dict[str, Any]:
         event = {
@@ -30,8 +50,9 @@ class EventBus:
             "source": source,
             "payload": payload,
         }
-        with self.events_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(event) + "\n")
+        with self._file_lock(self._events_lock):
+            with self.events_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(event) + "\n")
         return event
 
     def iter_events(self) -> Iterable[Dict[str, Any]]:
@@ -44,7 +65,11 @@ class EventBus:
                 line = line.strip()
                 if not line:
                     continue
-                events.append(json.loads(line))
+                try:
+                    events.append(json.loads(line))
+                except Exception:
+                    # Skip malformed lines instead of failing all consumers.
+                    continue
         return events
 
     def poll_events(self, timeout_ms: int = 0) -> Iterable[Dict[str, Any]]:
@@ -78,8 +103,9 @@ class EventBus:
     def append_audit(self, record: Dict[str, Any]) -> Dict[str, Any]:
         entry = dict(record)
         entry.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
-        with self.audit_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry) + "\n")
+        with self._file_lock(self._audit_lock):
+            with self.audit_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry) + "\n")
         return entry
 
     def read_audit(

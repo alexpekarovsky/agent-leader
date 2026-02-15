@@ -1081,6 +1081,17 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "notes": args.get("notes", ""),
             }
             result = ORCH.ingest_report(report)
+            auto_validate = bool(ORCH.policy.triggers.get("auto_validate_reports_on_submit", True))
+            if auto_validate:
+                cycle = _manager_cycle(strict=True)
+                result = {
+                    "report": result,
+                    "auto_manager_cycle": {
+                        "enabled": True,
+                        "processed_reports": cycle.get("processed_reports", []),
+                        "pending_total": cycle.get("pending_total", 0),
+                    },
+                }
             return _ok_and_audit(request_id, name, args, result)
 
         if name == "orchestrator_validate_task":
