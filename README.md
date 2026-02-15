@@ -2,6 +2,12 @@
 
 `agent-leader` is an MCP orchestration server for multi-agent software delivery (Codex manager + Claude/Gemini workers).
 
+## Supported platforms and clients
+- Supported agent CLIs: `Codex CLI`, `Claude Code`, `Gemini CLI` (only).
+- This project is currently tested on `macOS`.
+- Linux may work but is not officially validated yet.
+- Windows is not currently supported in this setup.
+
 ## In plain language
 `agent-leader` helps multiple AI coding agents work on one software project like a real team instead of random parallel chats.
 
