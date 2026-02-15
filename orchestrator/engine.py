@@ -28,6 +28,7 @@ class Orchestrator:
         self.cursors_path = self.state_dir / "event_cursors.json"
         self.acks_path = self.state_dir / "event_acks.json"
         self.agents_path = self.state_dir / "agents.json"
+        self.stale_notices_path = self.state_dir / "stale_notices.json"
         self.decisions_dir = self.root / "decisions"
         self.decisions_dir.mkdir(parents=True, exist_ok=True)
 
@@ -44,6 +45,8 @@ class Orchestrator:
             self.acks_path.write_text("{}\n", encoding="utf-8")
         if not self.agents_path.exists():
             self.agents_path.write_text("{}\n", encoding="utf-8")
+        if not self.stale_notices_path.exists():
+            self.stale_notices_path.write_text("{}\n", encoding="utf-8")
         self.bus.emit(
             "orchestrator.bootstrapped",
             {"policy": self.policy.name, "manager": self.policy.manager()},
@@ -56,8 +59,9 @@ class Orchestrator:
         workers: List[str],
         timeout_seconds: int = 60,
         poll_interval_seconds: int = 2,
-        stale_after_seconds: int = 300,
+        stale_after_seconds: Optional[int] = None,
     ) -> Dict[str, Any]:
+        stale_after = stale_after_seconds if stale_after_seconds is not None else self._heartbeat_timeout_seconds()
         requested = sorted({w.strip() for w in workers if isinstance(w, str) and w.strip()})
         if not requested:
             raise ValueError("workers must contain at least one non-empty agent id")
@@ -75,7 +79,7 @@ class Orchestrator:
 
         connected: List[str] = []
         while time.time() < deadline:
-            agents = self.list_agents(active_only=False, stale_after_seconds=stale_after_seconds)
+            agents = self.list_agents(active_only=False, stale_after_seconds=stale_after)
             active = {
                 item.get("agent")
                 for item in agents
@@ -89,7 +93,7 @@ class Orchestrator:
         missing = [worker for worker in requested if worker not in set(connected)]
         status = "connected" if not missing else "timeout"
         diagnostics = {
-            worker: self._worker_connect_diagnostic(worker=worker, stale_after_seconds=stale_after_seconds)
+            worker: self._worker_connect_diagnostic(worker=worker, stale_after_seconds=stale_after)
             for worker in requested
         }
 
@@ -563,7 +567,8 @@ class Orchestrator:
             ],
         }
 
-    def list_agents(self, active_only: bool = False, stale_after_seconds: int = 300) -> List[Dict[str, Any]]:
+    def list_agents(self, active_only: bool = False, stale_after_seconds: Optional[int] = None) -> List[Dict[str, Any]]:
+        stale_after = stale_after_seconds if stale_after_seconds is not None else self._heartbeat_timeout_seconds()
         agents = self._read_json(self.agents_path)
         if not isinstance(agents, dict):
             return []
@@ -572,6 +577,10 @@ class Orchestrator:
         results: List[Dict[str, Any]] = []
         changed = False
         tasks = self.list_tasks()
+        stale_notices = self._read_json(self.stale_notices_path)
+        if not isinstance(stale_notices, dict):
+            stale_notices = {}
+        stale_changed = False
 
         for _, entry in agents.items():
             item = dict(entry)
@@ -581,16 +590,30 @@ class Orchestrator:
                     last_seen = datetime.fromisoformat(last_seen_raw)
                     age = int((now - last_seen).total_seconds())
                 except Exception:
-                    age = stale_after_seconds + 1
+                    age = stale_after + 1
             else:
-                age = stale_after_seconds + 1
+                age = stale_after + 1
 
-            computed_status = "active" if age <= stale_after_seconds else "offline"
+            computed_status = "active" if age <= stale_after else "offline"
             if item.get("status") != computed_status:
                 item["status"] = computed_status
                 agents[item["agent"]] = item
                 changed = True
             item["age_seconds"] = max(0, age)
+            if computed_status == "active":
+                if item.get("agent") in stale_notices:
+                    del stale_notices[item["agent"]]
+                    stale_changed = True
+            else:
+                if self._emit_stale_notice_if_due(
+                    agent=item.get("agent", ""),
+                    age_seconds=max(0, age),
+                    stale_after_seconds=stale_after,
+                    stale_notices=stale_notices,
+                    now=now,
+                    known_agents=list(agents.keys()),
+                ):
+                    stale_changed = True
             if active_only and item["status"] != "active":
                 continue
             item["task_counts"] = {
@@ -619,10 +642,12 @@ class Orchestrator:
 
         if changed:
             self._write_json(self.agents_path, agents)
+        if stale_changed:
+            self._write_json(self.stale_notices_path, stale_notices)
         results.sort(key=lambda x: x.get("agent", ""))
         return results
 
-    def discover_agents(self, active_only: bool = False, stale_after_seconds: int = 300) -> Dict[str, Any]:
+    def discover_agents(self, active_only: bool = False, stale_after_seconds: Optional[int] = None) -> Dict[str, Any]:
         registered = self.list_agents(active_only=active_only, stale_after_seconds=stale_after_seconds)
         registered_names = {entry.get("agent") for entry in registered}
 
@@ -945,6 +970,51 @@ class Orchestrator:
             "owned_open_tasks": len(owned_open_tasks),
             "latest_open_task_update_age_seconds": latest_task_update_age,
         }
+
+    def _emit_stale_notice_if_due(
+        self,
+        agent: str,
+        age_seconds: int,
+        stale_after_seconds: int,
+        stale_notices: Dict[str, Any],
+        now: datetime,
+        known_agents: List[str],
+    ) -> bool:
+        if not agent:
+            return False
+
+        cooldown_seconds = max(60, stale_after_seconds)
+        last_notice_iso = stale_notices.get(agent)
+        if last_notice_iso:
+            try:
+                last_notice = datetime.fromisoformat(str(last_notice_iso))
+                elapsed = int((now - last_notice).total_seconds())
+                if elapsed < cooldown_seconds:
+                    return False
+            except Exception:
+                pass
+
+        manager = self.policy.manager()
+        audience = [agent, manager]
+        if agent == manager:
+            workers = [a for a in known_agents if a and a != manager]
+            audience = sorted(set(workers + [manager]))
+
+        self.bus.emit(
+            "agent.stale_reconnect_required",
+            {
+                "agent": agent,
+                "age_seconds": age_seconds,
+                "stale_after_seconds": stale_after_seconds,
+                "action": "rerun handshake",
+                "worker_action": "run 'connect to leader'",
+                "manager_action": "run orchestrator_connect_workers",
+                "audience": audience,
+            },
+            source="orchestrator",
+        )
+        stale_notices[agent] = self._now()
+        return True
 
     def _age_seconds(self, iso_timestamp: str, now: Optional[datetime] = None) -> Optional[int]:
         try:

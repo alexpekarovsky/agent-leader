@@ -140,6 +140,7 @@ To minimize token burn:
 - `orchestrator_connect_to_leader` now auto-claims one available task for that worker by default
 - workers use `orchestrator_poll_events(timeout_ms=120000)`
 - worker presence is auto-refreshed by normal worker actions (`poll_events`, `claim_next_task`, `submit_report`, `ack_event`)
+- after ~10 minutes without keepalive, orchestrator emits `agent.stale_reconnect_required` with instructions to rerun handshake (`connect to leader` + `connect_workers`)
 - avoid rapid `claim_next_task` loops when idle
 - manager uses `orchestrator_connect_workers` instead of repeated manual ping events
 

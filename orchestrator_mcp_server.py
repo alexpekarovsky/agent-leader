@@ -150,7 +150,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                     "workers": {"type": "array", "items": {"type": "string"}, "description": "Target worker agent IDs."},
                     "timeout_seconds": {"type": "integer", "default": 60},
                     "poll_interval_seconds": {"type": "integer", "default": 2},
-                    "stale_after_seconds": {"type": "integer", "default": 300},
+                    "stale_after_seconds": {"type": "integer", "default": 600},
                 },
                 "required": ["source", "workers"],
             },
@@ -176,7 +176,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                 "type": "object",
                 "properties": {
                     "active_only": {"type": "boolean", "default": False},
-                    "stale_after_seconds": {"type": "integer", "default": 300},
+                    "stale_after_seconds": {"type": "integer", "default": 600},
                 },
             },
         },
@@ -187,7 +187,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                 "type": "object",
                 "properties": {
                     "active_only": {"type": "boolean", "default": False},
-                    "stale_after_seconds": {"type": "integer", "default": 300},
+                    "stale_after_seconds": {"type": "integer", "default": 600},
                 },
             },
         },
@@ -735,7 +735,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 workers=workers,
                 timeout_seconds=int(args.get("timeout_seconds", 60)),
                 poll_interval_seconds=int(args.get("poll_interval_seconds", 2)),
-                stale_after_seconds=int(args.get("stale_after_seconds", 300)),
+                stale_after_seconds=int(args.get("stale_after_seconds", 600)),
             )
             return _ok(request_id, result)
 
@@ -754,14 +754,14 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
         if name == "orchestrator_list_agents":
             agents = ORCH.list_agents(
                 active_only=bool(args.get("active_only", False)),
-                stale_after_seconds=int(args.get("stale_after_seconds", 300)),
+                stale_after_seconds=int(args.get("stale_after_seconds", 600)),
             )
             return _ok(request_id, agents)
 
         if name == "orchestrator_discover_agents":
             discovered = ORCH.discover_agents(
                 active_only=bool(args.get("active_only", False)),
-                stale_after_seconds=int(args.get("stale_after_seconds", 300)),
+                stale_after_seconds=int(args.get("stale_after_seconds", 600)),
             )
             return _ok(request_id, discovered)
 
