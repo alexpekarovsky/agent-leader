@@ -91,6 +91,24 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
+            "name": "orchestrator_get_roles",
+            "description": "Get current orchestrator role assignments (leader, team_members). Default leader is codex via policy unless changed.",
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "orchestrator_set_role",
+            "description": "Set runtime role for an agent. role=leader or role=team_member. This allows non-codex leaders when desired.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "agent": {"type": "string"},
+                    "role": {"type": "string", "description": "leader|team_member"},
+                    "source": {"type": "string", "default": "codex"},
+                },
+                "required": ["agent", "role"],
+            },
+        },
+        {
             "name": "orchestrator_list_audit_logs",
             "description": "List append-only MCP audit records (tool calls, status, args, results/errors).",
             "inputSchema": {
@@ -555,11 +573,13 @@ def _ok_and_audit(request_id: Any, tool_name: str, args: Dict[str, Any], payload
 
 
 def _guide_payload() -> Dict[str, Any]:
+    roles = ORCH.get_roles()
     return {
         "purpose": "MCP-first multi-agent orchestration for manager/team member loops.",
         "roles": {
-            "manager": POLICY.manager(),
+            "manager": roles.get("leader"),
             "team_member_agents": ["claude_code", "gemini", "codex"],
+            "configured_roles": roles,
         },
         "required_sequences": {
             "manager": [
@@ -657,7 +677,7 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
     ]
     ORCH.publish_event(
         event_type="manager.task_contracts",
-        source=POLICY.manager(),
+        source=ORCH.manager_agent(),
         payload={"contracts": contracts},
     )
 
@@ -775,6 +795,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             tasks = ORCH.list_tasks()
             bugs = ORCH.list_bugs()
             agents = ORCH.list_agents(active_only=True)
+            roles = ORCH.get_roles()
             by_status: Dict[str, int] = {}
             for task in tasks:
                 by_status[task["status"]] = by_status.get(task["status"], 0) + 1
@@ -783,7 +804,8 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "version": __version__,
                 "root_name": ROOT_DIR.name,
                 "policy_name": POLICY.name,
-                "manager": POLICY.manager(),
+                "manager": roles.get("leader"),
+                "roles": roles,
                 "task_count": len(tasks),
                 "task_status_counts": by_status,
                 "bug_count": len(bugs),
@@ -798,6 +820,17 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 args,
                 payload,
             )
+
+        if name == "orchestrator_get_roles":
+            return _ok_and_audit(request_id, name, args, ORCH.get_roles())
+
+        if name == "orchestrator_set_role":
+            result = ORCH.set_role(
+                agent=args["agent"],
+                role=args["role"],
+                source=args.get("source", ORCH.manager_agent()),
+            )
+            return _ok_and_audit(request_id, name, args, result)
 
         if name == "orchestrator_list_audit_logs":
             logs = list(
@@ -869,7 +902,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
 
         if name == "orchestrator_bootstrap":
             ORCH.bootstrap()
-            return _ok_and_audit(request_id, name, args, {"ok": True, "policy": POLICY.name, "manager": POLICY.manager()})
+            return _ok_and_audit(request_id, name, args, {"ok": True, "policy": POLICY.name, "manager": ORCH.manager_agent()})
 
         if name == "orchestrator_create_task":
             acceptance = args.get("acceptance_criteria")
@@ -887,7 +920,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             return _ok_and_audit(request_id, name, args, task)
 
         if name == "orchestrator_dedupe_tasks":
-            result = ORCH.dedupe_open_tasks(source=args.get("source", POLICY.manager()))
+            result = ORCH.dedupe_open_tasks(source=args.get("source", ORCH.manager_agent()))
             return _ok_and_audit(request_id, name, args, result)
 
         if name == "orchestrator_list_tasks":
@@ -925,7 +958,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             result = ORCH.set_claim_override(
                 agent=args["agent"],
                 task_id=args["task_id"],
-                source=args.get("source", POLICY.manager()),
+                source=args.get("source", ORCH.manager_agent()),
             )
             return _ok_and_audit(request_id, name, args, result)
 
@@ -1028,7 +1061,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
 
         if name == "orchestrator_reassign_stale_tasks":
             result = ORCH.reassign_stale_tasks_to_active_workers(
-                source=args.get("source", POLICY.manager()),
+                source=args.get("source", ORCH.manager_agent()),
                 stale_after_seconds=int(args.get("stale_after_seconds", 600)),
                 include_blocked=bool(args.get("include_blocked", True)),
             )

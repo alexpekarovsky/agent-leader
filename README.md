@@ -22,6 +22,7 @@ So instead of "who did what?" or "did anyone validate this?", everything is trac
 - MCP control plane: tasks, reports, validation, bug loops, events.
 - One-shot team member attach: `orchestrator_connect_to_leader`.
 - Optional manager readiness gate: `orchestrator_connect_team_members`.
+- Runtime role control: `orchestrator_set_role` / `orchestrator_get_roles`.
 - Manual workflow first (recommended).
 
 ## How it works (general flow)
@@ -35,6 +36,16 @@ So instead of "who did what?" or "did anyone validate this?", everything is trac
 6. Repeat until all tasks are done.
 
 This creates a predictable delivery loop instead of ad-hoc prompting.
+
+## Role Control (Leader / Team Member)
+Default leader is `codex` from policy.
+
+You can switch leader at runtime using MCP:
+```text
+Call orchestrator_set_role with agent=\"gemini\" role=\"leader\" source=\"codex\"
+Call orchestrator_set_role with agent=\"codex\" role=\"team_member\" source=\"gemini\"
+Call orchestrator_get_roles
+```
 
 ## Why this is powerful
 - Reliability: every task has a lifecycle, not just chat text.

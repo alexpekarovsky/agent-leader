@@ -30,6 +30,7 @@ class Orchestrator:
         self.agents_path = self.state_dir / "agents.json"
         self.stale_notices_path = self.state_dir / "stale_notices.json"
         self.claim_overrides_path = self.state_dir / "claim_overrides.json"
+        self.roles_path = self.state_dir / "roles.json"
         self.decisions_dir = self.root / "decisions"
         self.decisions_dir.mkdir(parents=True, exist_ok=True)
 
@@ -50,6 +51,11 @@ class Orchestrator:
             self.stale_notices_path.write_text("{}\n", encoding="utf-8")
         if not self.claim_overrides_path.exists():
             self.claim_overrides_path.write_text("{}\n", encoding="utf-8")
+        if not self.roles_path.exists():
+            self.roles_path.write_text(
+                json.dumps({"leader": self.policy.manager(), "team_members": []}, indent=2) + "\n",
+                encoding="utf-8",
+            )
         self.bus.emit(
             "orchestrator.bootstrapped",
             {"policy": self.policy.name, "manager": self.policy.manager()},
@@ -181,7 +187,7 @@ class Orchestrator:
                 "owner": resolved_owner,
                 "workstream": workstream,
             },
-            source=self.policy.manager(),
+            source=self.manager_agent(),
         )
         return task
 
@@ -483,7 +489,7 @@ class Orchestrator:
 
         task["updated_at"] = self._now()
         self._write_json(self.tasks_path, tasks)
-        self.bus.emit(event, payload, source=self.policy.manager())
+        self.bus.emit(event, payload, source=self.manager_agent())
         return payload
 
     def list_bugs(self, status: Optional[str] = None, owner: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -609,6 +615,69 @@ class Orchestrator:
             event_payload["audience"] = audience
         return self.bus.emit(event_type=event_type, payload=event_payload, source=source)
 
+    def manager_agent(self) -> str:
+        roles = self._read_json(self.roles_path)
+        if isinstance(roles, dict):
+            leader = roles.get("leader")
+            if isinstance(leader, str) and leader.strip():
+                return leader
+        return self.policy.manager()
+
+    def get_roles(self) -> Dict[str, Any]:
+        roles = self._read_json(self.roles_path)
+        if not isinstance(roles, dict):
+            roles = {}
+        leader = roles.get("leader")
+        if not isinstance(leader, str) or not leader.strip():
+            leader = self.policy.manager()
+        members = roles.get("team_members")
+        if not isinstance(members, list):
+            members = []
+        normalized_members = sorted(
+            {
+                item.strip()
+                for item in members
+                if isinstance(item, str) and item.strip() and item.strip() != leader
+            }
+        )
+        return {
+            "leader": leader,
+            "team_members": normalized_members,
+            "default_leader": self.policy.manager(),
+        }
+
+    def set_role(self, agent: str, role: str, source: str) -> Dict[str, Any]:
+        if not isinstance(agent, str) or not agent.strip():
+            raise ValueError("agent must be a non-empty string")
+        normalized_role = role.strip().lower().replace(" ", "_").replace("-", "_")
+        if normalized_role not in {"leader", "team_member"}:
+            raise ValueError("role must be one of: leader, team_member")
+
+        roles = self._read_json(self.roles_path)
+        if not isinstance(roles, dict):
+            roles = {}
+        current = self.get_roles()
+        leader = current["leader"]
+        team_members = set(current["team_members"])
+        target = agent.strip()
+
+        if normalized_role == "leader":
+            leader = target
+            team_members.discard(target)
+        else:
+            if target == leader:
+                raise ValueError("current leader cannot be assigned as team_member")
+            team_members.add(target)
+
+        updated = {"leader": leader, "team_members": sorted(team_members)}
+        self._write_json(self.roles_path, updated)
+        self.bus.emit(
+            "role.updated",
+            {"agent": target, "role": normalized_role, "leader": leader, "team_members": sorted(team_members)},
+            source=source,
+        )
+        return self.get_roles()
+
     def register_agent(self, agent: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         agents = self._read_json(self.agents_path)
         if not isinstance(agents, dict):
@@ -653,7 +722,7 @@ class Orchestrator:
         self.register_agent(agent=agent, metadata=details)
         entry = self.heartbeat(agent=agent, metadata={"status": status})
 
-        manager = self.policy.manager()
+        manager = self.manager_agent()
         event_payload = {
             "agent": agent,
             "status": status,
@@ -895,7 +964,7 @@ class Orchestrator:
             self.bus.emit(
                 "bug.closed",
                 {"bug_id": bug.get("id"), "source_task": task_id, "note": note},
-                source=self.policy.manager(),
+                source=self.manager_agent(),
             )
         if changed:
             self._write_json(self.bugs_path, bugs)
@@ -1110,7 +1179,7 @@ class Orchestrator:
             except Exception:
                 pass
 
-        manager = self.policy.manager()
+        manager = self.manager_agent()
         audience = [agent, manager]
         if agent == manager:
             team_members = [a for a in known_agents if a and a != manager]
