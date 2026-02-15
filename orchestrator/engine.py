@@ -88,11 +88,15 @@ class Orchestrator:
 
         missing = [worker for worker in requested if worker not in set(connected)]
         status = "connected" if not missing else "timeout"
+        diagnostics = {
+            worker: self._worker_connect_diagnostic(worker=worker, stale_after_seconds=stale_after_seconds)
+            for worker in requested
+        }
 
         self.publish_event(
             event_type="manager.connect_workers.result",
             source=source,
-            payload={"status": status, "connected": connected, "missing": missing},
+            payload={"status": status, "connected": connected, "missing": missing, "diagnostics": diagnostics},
             audience=requested,
         )
 
@@ -101,6 +105,7 @@ class Orchestrator:
             "requested": requested,
             "connected": connected,
             "missing": missing,
+            "diagnostics": diagnostics,
             "timeout_seconds": int(timeout_seconds),
             "elapsed_seconds": int(time.time() - started_at),
         }
@@ -441,7 +446,27 @@ class Orchestrator:
         tasks = self._read_json(self.tasks_path)
         task = next((item for item in tasks if item["id"] == blocker["task_id"]), None)
         if task is not None and task.get("status") == "blocked":
-            task["status"] = "in_progress"
+            owner = str(task.get("owner", ""))
+            owner_diag = self._worker_connect_diagnostic(
+                worker=owner,
+                stale_after_seconds=self._heartbeat_timeout_seconds(),
+            )
+            owner_active = bool(owner_diag.get("active"))
+            task["status"] = "in_progress" if owner_active else "assigned"
+            if not owner_active:
+                # Avoid false "worker is progressing" signal when owner appears offline.
+                task["degraded_comm"] = True
+                task["degraded_comm_reason"] = "blocker resolved while owner not active"
+                self.bus.emit(
+                    "worker.degraded_comm",
+                    {
+                        "task_id": task.get("id"),
+                        "owner": owner,
+                        "reason": "blocker resolved while owner offline/stale",
+                        "diagnostic": owner_diag,
+                    },
+                    source="orchestrator",
+                )
             task["updated_at"] = self._now()
             self._write_json(self.tasks_path, tasks)
 
@@ -873,6 +898,53 @@ class Orchestrator:
         entry["last_seen"] = self._now()
         agents[agent] = entry
         self._write_json(self.agents_path, agents)
+
+    def _heartbeat_timeout_seconds(self) -> int:
+        minutes = self.policy.triggers.get("heartbeat_timeout_minutes", 10)
+        try:
+            value = int(minutes)
+        except Exception:
+            value = 10
+        return max(60, value * 60)
+
+    def _worker_connect_diagnostic(self, worker: str, stale_after_seconds: int) -> Dict[str, Any]:
+        agents = self._read_json(self.agents_path)
+        if not isinstance(agents, dict):
+            agents = {}
+        entry = agents.get(worker, {})
+        now = datetime.now(timezone.utc)
+
+        last_seen = entry.get("last_seen")
+        age = self._age_seconds(str(last_seen), now=now) if last_seen else None
+        active = age is not None and age <= stale_after_seconds
+
+        open_statuses = {"assigned", "in_progress", "reported", "bug_open", "blocked"}
+        owned_open_tasks = [t for t in self.list_tasks() if t.get("owner") == worker and t.get("status") in open_statuses]
+        latest_task_update_age: Optional[int] = None
+        for task in owned_open_tasks:
+            updated_at = task.get("updated_at")
+            if not updated_at:
+                continue
+            task_age = self._age_seconds(str(updated_at), now=now)
+            if task_age is None:
+                continue
+            if latest_task_update_age is None or task_age < latest_task_update_age:
+                latest_task_update_age = task_age
+
+        reason = "active" if active else "no_recent_heartbeat"
+        if not entry:
+            reason = "not_registered"
+
+        return {
+            "registered": bool(entry),
+            "active": bool(active),
+            "status": entry.get("status", "unknown"),
+            "last_seen": last_seen,
+            "age_seconds": age,
+            "reason": reason,
+            "owned_open_tasks": len(owned_open_tasks),
+            "latest_open_task_update_age_seconds": latest_task_update_age,
+        }
 
     def _age_seconds(self, iso_timestamp: str, now: Optional[datetime] = None) -> Optional[int]:
         try:

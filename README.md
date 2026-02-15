@@ -117,6 +117,7 @@ Call orchestrator_connect_workers with source=codex workers=["claude_code","gemi
 Proceed only if:
 - `status: connected`
 - `missing: []`
+If `status: timeout`, inspect `diagnostics` in the response for per-worker reason (`not_registered`, `no_recent_heartbeat`, task activity hints).
 
 ### LLM install/run instruction (copy/paste)
 ```text
@@ -180,6 +181,11 @@ connect to leader. Then wait for tasks, implement only assigned scope, run tests
 ### Workers not active
 - run `connect to leader` in each worker tab
 - manager runs `orchestrator_connect_workers` again
+- if still timing out, use returned `diagnostics` to identify which worker is stale/unregistered
+
+### Blocker resolved but worker offline
+- when manager resolves a blocker and owner is offline/stale, task is moved to `assigned` (not `in_progress`) and marked `degraded_comm`
+- this prevents false progress signals; worker should reconnect and claim task again
 
 ### Wrong root
 - run `orchestrator_status`
