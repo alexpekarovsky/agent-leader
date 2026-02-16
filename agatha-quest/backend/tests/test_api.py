@@ -573,3 +573,111 @@ def test_pressure_resets_on_new_game(client):
     response = client.get('/api/game/state')
     data = response.get_json()
     assert data['pressure_remaining'] == PRESSURE_CLOCK['initial']
+
+
+# --- Save/Load tests ---
+
+def test_save_returns_game_state(client):
+    """Test that save endpoint returns current game state."""
+    client.post('/api/game/locations/study/search')
+    client.post('/api/game/interrogate', json={'suspect_id': 'lady_blackwood'})
+
+    response = client.get('/api/game/save')
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data['status'] == 'success'
+    save = data['save_data']
+    assert save['phase'] == 'investigation'
+    assert 'poison_vial' in save['clues_discovered']
+    assert 'study' in save['locations_visited']
+    assert len(save['interrogations']) == 1
+    assert save['pressure_remaining'] < PRESSURE_CLOCK['initial']
+    assert save['final_accusation'] is None
+    assert save['game_won'] is None
+
+
+def test_load_restores_game_state(client):
+    """Test that load endpoint restores saved state."""
+    client.post('/api/game/locations/study/search')
+    client.post('/api/game/locations/victim_room/search')
+    client.post('/api/game/interrogate', json={'suspect_id': 'lady_blackwood'})
+
+    save_data = client.get('/api/game/save').get_json()['save_data']
+
+    # Reset and verify clean state
+    client.post('/api/game/new')
+    assert client.get('/api/game/state').get_json()['clues_discovered_count'] == 0
+
+    # Load saved state
+    response = client.post('/api/game/load', json={'save_data': save_data})
+    assert response.status_code == 200
+    assert response.get_json()['status'] == 'success'
+
+    # Verify restored
+    state = client.get('/api/game/state').get_json()
+    assert state['clues_discovered_count'] == 2
+    assert state['locations_visited_count'] == 2
+    assert state['interrogations_count'] == 1
+    assert state['pressure_remaining'] == save_data['pressure_remaining']
+
+
+def test_load_missing_save_data(client):
+    """Test load with missing save_data."""
+    response = client.post('/api/game/load', json={})
+    assert response.status_code == 400
+
+
+def test_load_missing_keys(client):
+    """Test load with incomplete save data."""
+    response = client.post('/api/game/load', json={'save_data': {'phase': 'investigation'}})
+    assert response.status_code == 400
+    assert 'Missing keys' in response.get_json()['message']
+
+
+def test_load_invalid_phase(client):
+    """Test load with invalid phase value."""
+    save_data = {
+        'phase': 'invalid_phase',
+        'clues_discovered': [],
+        'locations_visited': [],
+        'interrogations': [],
+        'pressure_remaining': 10,
+        'final_accusation': None,
+        'game_won': None,
+    }
+    response = client.post('/api/game/load', json={'save_data': save_data})
+    assert response.status_code == 400
+    assert 'Invalid phase' in response.get_json()['message']
+
+
+def test_load_syncs_clue_discovery_flags(client):
+    """Test that load correctly syncs clue discovered flags."""
+    client.post('/api/game/locations/study/search')
+    save_data = client.get('/api/game/save').get_json()['save_data']
+
+    client.post('/api/game/new')
+    client.post('/api/game/load', json={'save_data': save_data})
+
+    clues = client.get('/api/game/clues').get_json()
+    assert clues['discovered_count'] == 1
+    assert clues['clues'][0]['id'] == 'poison_vial'
+
+
+def test_save_load_roundtrip_mid_accusation(client):
+    """Test save/load roundtrip during accusation phase."""
+    client.post('/api/game/locations/study/search')
+    client.post('/api/game/locations/victim_room/search')
+    client.post('/api/game/interrogate', json={'suspect_id': 'lady_blackwood'})
+    client.post('/api/game/interrogate', json={'suspect_id': 'dr_hartley'})
+
+    assert client.get('/api/game/state').get_json()['phase'] == 'accusation'
+
+    save_data = client.get('/api/game/save').get_json()['save_data']
+    client.post('/api/game/new')
+    client.post('/api/game/load', json={'save_data': save_data})
+
+    state = client.get('/api/game/state').get_json()
+    assert state['phase'] == 'accusation'
+
+    response = client.post('/api/game/accuse', json={'suspect_id': 'dr_hartley'})
+    assert response.get_json()['correct'] is True

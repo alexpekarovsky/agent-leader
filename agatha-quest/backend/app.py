@@ -325,6 +325,62 @@ def accuse():
     })
 
 
+@app.route('/api/game/save', methods=['GET'])
+def save_game():
+    """Export current game state for save/load continuity."""
+    return jsonify({
+        "status": "success",
+        "save_data": {
+            "phase": game_state["phase"],
+            "clues_discovered": list(game_state["clues_discovered"]),
+            "locations_visited": list(game_state["locations_visited"]),
+            "interrogations": list(game_state["interrogations"]),
+            "pressure_remaining": game_state["pressure_remaining"],
+            "final_accusation": game_state["final_accusation"],
+            "game_won": game_state["game_won"]
+        }
+    })
+
+
+@app.route('/api/game/load', methods=['POST'])
+def load_game():
+    """Restore game state from save data."""
+    global game_state
+    data = request.get_json(silent=True) or {}
+    save_data = data.get("save_data")
+
+    if not save_data:
+        return jsonify({"status": "error", "message": "save_data required"}), 400
+
+    required_keys = {"phase", "clues_discovered", "locations_visited",
+                     "interrogations", "pressure_remaining", "final_accusation", "game_won"}
+    missing = required_keys - set(save_data.keys())
+    if missing:
+        return jsonify({"status": "error", "message": f"Missing keys: {', '.join(sorted(missing))}"}), 400
+
+    # Validate phase value
+    valid_phases = {PHASE_INVESTIGATION, PHASE_ACCUSATION, PHASE_COMPLETE}
+    if save_data["phase"] not in valid_phases:
+        return jsonify({"status": "error", "message": "Invalid phase value"}), 400
+
+    # Restore state
+    game_state = {
+        "phase": save_data["phase"],
+        "clues_discovered": list(save_data["clues_discovered"]),
+        "locations_visited": list(save_data["locations_visited"]),
+        "interrogations": list(save_data["interrogations"]),
+        "pressure_remaining": save_data["pressure_remaining"],
+        "final_accusation": save_data["final_accusation"],
+        "game_won": save_data["game_won"]
+    }
+
+    # Sync clue discovered flags with loaded state
+    for clue in CLUES:
+        clue["discovered"] = clue["id"] in game_state["clues_discovered"]
+
+    return jsonify({"status": "success", "message": "Game loaded"})
+
+
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint."""
