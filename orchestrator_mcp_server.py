@@ -320,9 +320,9 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                 "properties": {
                     "agent": {"type": "string"},
                     "task_id": {"type": "string"},
-                    "source": {"type": "string", "default": "codex"},
+                    "source": {"type": "string"},
                 },
-                "required": ["agent", "task_id"],
+                "required": ["agent", "task_id", "source"],
             },
         },
         {
@@ -374,8 +374,9 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                     "task_id": {"type": "string"},
                     "passed": {"type": "boolean"},
                     "notes": {"type": "string"},
+                    "source": {"type": "string"},
                 },
-                "required": ["task_id", "passed", "notes"],
+                "required": ["task_id", "passed", "notes", "source"],
             },
         },
         {
@@ -645,7 +646,12 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
 
         report_path = ORCH.bus.reports_dir / f"{task['id']}.json"
         if not report_path.exists():
-            result = ORCH.validate_task(task_id=task["id"], passed=False, notes="Missing report file")
+            result = ORCH.validate_task(
+                task_id=task["id"],
+                passed=False,
+                notes="Missing report file",
+                source=ORCH.manager_agent(),
+            )
             processed.append({"task_id": task["id"], "passed": False, "result": result})
             continue
 
@@ -663,7 +669,12 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
             if passed
             else f"Auto manager cycle rejected report status={report_status}, failed_tests={failed_tests}, has_command={has_command}"
         )
-        result = ORCH.validate_task(task_id=task["id"], passed=passed, notes=notes)
+        result = ORCH.validate_task(
+            task_id=task["id"],
+            passed=passed,
+            notes=notes,
+            source=ORCH.manager_agent(),
+        )
         processed.append({"task_id": task["id"], "passed": passed, "result": result})
 
     reconnect_statuses = {"in_progress", "blocked"}
@@ -1113,7 +1124,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             result = ORCH.set_claim_override(
                 agent=args["agent"],
                 task_id=args["task_id"],
-                source=args.get("source", ORCH.manager_agent()),
+                source=args["source"],
             )
             return _ok_and_audit(request_id, name, args, result)
 
@@ -1158,6 +1169,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 task_id=args["task_id"],
                 passed=bool(args["passed"]),
                 notes=args["notes"],
+                source=args["source"],
             )
             return _ok_and_audit(request_id, name, args, result)
 

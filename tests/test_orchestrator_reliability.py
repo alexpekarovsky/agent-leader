@@ -259,6 +259,36 @@ class RoleAuthorizationTests(unittest.TestCase):
             self.assertEqual("claude_code", roles.get("leader"))
             self.assertIn("codex", roles.get("team_members", []))
 
+    def test_set_claim_override_rejects_non_leader_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+            task = orch.create_task(
+                title="Override auth",
+                workstream="backend",
+                acceptance_criteria=["auth"],
+                owner="claude_code",
+            )
+            with self.assertRaises(ValueError):
+                orch.set_claim_override(agent="claude_code", task_id=task["id"], source="gemini")
+
+    def test_validate_task_rejects_non_leader_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+            task = orch.create_task(
+                title="Validate auth",
+                workstream="backend",
+                acceptance_criteria=["auth"],
+                owner="claude_code",
+            )
+            with self.assertRaises(ValueError):
+                orch.validate_task(task_id=task["id"], passed=True, notes="x", source="claude_code")
+
 
 class PresenceRefreshTests(unittest.TestCase):
     def test_refresh_agent_presence_preserves_metadata(self) -> None:

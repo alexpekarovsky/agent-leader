@@ -312,6 +312,9 @@ class Orchestrator:
         return None
 
     def set_claim_override(self, agent: str, task_id: str, source: str) -> Dict[str, Any]:
+        manager = self.manager_agent()
+        if source != manager:
+            raise ValueError(f"leader_mismatch: source={source}, current_leader={manager}")
         with self._state_lock():
             tasks = self._read_json(self.tasks_path)
             task = next((t for t in tasks if t.get("id") == task_id), None)
@@ -499,7 +502,10 @@ class Orchestrator:
                 "timestamp": now.isoformat(),
             }
 
-    def validate_task(self, task_id: str, passed: bool, notes: str) -> Dict[str, Any]:
+    def validate_task(self, task_id: str, passed: bool, notes: str, source: str) -> Dict[str, Any]:
+        manager = self.manager_agent()
+        if source != manager:
+            raise ValueError(f"leader_mismatch: source={source}, current_leader={manager}")
         with self._state_lock():
             tasks = self._read_json(self.tasks_path)
             task = next((t for t in tasks if t["id"] == task_id), None)
@@ -531,7 +537,7 @@ class Orchestrator:
 
             task["updated_at"] = self._now()
             self._write_json(self.tasks_path, tasks)
-        self.bus.emit(event, payload, source=self.manager_agent())
+        self.bus.emit(event, payload, source=source)
         return payload
 
     def list_bugs(self, status: Optional[str] = None, owner: Optional[str] = None) -> List[Dict[str, Any]]:
