@@ -802,8 +802,10 @@ class Orchestrator:
                 audience=[manager],
             )
 
-        # Default reconnect behavior: claim one available task immediately if present.
-        auto_claimed = self.claim_next_task(owner=agent) if connected else None
+        # Team members auto-claim on connect; manager/leader should never auto-claim implementation work.
+        role = str((metadata or {}).get("role", details.get("role", "team_member"))).strip().lower()
+        is_manager_connect = agent == manager or role == "manager"
+        auto_claimed = self.claim_next_task(owner=agent) if connected and not is_manager_connect else None
 
         return {
             "connected": connected,

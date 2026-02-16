@@ -106,5 +106,42 @@ class TaskStatusGuardTests(unittest.TestCase):
             self.assertEqual("done", updated.get("status"))
 
 
+class ConnectBehaviorTests(unittest.TestCase):
+    def test_manager_connect_does_not_auto_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+            orch.create_task(
+                title="Manager should not auto-claim",
+                workstream="default",
+                acceptance_criteria=["Remain assigned"],
+                owner="codex",
+            )
+
+            result = orch.connect_to_leader(
+                agent="codex",
+                metadata={
+                    "role": "manager",
+                    "client": "codex-cli",
+                    "model": "gpt-5",
+                    "cwd": str(root),
+                    "permissions_mode": "default",
+                    "sandbox_mode": "workspace-write",
+                    "session_id": "manager-test",
+                    "connection_id": "manager-conn-test",
+                    "server_version": "0.1.0",
+                    "verification_source": "test",
+                },
+                source="codex",
+            )
+
+            self.assertTrue(result.get("connected"))
+            self.assertIsNone(result.get("auto_claimed_task"))
+            assigned = orch.list_tasks_for_owner("codex")
+            self.assertEqual("assigned", assigned[0].get("status"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -796,10 +796,6 @@ def _auto_manager_loop() -> None:
 
 def _start_auto_manager_loop() -> None:
     global _AUTO_LOOP_THREAD
-    enabled_raw = os.getenv("ORCHESTRATOR_AUTO_MANAGER_CYCLE", "1").strip().lower()
-    enabled = enabled_raw in {"1", "true", "yes", "on"}
-    if not enabled:
-        return
     if _AUTO_LOOP_THREAD is not None and _AUTO_LOOP_THREAD.is_alive():
         return
     _AUTO_LOOP_THREAD = threading.Thread(
@@ -964,6 +960,10 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "live_status_text": live_status.get("report_text", ""),
                 "live_status": live_status.get("report", {}),
                 "recommended_status_cadence_seconds": live_status.get("recommended_cadence_seconds", 600),
+                "auto_manager_cycle": {
+                    "running": bool(_AUTO_LOOP_THREAD and _AUTO_LOOP_THREAD.is_alive()),
+                    "interval_seconds": max(5, min(int(os.getenv("ORCHESTRATOR_AUTO_MANAGER_CYCLE_SECONDS", "15")), 300)),
+                },
             }
             if STATUS_VERBOSE_PATHS:
                 payload["root"] = str(ROOT_DIR)
