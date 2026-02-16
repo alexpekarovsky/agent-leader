@@ -212,6 +212,30 @@ class ConnectBehaviorTests(unittest.TestCase):
                 orch.connect_team_members(source="codex", team_members=["gemini"], timeout_seconds=1)
 
 
+class RoleAuthorizationTests(unittest.TestCase):
+    def test_set_role_rejects_non_leader_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+
+            with self.assertRaises(ValueError):
+                orch.set_role(agent="gemini", role="leader", source="gemini")
+
+    def test_new_leader_can_manage_roles_after_switch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+
+            orch.set_role(agent="claude_code", role="leader", source="codex")
+            roles = orch.set_role(agent="codex", role="team_member", source="claude_code")
+            self.assertEqual("claude_code", roles.get("leader"))
+            self.assertIn("codex", roles.get("team_members", []))
+
+
 class PresenceRefreshTests(unittest.TestCase):
     def test_refresh_agent_presence_preserves_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

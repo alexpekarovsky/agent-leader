@@ -703,6 +703,9 @@ class Orchestrator:
             if not isinstance(roles, dict):
                 roles = {}
             current = self.get_roles()
+            current_leader = str(current["leader"])
+            if source != current_leader:
+                raise ValueError(f"leader_mismatch: source={source}, current_leader={current_leader}")
             leader = current["leader"]
             team_members = set(current["team_members"])
             target = agent.strip()
