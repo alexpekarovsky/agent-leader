@@ -639,6 +639,19 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
     stale_after_seconds = ORCH._heartbeat_timeout_seconds()
     tasks = ORCH.list_tasks()
     processed: List[Dict[str, Any]] = []
+    retry_base_seconds = int(ORCH.policy.triggers.get("report_retry_base_seconds", 15))
+    retry_base_seconds = max(3, min(retry_base_seconds, 300))
+    retry_max_seconds = int(ORCH.policy.triggers.get("report_retry_max_backoff_seconds", 300))
+    retry_max_seconds = max(retry_base_seconds, min(retry_max_seconds, 3600))
+    retry_max_attempts = int(ORCH.policy.triggers.get("report_retry_max_attempts", 20))
+    retry_max_attempts = max(1, min(retry_max_attempts, 100))
+
+    retry_queue = ORCH.process_report_retry_queue(
+        max_attempts=retry_max_attempts,
+        base_backoff_seconds=retry_base_seconds,
+        max_backoff_seconds=retry_max_seconds,
+        limit=20,
+    )
 
     for task in tasks:
         if task.get("status") != "reported":
@@ -763,6 +776,7 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
 
     return {
         "processed_reports": processed,
+        "report_retry_queue": retry_queue,
         "auto_connect": auto_connect,
         "stale_reassignments": stale_reassignments,
         "stale_requeues": stale_requeues,
@@ -1151,7 +1165,15 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "artifacts": args.get("artifacts", []),
                 "notes": args.get("notes", ""),
             }
-            result = ORCH.ingest_report(report)
+            try:
+                result = ORCH.ingest_report(report)
+            except Exception as exc:
+                queue_entry = ORCH.enqueue_report_retry(report=report, error=str(exc))
+                result = {
+                    "queued_for_retry": True,
+                    "queue_entry": queue_entry,
+                    "submit_error": str(exc),
+                }
             auto_validate = bool(ORCH.policy.triggers.get("auto_validate_reports_on_submit", True))
             if auto_validate:
                 cycle = _manager_cycle(strict=True)

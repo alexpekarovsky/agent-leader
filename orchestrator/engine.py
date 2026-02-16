@@ -39,6 +39,7 @@ class Orchestrator:
         self.agents_path = self.state_dir / "agents.json"
         self.stale_notices_path = self.state_dir / "stale_notices.json"
         self.claim_overrides_path = self.state_dir / "claim_overrides.json"
+        self.report_retry_queue_path = self.state_dir / "report_retry_queue.json"
         self.roles_path = self.state_dir / "roles.json"
         self.decisions_dir = self.root / "decisions"
         self.decisions_dir.mkdir(parents=True, exist_ok=True)
@@ -79,6 +80,8 @@ class Orchestrator:
             self.stale_notices_path.write_text("{}\n", encoding="utf-8")
         if not self.claim_overrides_path.exists():
             self.claim_overrides_path.write_text("{}\n", encoding="utf-8")
+        if not self.report_retry_queue_path.exists():
+            self.report_retry_queue_path.write_text("[]\n", encoding="utf-8")
         if not self.roles_path.exists():
             self.roles_path.write_text(
                 json.dumps({"leader": self.policy.manager(), "team_members": []}, indent=2) + "\n",
@@ -276,6 +279,7 @@ class Orchestrator:
         return tasks
 
     def claim_next_task(self, owner: str) -> Optional[Dict[str, Any]]:
+        self._assert_agent_operational(owner)
         # Treat a claim attempt as proof-of-life from the team_member.
         with self._state_lock():
             self._refresh_agent_presence_unlocked(owner)
@@ -344,6 +348,9 @@ class Orchestrator:
         return {"ok": True, "agent": agent, "task_id": task_id}
 
     def set_task_status(self, task_id: str, status: str, source: str, note: str = "") -> Dict[str, Any]:
+        manager = self.manager_agent()
+        if source != manager:
+            self._assert_agent_operational(source)
         normalized = str(status).strip().lower()
         # Completion must flow through ingest_report/submit_report so manager validation
         # can enforce commit + test evidence and emit consistent report events.
@@ -355,7 +362,6 @@ class Orchestrator:
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
             owner = str(task.get("owner", ""))
-            manager = self.manager_agent()
             if source not in {owner, manager}:
                 raise ValueError(
                     f"unauthorized_status_update: source={source}, task_owner={owner}, current_leader={manager}"
@@ -377,6 +383,7 @@ class Orchestrator:
         if missing:
             raise ValueError(f"Missing report fields: {', '.join(missing)}")
         self._validate_report_payload(report)
+        self._assert_agent_operational(str(report.get("agent", "")))
 
         task_id = report["task_id"]
         with self._state_lock():
@@ -402,6 +409,166 @@ class Orchestrator:
             source=report["agent"],
         )
         return report
+
+    def enqueue_report_retry(self, report: Dict[str, Any], error: str) -> Dict[str, Any]:
+        now = self._now()
+        entry: Dict[str, Any]
+        with self._state_lock():
+            queue = self._read_json(self.report_retry_queue_path)
+            if not isinstance(queue, list):
+                queue = []
+
+            report_task_id = str(report.get("task_id", ""))
+            report_agent = str(report.get("agent", ""))
+            existing = next(
+                (
+                    item
+                    for item in queue
+                    if item.get("status") == "pending"
+                    and item.get("report", {}).get("task_id") == report_task_id
+                    and item.get("report", {}).get("agent") == report_agent
+                ),
+                None,
+            )
+            if existing is not None:
+                existing["report"] = dict(report)
+                existing["last_error"] = str(error)
+                existing["updated_at"] = now
+                entry = dict(existing)
+            else:
+                entry = {
+                    "id": f"RPTQ-{uuid.uuid4().hex[:8]}",
+                    "status": "pending",
+                    "report": dict(report),
+                    "attempts": 0,
+                    "last_error": str(error),
+                    "created_at": now,
+                    "updated_at": now,
+                    "next_retry_at": now,
+                }
+                queue.append(entry)
+            self._write_json(self.report_retry_queue_path, queue)
+
+        self.bus.emit(
+            "report.retry_queued",
+            {
+                "queue_id": entry.get("id"),
+                "task_id": report.get("task_id"),
+                "agent": report.get("agent"),
+                "error": str(error),
+            },
+            source="orchestrator",
+        )
+        return entry
+
+    def process_report_retry_queue(
+        self,
+        max_attempts: int = 20,
+        base_backoff_seconds: int = 15,
+        max_backoff_seconds: int = 300,
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        due_items: List[Dict[str, Any]] = []
+        with self._state_lock():
+            queue = self._read_json(self.report_retry_queue_path)
+            if not isinstance(queue, list):
+                queue = []
+            for item in queue:
+                if item.get("status") != "pending":
+                    continue
+                retry_at_raw = str(item.get("next_retry_at", ""))
+                try:
+                    retry_at = datetime.fromisoformat(retry_at_raw)
+                except Exception:
+                    retry_at = now
+                if retry_at <= now:
+                    due_items.append(dict(item))
+                if len(due_items) >= max(1, int(limit)):
+                    break
+
+        processed: List[Dict[str, Any]] = []
+        for item in due_items:
+            queue_id = str(item.get("id", ""))
+            report = item.get("report", {}) if isinstance(item.get("report"), dict) else {}
+            attempts = int(item.get("attempts", 0))
+            try:
+                result = self.ingest_report(report)
+                with self._state_lock():
+                    queue = self._read_json(self.report_retry_queue_path)
+                    if not isinstance(queue, list):
+                        queue = []
+                    for entry in queue:
+                        if str(entry.get("id", "")) != queue_id:
+                            continue
+                        entry["status"] = "submitted"
+                        entry["updated_at"] = self._now()
+                        entry["submitted_at"] = self._now()
+                        entry["last_error"] = ""
+                        break
+                    self._write_json(self.report_retry_queue_path, queue)
+                processed.append({"queue_id": queue_id, "status": "submitted", "result": result})
+                self.bus.emit(
+                    "report.retry_submitted",
+                    {"queue_id": queue_id, "task_id": report.get("task_id"), "agent": report.get("agent")},
+                    source="orchestrator",
+                )
+            except Exception as exc:
+                attempts += 1
+                backoff = min(max_backoff_seconds, max(1, base_backoff_seconds) * (2 ** max(0, attempts - 1)))
+                next_retry = datetime.now(timezone.utc).timestamp() + backoff
+                next_retry_iso = datetime.fromtimestamp(next_retry, tz=timezone.utc).isoformat()
+                terminal = attempts >= max(1, int(max_attempts))
+                with self._state_lock():
+                    queue = self._read_json(self.report_retry_queue_path)
+                    if not isinstance(queue, list):
+                        queue = []
+                    for entry in queue:
+                        if str(entry.get("id", "")) != queue_id:
+                            continue
+                        entry["attempts"] = attempts
+                        entry["last_error"] = str(exc)
+                        entry["updated_at"] = self._now()
+                        entry["next_retry_at"] = next_retry_iso
+                        if terminal:
+                            entry["status"] = "failed"
+                        break
+                    self._write_json(self.report_retry_queue_path, queue)
+                processed.append(
+                    {
+                        "queue_id": queue_id,
+                        "status": "failed" if terminal else "retrying",
+                        "attempts": attempts,
+                        "error": str(exc),
+                        "next_retry_at": next_retry_iso,
+                    }
+                )
+                self.bus.emit(
+                    "report.retry_failed" if terminal else "report.retry_retrying",
+                    {
+                        "queue_id": queue_id,
+                        "task_id": report.get("task_id"),
+                        "agent": report.get("agent"),
+                        "attempts": attempts,
+                        "error": str(exc),
+                        "next_retry_at": next_retry_iso,
+                    },
+                    source="orchestrator",
+                )
+
+        with self._state_lock():
+            queue = self._read_json(self.report_retry_queue_path)
+            if not isinstance(queue, list):
+                queue = []
+        pending = len([item for item in queue if item.get("status") == "pending"])
+        failed = len([item for item in queue if item.get("status") == "failed"])
+        submitted = len([item for item in queue if item.get("status") == "submitted"])
+        return {
+            "processed": processed,
+            "pending": pending,
+            "failed": failed,
+            "submitted": submitted,
+        }
 
     def requeue_stale_in_progress_tasks(self, stale_after_seconds: int = 1800) -> List[Dict[str, Any]]:
         with self._state_lock():
@@ -1007,6 +1174,7 @@ class Orchestrator:
         auto_advance: bool = True,
     ) -> Dict[str, Any]:
         # Long-poll calls are the normal team_member loop heartbeat in practice.
+        self._assert_agent_operational(agent)
         self._refresh_agent_presence(agent)
         start = self.get_agent_cursor(agent) if cursor is None else max(0, int(cursor))
         self.bus.wait_for_event_index(start=start, timeout_ms=timeout_ms)
@@ -1443,6 +1611,44 @@ class Orchestrator:
             return int((current - ts).total_seconds())
         except Exception:
             return None
+
+    def _agent_is_operational(
+        self,
+        agent: str,
+        stale_after_seconds: Optional[int] = None,
+    ) -> bool:
+        if not isinstance(agent, str) or not agent.strip():
+            return False
+        with self._state_lock():
+            agents = self._read_json(self.agents_path)
+            if not isinstance(agents, dict):
+                return False
+            entry = agents.get(agent)
+            if not isinstance(entry, dict):
+                return False
+            stale_after = stale_after_seconds if stale_after_seconds is not None else self._heartbeat_timeout_seconds()
+            identity = self._identity_snapshot(entry=entry, stale_after_seconds=stale_after)
+            # Operational guard focuses on identity + project isolation, not recency.
+            # This allows agents to recover after downtime without manual re-registration
+            # while still blocking cross-project or missing-identity access.
+            metadata = entry.get("metadata", {}) if isinstance(entry.get("metadata"), dict) else {}
+            required = [
+                "client",
+                "model",
+                "cwd",
+                "permissions_mode",
+                "sandbox_mode",
+                "session_id",
+                "connection_id",
+                "server_version",
+                "verification_source",
+            ]
+            identity_complete = all(str(metadata.get(key, "")).strip() for key in required)
+            return bool(identity_complete) and bool(identity.get("same_project"))
+
+    def _assert_agent_operational(self, agent: str) -> None:
+        if not self._agent_is_operational(agent):
+            raise ValueError(f"agent_not_operational_or_wrong_project: {agent}")
 
     @staticmethod
     def _read_json(path: Path) -> Any:

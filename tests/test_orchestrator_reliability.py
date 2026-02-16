@@ -354,6 +354,73 @@ class ConnectBehaviorTests(unittest.TestCase):
             self.assertFalse(result.get("verified"))
             self.assertIn("missing_identity_fields", str(result.get("reason")))
 
+    def test_cross_project_agent_cannot_claim_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with tempfile.TemporaryDirectory() as outside:
+                root = Path(tmp)
+                policy = _make_policy(root / "policy.json")
+                orch = Orchestrator(root=root, policy=policy)
+                orch.bootstrap()
+                orch.create_task(
+                    title="Cross-project guard",
+                    workstream="frontend",
+                    acceptance_criteria=["guarded"],
+                    owner="gemini",
+                )
+                # Register heartbeat metadata from a different project root.
+                orch.connect_to_leader(
+                    agent="gemini",
+                    metadata={
+                        "role": "team_member",
+                        "client": "gemini-cli",
+                        "model": "gemini",
+                        "cwd": outside,
+                        "project_root": outside,
+                        "permissions_mode": "default",
+                        "sandbox_mode": "workspace-write",
+                        "session_id": "sid-outside",
+                        "connection_id": "cid-outside",
+                        "server_version": "0.1.0",
+                        "verification_source": "test",
+                    },
+                    source="gemini",
+                )
+                with self.assertRaises(ValueError):
+                    orch.claim_next_task(owner="gemini")
+
+    def test_same_project_agent_can_resume_claim_after_stale_heartbeat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+            orch.connect_to_leader(
+                agent="claude_code",
+                metadata=_team_metadata(
+                    root=root,
+                    client="claude-code",
+                    model="claude-opus-4-6",
+                    role="team_member",
+                    sid="sid-stale",
+                    cid="cid-stale",
+                ),
+                source="claude_code",
+            )
+            orch.create_task(
+                title="Resume after stale",
+                workstream="backend",
+                acceptance_criteria=["guarded"],
+                owner="claude_code",
+            )
+            # Force stale timestamp to emulate long outage.
+            agents = orch._read_json(orch.agents_path)
+            agents["claude_code"]["last_seen"] = "2000-01-01T00:00:00+00:00"
+            orch._write_json(orch.agents_path, agents)
+
+            claimed = orch.claim_next_task(owner="claude_code")
+            self.assertIsNotNone(claimed)
+            self.assertEqual("in_progress", claimed["status"])
+
 
 class RoleAuthorizationTests(unittest.TestCase):
     def test_set_role_rejects_non_leader_source(self) -> None:
@@ -565,6 +632,47 @@ class WorkflowReliabilityTests(unittest.TestCase):
                 any(task.get("status") in {"assigned", "in_progress", "reported"} for task in final_tasks),
                 "all tasks should reach done",
             )
+
+    def test_report_retry_queue_recovers_after_initial_submission_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+            orch.connect_to_leader(
+                agent="claude_code",
+                metadata=_team_metadata(root, "claude-code", "claude-opus-4-6", "team_member", "sid-1", "cid-1"),
+                source="claude_code",
+            )
+            task = orch.create_task(
+                title="Retry queue task",
+                workstream="backend",
+                acceptance_criteria=["done"],
+                owner="claude_code",
+            )
+            # Claim the task so report ownership/status is valid once retry runs.
+            orch.claim_next_task(owner="claude_code")
+
+            report = {
+                "task_id": task["id"],
+                "agent": "claude_code",
+                "commit_sha": "abc123",
+                "status": "done",
+                "test_summary": {"command": "pytest -q", "passed": 1, "failed": 0},
+            }
+            queued = orch.enqueue_report_retry(report=report, error="temporary transport failure")
+            self.assertEqual("pending", queued["status"])
+
+            result = orch.process_report_retry_queue(
+                max_attempts=3,
+                base_backoff_seconds=1,
+                max_backoff_seconds=2,
+                limit=5,
+            )
+            self.assertGreaterEqual(len(result["processed"]), 1)
+            self.assertGreaterEqual(result["submitted"], 1)
+            task_after = next(t for t in orch.list_tasks() if t["id"] == task["id"])
+            self.assertEqual("reported", task_after["status"])
 
 
 if __name__ == "__main__":
