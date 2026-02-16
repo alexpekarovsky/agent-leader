@@ -113,9 +113,9 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                 "properties": {
                     "agent": {"type": "string"},
                     "role": {"type": "string", "description": "leader|team_member"},
-                    "source": {"type": "string", "default": "codex"},
+                    "source": {"type": "string"},
                 },
-                "required": ["agent", "role"],
+                "required": ["agent", "role", "source"],
             },
         },
         {
@@ -982,7 +982,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             result = ORCH.set_role(
                 agent=args["agent"],
                 role=args["role"],
-                source=args.get("source", ORCH.manager_agent()),
+                source=args["source"],
             )
             return _ok_and_audit(request_id, name, args, result)
 
