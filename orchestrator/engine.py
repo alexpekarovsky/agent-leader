@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import sys
 import time
 import uuid
 from contextlib import contextmanager
@@ -41,6 +43,12 @@ class Orchestrator:
         self.decisions_dir = self.root / "decisions"
         self.decisions_dir.mkdir(parents=True, exist_ok=True)
         self.state_lock_path = self.state_dir / ".state.lock"
+        if fcntl is None:
+            print(
+                "WARNING: fcntl unavailable; state lock disabled. Multi-process safety is degraded.",
+                file=sys.stderr,
+                flush=True,
+            )
 
     @contextmanager
     def _state_lock(self) -> Any:
@@ -382,9 +390,7 @@ class Orchestrator:
                     f"Report agent '{report['agent']}' does not match task owner '{task.get('owner')}'"
                 )
 
-            report_path = self.bus.reports_dir / f"{task_id}.json"
-            with report_path.open("w", encoding="utf-8") as fh:
-                json.dump(report, fh, indent=2)
+            self.bus.write_report(task_id=task_id, report=report)
 
             task["status"] = "reported"
             task["updated_at"] = self._now()
@@ -1002,12 +1008,12 @@ class Orchestrator:
     ) -> Dict[str, Any]:
         # Long-poll calls are the normal team_member loop heartbeat in practice.
         self._refresh_agent_presence(agent)
-        events = list(self.bus.poll_events(timeout_ms=timeout_ms))
         start = self.get_agent_cursor(agent) if cursor is None else max(0, int(cursor))
+        self.bus.wait_for_event_index(start=start, timeout_ms=timeout_ms)
         filtered: List[Dict[str, Any]] = []
         current_index = start
 
-        for idx, event in enumerate(events[start:], start=start):
+        for idx, event in self.bus.iter_events_from(start=start):
             payload = event.get("payload", {})
             audience = payload.get("audience")
             if audience and agent not in audience and "*" not in audience:
@@ -1451,7 +1457,16 @@ class Orchestrator:
         with tmp.open("w", encoding="utf-8") as fh:
             json.dump(value, fh, indent=2)
             fh.flush()
+            os.fsync(fh.fileno())
         tmp.replace(path)
+        try:
+            dir_fd = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except Exception:
+            pass
 
     @staticmethod
     def _now() -> str:

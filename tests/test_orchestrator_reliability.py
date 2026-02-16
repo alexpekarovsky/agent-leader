@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -22,6 +24,84 @@ def _make_policy(path: Path) -> Policy:
     return Policy.load(path)
 
 
+def _team_metadata(root: Path, client: str, model: str, role: str, sid: str, cid: str) -> dict:
+    return {
+        "role": role,
+        "client": client,
+        "model": model,
+        "cwd": str(root),
+        "project_root": str(root),
+        "permissions_mode": "default",
+        "sandbox_mode": "workspace-write",
+        "session_id": sid,
+        "connection_id": cid,
+        "server_version": "0.1.0",
+        "verification_source": "test",
+    }
+
+
+def _worker_complete_tasks(root_str: str, policy_path_str: str, agent: str) -> None:
+    root = Path(root_str)
+    policy = Policy.load(Path(policy_path_str))
+    orch = Orchestrator(root=root, policy=policy)
+    result = orch.connect_to_leader(
+        agent=agent,
+        metadata=_team_metadata(
+            root=root,
+            client=f"{agent}-cli",
+            model=agent,
+            role="team_member",
+            sid=f"{agent}-sid",
+            cid=f"{agent}-cid",
+        ),
+        source=agent,
+    )
+    auto_claimed = result.get("auto_claimed_task")
+    if isinstance(auto_claimed, dict) and auto_claimed.get("id"):
+        orch.ingest_report(
+            {
+                "task_id": auto_claimed["id"],
+                "agent": agent,
+                "commit_sha": "deadbeef",
+                "status": "done",
+                "test_summary": {"command": "pytest -q", "passed": 1, "failed": 0},
+            }
+        )
+
+    while True:
+        # Simulate normal long-poll heartbeat loop before claiming.
+        orch.poll_events(agent=agent, timeout_ms=10)
+        task = orch.claim_next_task(owner=agent)
+        if not task:
+            break
+        orch.ingest_report(
+            {
+                "task_id": task["id"],
+                "agent": agent,
+                "commit_sha": "deadbeef",
+                "status": "done",
+                "test_summary": {"command": "pytest -q", "passed": 1, "failed": 0},
+            }
+        )
+
+
+def _manager_validate_until_done(root_str: str, policy_path_str: str, expected_done: int, timeout_s: float = 15.0) -> None:
+    root = Path(root_str)
+    policy = Policy.load(Path(policy_path_str))
+    orch = Orchestrator(root=root, policy=policy)
+    start = time.time()
+    while time.time() - start < timeout_s:
+        tasks = orch.list_tasks()
+        for task in tasks:
+            if task.get("status") == "reported":
+                orch.validate_task(task_id=task["id"], passed=True, notes="ok", source="codex")
+        done_count = sum(1 for task in orch.list_tasks() if task.get("status") == "done")
+        if done_count >= expected_done:
+            return
+        time.sleep(0.02)
+    raise TimeoutError(f"manager validation timeout; expected done={expected_done}")
+
+
 class EventBusReliabilityTests(unittest.TestCase):
     def test_iter_events_skips_malformed_lines(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -37,6 +117,30 @@ class EventBusReliabilityTests(unittest.TestCase):
             self.assertEqual(2, len(events))
             self.assertEqual("ok.event", events[0]["type"])
             self.assertEqual("ok.event2", events[1]["type"])
+
+    def test_iter_events_from_returns_offsets_from_cursor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bus = EventBus(Path(tmp) / "bus")
+            for i in range(40):
+                bus.emit("evt", {"idx": i}, source="tester")
+
+            items = list(bus.iter_events_from(start=30))
+            self.assertEqual(10, len(items))
+            self.assertEqual(30, items[0][0])
+            self.assertEqual(39, items[-1][0])
+            self.assertEqual(30, items[0][1]["payload"]["idx"])
+            self.assertEqual(39, items[-1][1]["payload"]["idx"])
+
+    def test_read_audit_limit_returns_tail_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bus = EventBus(Path(tmp) / "bus")
+            for i in range(120):
+                bus.append_audit({"tool": "orchestrator_poll_events", "status": "ok", "n": i})
+
+            rows = list(bus.read_audit(limit=7))
+            self.assertEqual(7, len(rows))
+            self.assertEqual(113, rows[0]["n"])
+            self.assertEqual(119, rows[-1]["n"])
 
 
 class ListAgentsSideEffectTests(unittest.TestCase):
@@ -334,21 +438,6 @@ class PresenceRefreshTests(unittest.TestCase):
 
 
 class WorkflowReliabilityTests(unittest.TestCase):
-    def _team_metadata(self, root: Path, client: str, model: str, role: str, sid: str, cid: str) -> dict:
-        return {
-            "role": role,
-            "client": client,
-            "model": model,
-            "cwd": str(root),
-            "project_root": str(root),
-            "permissions_mode": "default",
-            "sandbox_mode": "workspace-write",
-            "session_id": sid,
-            "connection_id": cid,
-            "server_version": "0.1.0",
-            "verification_source": "test",
-        }
-
     def test_core_flow_reliable_across_five_runs(self) -> None:
         for _ in range(5):
             with tempfile.TemporaryDirectory() as tmp:
@@ -360,7 +449,7 @@ class WorkflowReliabilityTests(unittest.TestCase):
                 # Leader connects with verified manager identity.
                 leader = orch.connect_to_leader(
                     agent="codex",
-                    metadata=self._team_metadata(root, "codex-cli", "gpt-5", "manager", "s0", "c0"),
+                    metadata=_team_metadata(root, "codex-cli", "gpt-5", "manager", "s0", "c0"),
                     source="codex",
                 )
                 self.assertTrue(leader.get("connected"))
@@ -369,12 +458,12 @@ class WorkflowReliabilityTests(unittest.TestCase):
                 # Team members connect with full identity metadata.
                 cc = orch.connect_to_leader(
                     agent="claude_code",
-                    metadata=self._team_metadata(root, "claude-code", "claude-opus-4-6", "team_member", "s1", "c1"),
+                    metadata=_team_metadata(root, "claude-code", "claude-opus-4-6", "team_member", "s1", "c1"),
                     source="claude_code",
                 )
                 gm = orch.connect_to_leader(
                     agent="gemini",
-                    metadata=self._team_metadata(root, "gemini-cli", "gemini-cli", "team_member", "s2", "c2"),
+                    metadata=_team_metadata(root, "gemini-cli", "gemini-cli", "team_member", "s2", "c2"),
                     source="gemini",
                 )
                 handshake = orch.connect_team_members(
@@ -393,16 +482,89 @@ class WorkflowReliabilityTests(unittest.TestCase):
                 t2 = orch.create_task("FE task", "frontend", ["done"], owner="gemini")
                 cc_claim = orch.connect_to_leader(
                     agent="claude_code",
-                    metadata=self._team_metadata(root, "claude-code", "claude-opus-4-6", "team_member", "s3", "c3"),
+                    metadata=_team_metadata(root, "claude-code", "claude-opus-4-6", "team_member", "s3", "c3"),
                     source="claude_code",
                 )
                 gm_claim = orch.connect_to_leader(
                     agent="gemini",
-                    metadata=self._team_metadata(root, "gemini-cli", "gemini-cli", "team_member", "s4", "c4"),
+                    metadata=_team_metadata(root, "gemini-cli", "gemini-cli", "team_member", "s4", "c4"),
                     source="gemini",
                 )
                 self.assertEqual(t1["id"], (cc_claim.get("auto_claimed_task") or {}).get("id"))
                 self.assertEqual(t2["id"], (gm_claim.get("auto_claimed_task") or {}).get("id"))
+
+    def test_multi_process_manager_and_two_workers_complete_all_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy_path = root / "policy.json"
+            policy = _make_policy(policy_path)
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+            orch.connect_to_leader(
+                agent="codex",
+                metadata=_team_metadata(root, "codex-cli", "gpt-5", "manager", "m-sid", "m-cid"),
+                source="codex",
+            )
+            orch.connect_to_leader(
+                agent="claude_code",
+                metadata=_team_metadata(root, "claude-code", "claude-opus-4-6", "team_member", "c-sid", "c-cid"),
+                source="claude_code",
+            )
+            orch.connect_to_leader(
+                agent="gemini",
+                metadata=_team_metadata(root, "gemini-cli", "gemini-cli", "team_member", "g-sid", "g-cid"),
+                source="gemini",
+            )
+            orch.connect_team_members(
+                source="codex",
+                team_members=["claude_code", "gemini"],
+                timeout_seconds=2,
+                poll_interval_seconds=1,
+            )
+
+            total_tasks = 24
+            for idx in range(total_tasks):
+                owner = "claude_code" if idx % 2 == 0 else "gemini"
+                orch.create_task(
+                    title=f"stress-{idx}",
+                    workstream="backend" if owner == "claude_code" else "frontend",
+                    acceptance_criteria=["done"],
+                    owner=owner,
+                )
+
+            manager = multiprocessing.Process(
+                target=_manager_validate_until_done,
+                args=(str(root), str(policy_path), total_tasks, 20.0),
+            )
+            cc_worker = multiprocessing.Process(
+                target=_worker_complete_tasks,
+                args=(str(root), str(policy_path), "claude_code"),
+            )
+            gm_worker = multiprocessing.Process(
+                target=_worker_complete_tasks,
+                args=(str(root), str(policy_path), "gemini"),
+            )
+            manager.start()
+            cc_worker.start()
+            gm_worker.start()
+            manager.join(25)
+            cc_worker.join(25)
+            gm_worker.join(25)
+
+            self.assertFalse(manager.is_alive(), "manager process did not finish")
+            self.assertFalse(cc_worker.is_alive(), "claude_code worker did not finish")
+            self.assertFalse(gm_worker.is_alive(), "gemini worker did not finish")
+            self.assertEqual(0, manager.exitcode)
+            self.assertEqual(0, cc_worker.exitcode)
+            self.assertEqual(0, gm_worker.exitcode)
+
+            final_tasks = orch.list_tasks()
+            done_count = sum(1 for task in final_tasks if task.get("status") == "done")
+            self.assertEqual(total_tasks, done_count)
+            self.assertFalse(
+                any(task.get("status") in {"assigned", "in_progress", "reported"} for task in final_tasks),
+                "all tasks should reach done",
+            )
 
 
 if __name__ == "__main__":
