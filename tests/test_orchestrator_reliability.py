@@ -211,6 +211,30 @@ class ConnectBehaviorTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 orch.connect_team_members(source="codex", team_members=["gemini"], timeout_seconds=1)
 
+    def test_connect_to_leader_requires_explicit_identity_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+
+            result = orch.connect_to_leader(
+                agent="gemini",
+                metadata={
+                    "role": "team_member",
+                    "model": "gemini-cli",
+                    "permissions_mode": "default",
+                    "sandbox_mode": "workspace-write",
+                    "session_id": "sess",
+                    "connection_id": "conn",
+                },
+                source="gemini",
+            )
+
+            self.assertFalse(result.get("connected"))
+            self.assertFalse(result.get("verified"))
+            self.assertIn("missing_identity_fields", str(result.get("reason")))
+
 
 class RoleAuthorizationTests(unittest.TestCase):
     def test_set_role_rejects_non_leader_source(self) -> None:

@@ -771,11 +771,6 @@ class Orchestrator:
         details = dict(metadata or {})
         details.setdefault("role", "team_member")
         details["status"] = status
-        details.setdefault("project_root", str(self.root))
-        details.setdefault("cwd", str(self.root))
-        details.setdefault("client", agent)
-        details.setdefault("server_version", "0.1.0")
-        details.setdefault("verification_source", "connect_to_leader")
 
         self.register_agent(agent=agent, metadata=details)
         entry = self.heartbeat(agent=agent, metadata={"status": status})
