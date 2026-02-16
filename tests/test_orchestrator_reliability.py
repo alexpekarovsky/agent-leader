@@ -212,5 +212,33 @@ class ConnectBehaviorTests(unittest.TestCase):
                 orch.connect_team_members(source="codex", team_members=["gemini"], timeout_seconds=1)
 
 
+class PresenceRefreshTests(unittest.TestCase):
+    def test_refresh_agent_presence_preserves_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+            orch.register_agent(
+                "gemini",
+                {
+                    "client": "gemini-cli",
+                    "model": "gemini-cli",
+                    "cwd": str(root),
+                    "permissions_mode": "default",
+                    "sandbox_mode": "default",
+                    "session_id": "sess",
+                    "connection_id": "conn",
+                    "server_version": "0.1.0",
+                    "verification_source": "test",
+                },
+            )
+
+            before = orch._read_json(orch.agents_path)["gemini"]["metadata"]
+            orch._refresh_agent_presence("gemini")
+            after = orch._read_json(orch.agents_path)["gemini"]["metadata"]
+            self.assertEqual(before, after)
+
+
 if __name__ == "__main__":
     unittest.main()

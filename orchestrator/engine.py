@@ -1200,14 +1200,15 @@ class Orchestrator:
         """Update last_seen/status without emitting extra heartbeat events."""
         if not isinstance(agent, str) or not agent.strip():
             return
-        agents = self._read_json(self.agents_path)
-        if not isinstance(agents, dict):
-            agents = {}
-        entry = agents.get(agent, {"agent": agent, "metadata": {}})
-        entry["status"] = "active"
-        entry["last_seen"] = self._now()
-        agents[agent] = entry
-        self._write_json(self.agents_path, agents)
+        with self._state_lock():
+            agents = self._read_json(self.agents_path)
+            if not isinstance(agents, dict):
+                agents = {}
+            entry = agents.get(agent, {"agent": agent, "metadata": {}})
+            entry["status"] = "active"
+            entry["last_seen"] = self._now()
+            agents[agent] = entry
+            self._write_json(self.agents_path, agents)
 
     def _heartbeat_timeout_seconds(self) -> int:
         minutes = self.policy.triggers.get("heartbeat_timeout_minutes", 10)
