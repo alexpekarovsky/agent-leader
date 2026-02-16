@@ -142,6 +142,64 @@ class ConnectBehaviorTests(unittest.TestCase):
             assigned = orch.list_tasks_for_owner("codex")
             self.assertEqual("assigned", assigned[0].get("status"))
 
+    def test_manager_connect_as_team_member_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+
+            result = orch.connect_to_leader(
+                agent="codex",
+                metadata={
+                    "role": "team_member",
+                    "client": "codex-cli",
+                    "model": "gpt-5",
+                    "cwd": str(root),
+                    "project_root": str(root),
+                    "permissions_mode": "default",
+                    "sandbox_mode": "workspace-write",
+                    "session_id": "manager-bad-role",
+                    "connection_id": "manager-bad-role-conn",
+                    "server_version": "0.1.0",
+                    "verification_source": "test",
+                },
+                source="codex",
+            )
+
+            self.assertFalse(result.get("connected"))
+            self.assertEqual("manager_role_mismatch", result.get("reason"))
+
+    def test_connect_rejects_cwd_outside_project_even_if_project_root_claims_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with tempfile.TemporaryDirectory() as outside:
+                root = Path(tmp)
+                policy = _make_policy(root / "policy.json")
+                orch = Orchestrator(root=root, policy=policy)
+                orch.bootstrap()
+
+                result = orch.connect_to_leader(
+                    agent="gemini",
+                    metadata={
+                        "role": "team_member",
+                        "client": "gemini-cli",
+                        "model": "gemini-cli",
+                        "cwd": outside,
+                        "project_root": str(root),
+                        "permissions_mode": "default",
+                        "sandbox_mode": "workspace-write",
+                        "session_id": "outside-cwd",
+                        "connection_id": "outside-cwd-conn",
+                        "server_version": "0.1.0",
+                        "verification_source": "test",
+                    },
+                    source="gemini",
+                )
+
+                self.assertFalse(result.get("connected"))
+                self.assertFalse(bool(result.get("identity", {}).get("same_project")))
+                self.assertEqual("project_mismatch", result.get("reason"))
+
 
 if __name__ == "__main__":
     unittest.main()

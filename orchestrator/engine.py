@@ -761,6 +761,7 @@ class Orchestrator:
         announce: bool = True,
         source: Optional[str] = None,
     ) -> Dict[str, Any]:
+        manager = self.manager_agent()
         details = dict(metadata or {})
         details.setdefault("role", "team_member")
         details["status"] = status
@@ -783,9 +784,15 @@ class Orchestrator:
         if effective_source != agent:
             verification["verified"] = False
             verification["reason"] = "source_agent_mismatch"
+        requested_role = str(details.get("role", "team_member")).strip().lower()
+        if agent == manager and requested_role != "manager":
+            verification["verified"] = False
+            verification["reason"] = "manager_role_mismatch"
+        if agent != manager and requested_role == "manager":
+            verification["verified"] = False
+            verification["reason"] = "non_manager_declared_manager_role"
         connected = bool(verification.get("verified")) and bool(verification.get("same_project"))
 
-        manager = self.manager_agent()
         event_payload = {
             "agent": agent,
             "status": status,
@@ -1261,11 +1268,15 @@ class Orchestrator:
 
         project_root = str(metadata.get("project_root", ""))
         cwd = str(metadata.get("cwd", ""))
+        project_root_resolved = self._safe_resolve(project_root) if project_root else None
+        cwd_resolved = self._safe_resolve(cwd) if cwd else None
         same_project = False
-        if project_root:
-            same_project = self._safe_resolve(project_root) == self.root
-        elif cwd:
-            same_project = self._safe_resolve(cwd) == self.root
+        if project_root_resolved is not None and cwd_resolved is not None:
+            same_project = project_root_resolved == self.root and self._path_within_project(cwd_resolved)
+        elif project_root_resolved is not None:
+            same_project = project_root_resolved == self.root
+        elif cwd_resolved is not None:
+            same_project = self._path_within_project(cwd_resolved)
 
         verification = self._verification_for_entry(entry=entry, stale_after_seconds=stale_after_seconds)
         verification["same_project"] = same_project
@@ -1321,6 +1332,12 @@ class Orchestrator:
             return Path(raw_path).expanduser().resolve()
         except Exception:
             return None
+
+    def _path_within_project(self, path: Path) -> bool:
+        try:
+            return path == self.root or self.root in path.parents
+        except Exception:
+            return False
 
     def _emit_stale_notice_if_due(
         self,
