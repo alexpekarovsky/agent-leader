@@ -31,11 +31,12 @@ class EventBus:
         self._audit_lock = root / ".audit.lock"
 
     @contextmanager
-    def _file_lock(self, path: Path) -> Iterable[None]:
+    def _file_lock(self, path: Path, exclusive: bool = True) -> Iterable[None]:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a+", encoding="utf-8") as fh:
             if fcntl is not None:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+                mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+                fcntl.flock(fh.fileno(), mode)
             try:
                 yield
             finally:
@@ -60,16 +61,17 @@ class EventBus:
             return []
 
         events = []
-        with self.events_path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    events.append(json.loads(line))
-                except Exception:
-                    # Skip malformed lines instead of failing all consumers.
-                    continue
+        with self._file_lock(self._events_lock, exclusive=False):
+            with self.events_path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        events.append(json.loads(line))
+                    except Exception:
+                        # Skip malformed lines instead of failing all consumers.
+                        continue
         return events
 
     def poll_events(self, timeout_ms: int = 0) -> Iterable[Dict[str, Any]]:
@@ -117,20 +119,21 @@ class EventBus:
         if not self.audit_path.exists():
             return []
         rows: list[Dict[str, Any]] = []
-        with self.audit_path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    item = json.loads(line)
-                except Exception:
-                    continue
-                if tool_name and item.get("tool") != tool_name:
-                    continue
-                if status and item.get("status") != status:
-                    continue
-                rows.append(item)
+        with self._file_lock(self._audit_lock, exclusive=False):
+            with self.audit_path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        item = json.loads(line)
+                    except Exception:
+                        continue
+                    if tool_name and item.get("tool") != tool_name:
+                        continue
+                    if status and item.get("status") != status:
+                        continue
+                    rows.append(item)
         if limit <= 0:
             return rows
         return rows[-limit:]

@@ -270,7 +270,7 @@ class Orchestrator:
     def claim_next_task(self, owner: str) -> Optional[Dict[str, Any]]:
         # Treat a claim attempt as proof-of-life from the team_member.
         with self._state_lock():
-            self._refresh_agent_presence(owner)
+            self._refresh_agent_presence_unlocked(owner)
             tasks = self._read_json(self.tasks_path)
             overrides = self._read_json(self.claim_overrides_path)
             if not isinstance(overrides, dict):
@@ -346,6 +346,12 @@ class Orchestrator:
             task = next((t for t in tasks if t["id"] == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
+            owner = str(task.get("owner", ""))
+            manager = self.manager_agent()
+            if source not in {owner, manager}:
+                raise ValueError(
+                    f"unauthorized_status_update: source={source}, task_owner={owner}, current_leader={manager}"
+                )
 
             task["status"] = status
             task["updated_at"] = self._now()
@@ -366,7 +372,7 @@ class Orchestrator:
 
         task_id = report["task_id"]
         with self._state_lock():
-            self._refresh_agent_presence(str(report["agent"]))
+            self._refresh_agent_presence_unlocked(str(report["agent"]))
             tasks = self._read_json(self.tasks_path)
             task = next((item for item in tasks if item["id"] == task_id), None)
             if task is None:
@@ -1028,15 +1034,16 @@ class Orchestrator:
 
     def ack_event(self, agent: str, event_id: str) -> Dict[str, Any]:
         self._refresh_agent_presence(agent)
-        acks = self._read_json(self.acks_path)
-        if not isinstance(acks, dict):
-            acks = {}
-            self._write_json(self.acks_path, acks)
-        acked = acks.get(agent, [])
-        if event_id not in acked:
-            acked.append(event_id)
-            acks[agent] = acked
-            self._write_json(self.acks_path, acks)
+        with self._state_lock():
+            acks = self._read_json(self.acks_path)
+            if not isinstance(acks, dict):
+                acks = {}
+                self._write_json(self.acks_path, acks)
+            acked = acks.get(agent, [])
+            if event_id not in acked:
+                acked.append(event_id)
+                acks[agent] = acked
+                self._write_json(self.acks_path, acks)
 
         self.bus.emit(
             "event.acked",
@@ -1205,14 +1212,20 @@ class Orchestrator:
         if not isinstance(agent, str) or not agent.strip():
             return
         with self._state_lock():
-            agents = self._read_json(self.agents_path)
-            if not isinstance(agents, dict):
-                agents = {}
-            entry = agents.get(agent, {"agent": agent, "metadata": {}})
-            entry["status"] = "active"
-            entry["last_seen"] = self._now()
-            agents[agent] = entry
-            self._write_json(self.agents_path, agents)
+            self._refresh_agent_presence_unlocked(agent)
+
+    def _refresh_agent_presence_unlocked(self, agent: str) -> None:
+        """Update last_seen/status without lock acquisition (caller must hold _state_lock)."""
+        if not isinstance(agent, str) or not agent.strip():
+            return
+        agents = self._read_json(self.agents_path)
+        if not isinstance(agents, dict):
+            agents = {}
+        entry = agents.get(agent, {"agent": agent, "metadata": {}})
+        entry["status"] = "active"
+        entry["last_seen"] = self._now()
+        agents[agent] = entry
+        self._write_json(self.agents_path, agents)
 
     def _heartbeat_timeout_seconds(self) -> int:
         minutes = self.policy.triggers.get("heartbeat_timeout_minutes", 10)

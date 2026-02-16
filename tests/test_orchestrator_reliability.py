@@ -105,6 +105,21 @@ class TaskStatusGuardTests(unittest.TestCase):
             updated = orch.set_task_status(task_id=task["id"], status="done", source="codex")
             self.assertEqual("done", updated.get("status"))
 
+    def test_non_owner_non_leader_cannot_change_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+            task = orch.create_task(
+                title="Status auth",
+                workstream="backend",
+                acceptance_criteria=["owner/leader only"],
+                owner="claude_code",
+            )
+            with self.assertRaises(ValueError):
+                orch.set_task_status(task_id=task["id"], status="blocked", source="gemini")
+
 
 class ConnectBehaviorTests(unittest.TestCase):
     def test_manager_connect_does_not_auto_claim(self) -> None:
@@ -316,6 +331,78 @@ class PresenceRefreshTests(unittest.TestCase):
             orch._refresh_agent_presence("gemini")
             after = orch._read_json(orch.agents_path)["gemini"]["metadata"]
             self.assertEqual(before, after)
+
+
+class WorkflowReliabilityTests(unittest.TestCase):
+    def _team_metadata(self, root: Path, client: str, model: str, role: str, sid: str, cid: str) -> dict:
+        return {
+            "role": role,
+            "client": client,
+            "model": model,
+            "cwd": str(root),
+            "project_root": str(root),
+            "permissions_mode": "default",
+            "sandbox_mode": "workspace-write",
+            "session_id": sid,
+            "connection_id": cid,
+            "server_version": "0.1.0",
+            "verification_source": "test",
+        }
+
+    def test_core_flow_reliable_across_five_runs(self) -> None:
+        for _ in range(5):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                policy = _make_policy(root / "policy.json")
+                orch = Orchestrator(root=root, policy=policy)
+                orch.bootstrap()
+
+                # Leader connects with verified manager identity.
+                leader = orch.connect_to_leader(
+                    agent="codex",
+                    metadata=self._team_metadata(root, "codex-cli", "gpt-5", "manager", "s0", "c0"),
+                    source="codex",
+                )
+                self.assertTrue(leader.get("connected"))
+                self.assertIsNone(leader.get("auto_claimed_task"))
+
+                # Team members connect with full identity metadata.
+                cc = orch.connect_to_leader(
+                    agent="claude_code",
+                    metadata=self._team_metadata(root, "claude-code", "claude-opus-4-6", "team_member", "s1", "c1"),
+                    source="claude_code",
+                )
+                gm = orch.connect_to_leader(
+                    agent="gemini",
+                    metadata=self._team_metadata(root, "gemini-cli", "gemini-cli", "team_member", "s2", "c2"),
+                    source="gemini",
+                )
+                handshake = orch.connect_team_members(
+                    source="codex",
+                    team_members=["claude_code", "gemini"],
+                    timeout_seconds=3,
+                    poll_interval_seconds=1,
+                )
+
+                self.assertTrue(cc.get("connected"))
+                self.assertTrue(gm.get("connected"))
+                self.assertEqual("connected", handshake["status"])
+
+                # Assigned tasks are auto-claimed on reconnect for team members.
+                t1 = orch.create_task("BE task", "backend", ["done"], owner="claude_code")
+                t2 = orch.create_task("FE task", "frontend", ["done"], owner="gemini")
+                cc_claim = orch.connect_to_leader(
+                    agent="claude_code",
+                    metadata=self._team_metadata(root, "claude-code", "claude-opus-4-6", "team_member", "s3", "c3"),
+                    source="claude_code",
+                )
+                gm_claim = orch.connect_to_leader(
+                    agent="gemini",
+                    metadata=self._team_metadata(root, "gemini-cli", "gemini-cli", "team_member", "s4", "c4"),
+                    source="gemini",
+                )
+                self.assertEqual(t1["id"], (cc_claim.get("auto_claimed_task") or {}).get("id"))
+                self.assertEqual(t2["id"], (gm_claim.get("auto_claimed_task") or {}).get("id"))
 
 
 if __name__ == "__main__":

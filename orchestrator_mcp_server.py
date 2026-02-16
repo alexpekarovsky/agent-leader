@@ -1141,9 +1141,10 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             test_summary = args.get("test_summary", {})
             if isinstance(test_summary, str):
                 test_summary = _parse_json_argument(test_summary, "object")
+            reporting_agent = args["agent"]
             report = {
                 "task_id": args["task_id"],
-                "agent": args["agent"],
+                "agent": reporting_agent,
                 "commit_sha": args["commit_sha"],
                 "status": args["status"],
                 "test_summary": test_summary,
@@ -1162,6 +1163,8 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                         "pending_total": cycle.get("pending_total", 0),
                     },
                 }
+                # Help workers continue without extra manual "claim next" reminders.
+                result["auto_claim_next"] = ORCH.claim_next_task(owner=reporting_agent)
             return _ok_and_audit(request_id, name, args, result)
 
         if name == "orchestrator_validate_task":
