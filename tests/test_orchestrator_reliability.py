@@ -74,5 +74,37 @@ class ListAgentsSideEffectTests(unittest.TestCase):
             self.assertEqual([], list(orch.bus.iter_events()))
 
 
+class TaskStatusGuardTests(unittest.TestCase):
+    def test_non_manager_cannot_set_done_directly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+            task = orch.create_task(
+                title="Guarded completion",
+                workstream="backend",
+                acceptance_criteria=["Use submit_report"],
+            )
+
+            with self.assertRaises(ValueError):
+                orch.set_task_status(task_id=task["id"], status="done", source="claude_code")
+
+    def test_manager_can_set_done_directly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+            task = orch.create_task(
+                title="Manager override",
+                workstream="backend",
+                acceptance_criteria=["Manager can override"],
+            )
+
+            updated = orch.set_task_status(task_id=task["id"], status="done", source="codex")
+            self.assertEqual("done", updated.get("status"))
+
+
 if __name__ == "__main__":
     unittest.main()

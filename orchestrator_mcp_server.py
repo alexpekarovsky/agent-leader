@@ -9,11 +9,18 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from orchestrator.engine import Orchestrator
 from orchestrator.policy import Policy
+
+try:
+    import fcntl
+except Exception:  # pragma: no cover
+    fcntl = None
 
 sys.stdout = os.fdopen(sys.stdout.fileno(), "w", 1)
 sys.stderr = os.fdopen(sys.stderr.fileno(), "w", 1)
@@ -40,6 +47,9 @@ try:
 except Exception as exc:
     print(f"Failed to initialize orchestrator: {exc}", file=sys.stderr)
     raise
+
+_AUTO_LOOP_STOP = threading.Event()
+_AUTO_LOOP_THREAD: Optional[threading.Thread] = None
 
 
 def send_response(response: Dict[str, Any]) -> None:
@@ -317,7 +327,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_update_task_status",
-            "description": "Update task lifecycle status (in_progress, blocked, etc.) with note metadata.",
+            "description": "Update task lifecycle status (in_progress, blocked, etc.) with note metadata. Do not use for completion: use orchestrator_submit_report.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -749,6 +759,55 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
         "pending_total": sum(bucket["pending"] for bucket in by_owner.values()),
         "open_blockers": open_blockers,
     }
+
+
+def _auto_manager_loop() -> None:
+    interval_seconds = int(os.getenv("ORCHESTRATOR_AUTO_MANAGER_CYCLE_SECONDS", "15"))
+    interval_seconds = max(5, min(interval_seconds, 300))
+    lock_path = ORCH.state_dir / ".manager_auto_cycle.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_fh = lock_path.open("a+", encoding="utf-8")
+    has_lock = False
+
+    while not _AUTO_LOOP_STOP.is_set():
+        if not has_lock:
+            if fcntl is None:
+                has_lock = True
+            else:
+                try:
+                    fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    has_lock = True
+                except BlockingIOError:
+                    has_lock = False
+        if has_lock:
+            try:
+                _manager_cycle(strict=True)
+            except Exception as exc:  # pragma: no cover - defensive loop safety
+                print(f"auto-manager-cycle error: {exc}", file=sys.stderr, flush=True)
+        _AUTO_LOOP_STOP.wait(interval_seconds)
+
+    if has_lock and fcntl is not None:
+        try:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+    lock_fh.close()
+
+
+def _start_auto_manager_loop() -> None:
+    global _AUTO_LOOP_THREAD
+    enabled_raw = os.getenv("ORCHESTRATOR_AUTO_MANAGER_CYCLE", "1").strip().lower()
+    enabled = enabled_raw in {"1", "true", "yes", "on"}
+    if not enabled:
+        return
+    if _AUTO_LOOP_THREAD is not None and _AUTO_LOOP_THREAD.is_alive():
+        return
+    _AUTO_LOOP_THREAD = threading.Thread(
+        target=_auto_manager_loop,
+        name="orchestrator-auto-manager-cycle",
+        daemon=True,
+    )
+    _AUTO_LOOP_THREAD.start()
 
 
 def _percent(done: int, total: int) -> int:
@@ -1212,6 +1271,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def main() -> None:
+    _start_auto_manager_loop()
     while True:
         try:
             line = sys.stdin.readline()

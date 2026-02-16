@@ -330,6 +330,11 @@ class Orchestrator:
         return {"ok": True, "agent": agent, "task_id": task_id}
 
     def set_task_status(self, task_id: str, status: str, source: str, note: str = "") -> Dict[str, Any]:
+        normalized = str(status).strip().lower()
+        # Completion must flow through ingest_report/submit_report so manager validation
+        # can enforce commit + test evidence and emit consistent report events.
+        if normalized in {"done", "reported"} and source != self.manager_agent():
+            raise ValueError("Use orchestrator_submit_report for completion/report transitions")
         with self._state_lock():
             tasks = self._read_json(self.tasks_path)
             task = next((t for t in tasks if t["id"] == task_id), None)
