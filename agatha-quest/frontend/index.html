@@ -16,14 +16,22 @@
     </header>
 
     <main class="layout">
-      <section class="panel case-panel">
+      <section class="panel case-panel wide">
         <h2>Case Brief</h2>
         <div id="case-info" class="case-info">Begin a new investigation to reveal the case file.</div>
-        <div id="status-strip" class="status-strip">Phase: Investigation</div>
+        <div id="pressure-container" class="pressure-container">
+          <div class="pressure-track">
+            <div id="pressure-bar" class="pressure-fill"></div>
+          </div>
+          <span id="pressure-label" class="pressure-label">10 / 10 actions</span>
+        </div>
+        <div id="status-strip" class="status-strip">
+          <span class="phase-text">Investigation</span>
+        </div>
       </section>
 
       <section class="panel">
-        <h2>Clue Locations</h2>
+        <h2>Manor Locations</h2>
         <div id="locations" class="grid"></div>
       </section>
 
@@ -42,12 +50,12 @@
         <ul id="interrogations" class="log"></ul>
       </section>
 
-      <section class="panel accusation-panel">
+      <section class="panel accusation-panel wide">
         <h2>Final Accusation</h2>
-        <p>When you have enough evidence, accuse the murderer.</p>
+        <p>When you have gathered enough evidence, name the killer.</p>
         <div class="accusation-controls">
           <select id="accused-select"></select>
-          <button id="accuse-btn" class="btn btn-danger">Accuse</button>
+          <button id="accuse-btn" class="btn btn-danger" disabled>Accuse</button>
         </div>
         <div id="verdict" class="verdict"></div>
       </section>
