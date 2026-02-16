@@ -6,12 +6,12 @@
 - **Suite**: `pytest agatha-quest/backend/tests/ -v`
 - **Coverage**: All API endpoints, game state transitions, pressure clock, location exploration
 - **Gate**: 100% pass, 0 failures
-- **Current**: 50 tests
+- **Current**: 61 tests (50 unit + 11 regression)
 
 ### Unit Tests (Frontend)
-- **Suite**: TBD (when frontend test framework added)
+- **Suite**: Manual browser verification (no JS test framework in current stack)
 - **Coverage**: Component rendering, user interactions, API response handling
-- **Gate**: 100% pass, 0 failures
+- **Gate**: Manual smoke test passes
 
 ### Integration Tests
 - **Suite**: Backend API end-to-end game flow tests
