@@ -90,6 +90,9 @@ class Orchestrator:
         poll_interval_seconds: int = 2,
         stale_after_seconds: Optional[int] = None,
     ) -> Dict[str, Any]:
+        manager = self.manager_agent()
+        if source != manager:
+            raise ValueError(f"leader_mismatch: source={source}, current_leader={manager}")
         stale_after = stale_after_seconds if stale_after_seconds is not None else self._heartbeat_timeout_seconds()
         requested = sorted({w.strip() for w in team_members if isinstance(w, str) and w.strip()})
         if not requested:

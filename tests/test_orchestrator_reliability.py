@@ -200,6 +200,17 @@ class ConnectBehaviorTests(unittest.TestCase):
                 self.assertFalse(bool(result.get("identity", {}).get("same_project")))
                 self.assertEqual("project_mismatch", result.get("reason"))
 
+    def test_connect_team_members_rejects_non_leader_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+            orch.set_role(agent="claude_code", role="leader", source="codex")
+
+            with self.assertRaises(ValueError):
+                orch.connect_team_members(source="codex", team_members=["gemini"], timeout_seconds=1)
+
 
 if __name__ == "__main__":
     unittest.main()
