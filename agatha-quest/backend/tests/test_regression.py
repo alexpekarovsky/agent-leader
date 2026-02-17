@@ -10,7 +10,7 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from app import app, reset_game, game_state as _gs
+from app import app, reset_game, sessions
 from game_data import SUSPECTS, CLUES, LOCATIONS, CASE_INFO, PRESSURE_CLOCK
 
 
@@ -19,6 +19,7 @@ def client():
     app.config['TESTING'] = True
     with app.test_client() as c:
         reset_game()
+        c.post('/api/game/new')  # Establish a session
         yield c
 
 

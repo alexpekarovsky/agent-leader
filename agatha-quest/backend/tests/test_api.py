@@ -8,8 +8,16 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from app import app, reset_game
+from app import app, reset_game, sessions
 from game_data import SUSPECTS, CLUES, LOCATIONS, CASE_INFO, PRESSURE_CLOCK
+
+
+def get_session_state(client):
+    """Get the game state dict for the test client's current session."""
+    cookie = client.get_cookie('agatha_session')
+    if cookie:
+        return sessions.get(cookie.value)
+    return None
 
 
 @pytest.fixture
@@ -17,7 +25,8 @@ def client():
     """Create test client."""
     app.config['TESTING'] = True
     with app.test_client() as client:
-        reset_game()  # Reset before each test
+        reset_game()  # Clear all sessions
+        client.post('/api/game/new')  # Establish a session
         yield client
 
 
@@ -499,9 +508,9 @@ def test_pressure_in_interrogate_response(client):
 
 def test_pressure_warning_triggers(client):
     """Test that pressure warning fires at threshold."""
-    from app import game_state
+    state = get_session_state(client)
     # Set pressure just above warning threshold
-    game_state["pressure_remaining"] = PRESSURE_CLOCK['warning'] + PRESSURE_CLOCK['cost_search']
+    state["pressure_remaining"] = PRESSURE_CLOCK['warning'] + PRESSURE_CLOCK['cost_search']
 
     response = client.post('/api/game/locations/garden/search')
     data = response.get_json()
@@ -511,8 +520,8 @@ def test_pressure_warning_triggers(client):
 
 def test_pressure_expired_ends_game_on_search(client):
     """Test that running out of pressure ends the game during search."""
-    from app import game_state
-    game_state["pressure_remaining"] = 0 + PRESSURE_CLOCK['cost_search']
+    state = get_session_state(client)
+    state["pressure_remaining"] = 0 + PRESSURE_CLOCK['cost_search']
 
     response = client.post('/api/game/locations/garden/search')
     data = response.get_json()
@@ -528,8 +537,8 @@ def test_pressure_expired_ends_game_on_search(client):
 
 def test_pressure_expired_ends_game_on_interrogate(client):
     """Test that running out of pressure ends the game during interrogation."""
-    from app import game_state
-    game_state["pressure_remaining"] = 1  # Less than cost_interrogate (2)
+    state = get_session_state(client)
+    state["pressure_remaining"] = 1  # Less than cost_interrogate (2)
 
     response = client.post('/api/game/interrogate', json={'suspect_id': SUSPECTS[0]['id']})
     data = response.get_json()
@@ -545,8 +554,8 @@ def test_pressure_expired_ends_game_on_interrogate(client):
 
 def test_cannot_search_after_pressure_expired(client):
     """Test that actions are blocked after game ends from pressure."""
-    from app import game_state
-    game_state["pressure_remaining"] = PRESSURE_CLOCK['cost_search']
+    state = get_session_state(client)
+    state["pressure_remaining"] = PRESSURE_CLOCK['cost_search']
     client.post('/api/game/locations/garden/search')  # Exhausts pressure
 
     response = client.post('/api/game/locations/study/search')
@@ -555,8 +564,8 @@ def test_cannot_search_after_pressure_expired(client):
 
 def test_cannot_interrogate_after_pressure_expired(client):
     """Test that interrogation is blocked after game ends from pressure."""
-    from app import game_state
-    game_state["pressure_remaining"] = PRESSURE_CLOCK['cost_search']
+    state = get_session_state(client)
+    state["pressure_remaining"] = PRESSURE_CLOCK['cost_search']
     client.post('/api/game/locations/garden/search')  # Exhausts pressure
 
     response = client.post('/api/game/interrogate', json={'suspect_id': SUSPECTS[0]['id']})
@@ -565,8 +574,8 @@ def test_cannot_interrogate_after_pressure_expired(client):
 
 def test_pressure_resets_on_new_game(client):
     """Test that pressure resets when starting a new game."""
-    from app import game_state
-    game_state["pressure_remaining"] = 1
+    state = get_session_state(client)
+    state["pressure_remaining"] = 1
 
     client.post('/api/game/new')
 
@@ -681,3 +690,116 @@ def test_save_load_roundtrip_mid_accusation(client):
 
     response = client.post('/api/game/accuse', json={'suspect_id': 'dr_hartley'})
     assert response.get_json()['correct'] is True
+
+
+# --- Session isolation tests ---
+
+def test_sessions_are_isolated():
+    """Test that two clients have completely separate game states."""
+    app.config['TESTING'] = True
+    reset_game()
+
+    with app.test_client() as client_a:
+        client_a.post('/api/game/new')
+        # Client A discovers a clue
+        client_a.post('/api/game/locations/study/search')
+        state_a = client_a.get('/api/game/state').get_json()
+        assert state_a['clues_discovered_count'] == 1
+
+        with app.test_client() as client_b:
+            client_b.post('/api/game/new')
+            # Client B should have no clues
+            state_b = client_b.get('/api/game/state').get_json()
+            assert state_b['clues_discovered_count'] == 0
+
+            # Client B discovers different clue
+            client_b.post('/api/game/locations/victim_room/search')
+            state_b = client_b.get('/api/game/state').get_json()
+            assert state_b['clues_discovered_count'] == 1
+
+        # Client A still has only 1 clue (no bleed from B)
+        state_a = client_a.get('/api/game/state').get_json()
+        assert state_a['clues_discovered_count'] == 1
+
+
+def test_session_persists_across_requests(client):
+    """Test that session cookie maintains state between requests."""
+    client.post('/api/game/locations/study/search')
+    client.post('/api/game/locations/victim_room/search')
+
+    # State should accumulate across requests
+    state = client.get('/api/game/state').get_json()
+    assert state['clues_discovered_count'] == 2
+    assert state['locations_visited_count'] == 2
+
+
+def test_no_cross_session_interrogation_bleed():
+    """Test that interrogation records don't leak between sessions."""
+    app.config['TESTING'] = True
+    reset_game()
+
+    with app.test_client() as client_a:
+        client_a.post('/api/game/new')
+        client_a.post('/api/game/interrogate', json={'suspect_id': 'lady_blackwood'})
+        notes_a = client_a.get('/api/game/interrogations').get_json()
+        assert len(notes_a['interrogations']) == 1
+
+        with app.test_client() as client_b:
+            client_b.post('/api/game/new')
+            notes_b = client_b.get('/api/game/interrogations').get_json()
+            assert len(notes_b['interrogations']) == 0
+
+            # B can interrogate same suspect independently
+            client_b.post('/api/game/interrogate', json={'suspect_id': 'lady_blackwood'})
+            notes_b = client_b.get('/api/game/interrogations').get_json()
+            assert len(notes_b['interrogations']) == 1
+
+
+def test_new_game_resets_only_own_session():
+    """Test that new game only resets the calling session, not others."""
+    app.config['TESTING'] = True
+    reset_game()
+
+    with app.test_client() as client_a:
+        client_a.post('/api/game/new')
+        client_a.post('/api/game/locations/study/search')
+
+        with app.test_client() as client_b:
+            client_b.post('/api/game/new')
+            client_b.post('/api/game/locations/hallway/search')
+
+            # B starts a new game — should only reset B
+            client_b.post('/api/game/new')
+            state_b = client_b.get('/api/game/state').get_json()
+            assert state_b['clues_discovered_count'] == 0
+
+        # A is untouched
+        state_a = client_a.get('/api/game/state').get_json()
+        assert state_a['clues_discovered_count'] == 1
+
+
+def test_session_cookie_set_on_response(client):
+    """Test that session cookie is present in API responses."""
+    response = client.get('/api/game/state')
+    cookie_header = response.headers.get('Set-Cookie', '')
+    assert 'agatha_session=' in cookie_header
+
+
+def test_parallel_sessions_independent_pressure():
+    """Test that pressure clocks are independent per session."""
+    app.config['TESTING'] = True
+    reset_game()
+
+    with app.test_client() as client_a:
+        client_a.post('/api/game/new')
+        # A burns 5 pressure (5 searches)
+        for loc_id in ['study', 'victim_room', 'hallway', 'victim_desk', 'garden']:
+            client_a.post(f'/api/game/locations/{loc_id}/search')
+        state_a = client_a.get('/api/game/state').get_json()
+        assert state_a['pressure_remaining'] == 5
+
+        with app.test_client() as client_b:
+            client_b.post('/api/game/new')
+            # B should have full pressure
+            state_b = client_b.get('/api/game/state').get_json()
+            assert state_b['pressure_remaining'] == PRESSURE_CLOCK['initial']
