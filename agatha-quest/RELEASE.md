@@ -4,16 +4,18 @@
 - [x] No TODO/FIXME/PLACEHOLDER in backend source
 - [x] No placeholder text in frontend HTML/JS/CSS
 - [x] No lorem ipsum or example.com references
-- [x] QA_GATES.md TBD resolved (frontend test suite clarified)
+- [x] QA_GATES.md fully resolved
 
 ## IP-Safe Naming Audit
 - [x] Game title: "Blackwood Manor Mystery" (original)
 - [x] All character names are original (Lady Blackwood, Dr. Hartley, James, Miss Winters)
 - [x] All location names are original (Blackwood Manor, The Study, etc.)
-- [x] "Agatha Christie" used only as genre descriptor ("Agatha Christie-style"), not branding
+- [x] "Agatha" used only as genre descriptor ("Agatha-style"), not branding
 - [x] No trademarked character names (no Poirot, Marple, Miss Marple, Hercule)
 - [x] Folder name "agatha-quest" is descriptive, acceptable for internal use
 - [x] No copyrighted text, quotes, or story elements from published works
+- [x] All visual assets are CSS-only originals (no borrowed textures/icons/art)
+- [x] Google Fonts (Playfair Display, Crimson Text) are SIL Open Font License
 
 ## Build / Run / Test Commands
 
@@ -48,16 +50,17 @@ curl http://localhost:5001/health
 
 ## Test Results (current branch)
 - Command: `pytest tests/ -v`
-- Passed: 61
+- Passed: 74
 - Failed: 0
-- Suites: test_api.py (50), test_app.py (5), test_regression.py (11) -- total includes overlap from shared fixtures
+- Suites: test_api.py (52), test_app.py (5), test_regression.py (11) -- includes 6 session isolation tests
+- Runtime: 0.54s
+- Platform: Python 3.14.3, pytest 9.0.2
 
 ## Known Residual Risks
-1. **Frontend uses legacy clue discovery**: Frontend calls `/clues/<id>/discover` directly instead of `/locations/<id>/search`. Both endpoints work, but location search is the intended flow.
-2. **Frontend does not display pressure clock**: Pressure mechanic is fully functional in backend but not surfaced in UI.
-3. **Frontend shows 4 of 6 locations**: Garden and Pantry (red herring rooms) not shown in frontend location map.
-4. **In-memory state**: Game state resets on server restart. No persistence layer.
-5. **Single-player only**: No session isolation. Concurrent users would share game state.
+1. **In-memory state**: Game state resets on server restart. No persistence layer beyond save/load API.
+2. **No HTTPS**: Server runs HTTP only. Acceptable for local/demo use.
+3. **No rate limiting**: API has no request throttling. Acceptable for single-user/demo.
+4. **Google Fonts dependency**: Typography requires internet access for Google Fonts CDN. Falls back to Georgia/serif without network.
 
 ## Go / No-Go Recommendation
 
@@ -65,8 +68,12 @@ curl http://localhost:5001/health
 
 Rationale:
 - Backend is fully functional with all game mechanics (investigation, locations, pressure, accusation)
-- 61 tests passing with zero failures
+- 74 tests passing with zero failures across 3 test suites
+- Session isolation prevents cross-player state bleed
+- Painterly cinematic art pass delivers polished visual experience
+- Pressure clock displayed in UI with warning/expired states
+- All 6 locations visible and interactable
 - No placeholder content in shipped surfaces
-- IP-safe: all names and content are original
-- Frontend provides a playable demo of the core loop
-- Known risks are enhancement items, not blockers for initial release
+- IP-safe: all names, content, and visual assets are original
+- Frontend provides a complete playable experience with desktop and mobile support
+- Known risks are infrastructure items, not blockers for demo release
