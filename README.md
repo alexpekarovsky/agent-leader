@@ -3,7 +3,8 @@
 `agent-leader` is an MCP orchestration server for multi-agent software delivery (Codex manager + Claude/Gemini team members).
 
 ## Supported platforms and clients
-- Supported agent CLIs: `Codex CLI`, `Claude Code`, `Gemini CLI` (only).
+- First-class installer support: `Codex CLI`, `Claude Code`, `Gemini CLI`.
+- Any other MCP-compatible LLM client can use this server via manual stdio MCP config (see "Install for any MCP client").
 - This project is currently tested on `macOS`.
 - Linux may work but is not officially validated yet.
 - Windows is not currently supported in this setup.
@@ -22,6 +23,7 @@ So instead of "who did what?" or "did anyone validate this?", everything is trac
 - MCP control plane: tasks, reports, validation, bug loops, events.
 - One-shot team member attach: `orchestrator_connect_to_leader`.
 - Optional manager readiness gate: `orchestrator_connect_team_members`.
+- Manager project-context correction: `orchestrator_set_agent_project_context`.
 - Runtime role control: `orchestrator_set_role` / `orchestrator_get_roles`.
 - Manual workflow first (recommended).
 
@@ -75,7 +77,7 @@ cd /path/to/repo
 This binds all CLIs to this same project/repo as `ORCHESTRATOR_ROOT`.
 All participating agents (manager + team members) must operate on that same project root.
 By default, installer deploys the MCP server to a stable location:
-- `~/.local/share/agent-leader/<version>`
+- `~/.local/share/agent-leader/current`
 It refuses ephemeral `--server-root` paths under `/tmp` unless you pass `--allow-ephemeral`.
 
 Important installer flags:
@@ -83,6 +85,27 @@ Important installer flags:
 - `--confirm-global` (required with `--mode global`)
 - `--replace-legacy` (explicitly remove legacy MCP name `orchestrator`)
 - `--rollback <backup-id>` (restore config backup from failed/previous install)
+
+## Install for any MCP client (manual stdio config)
+If your LLM client supports MCP stdio servers but is not one of the built-in installers, use this flow.
+
+1) Install/update latest server bits from this repo:
+```bash
+cd /path/to/repo
+./scripts/install_agent_leader_mcp.sh --all --project-root "$(pwd)"
+```
+
+2) Add this MCP server entry to your client config:
+```bash
+env ORCHESTRATOR_ROOT=/path/to/repo ORCHESTRATOR_EXPECTED_ROOT=/path/to/repo ORCHESTRATOR_POLICY=$HOME/.local/share/agent-leader/current/config/policy.codex-manager.json python3 $HOME/.local/share/agent-leader/current/orchestrator_mcp_server.py
+```
+
+Server name to use in your client:
+- `agent-leader-orchestrator`
+
+Notes:
+- Replace `/path/to/repo` with your actual project root.
+- Restart the LLM client session after adding/updating the MCP entry.
 
 ## Verify install
 ```bash
@@ -93,7 +116,10 @@ gemini mcp list | rg "agent-leader-orchestrator"
 
 In any agent, call `orchestrator_status` and verify:
 - `server = agent-leader-orchestrator`
+- `version = 0.1.0` (or current release string)
+- `protocol_version = 2024-11-05`
 - `root_name = <project folder name>`
+- `agent_connection_contexts` shows per-agent `project_root` and `cwd`
 
 For full path debugging only:
 - set `ORCHESTRATOR_STATUS_VERBOSE_PATHS=1`
@@ -154,6 +180,19 @@ Proceed only if:
 If `status: timeout`, inspect `diagnostics` in the response for per-team member reason (`not_registered`, `no_recent_heartbeat`, task activity hints).
 Only verified same-project team members are counted as connected.
 
+### Project context override (manager-only recovery)
+If an agent is connected but bound to the wrong project metadata, use:
+```text
+Call orchestrator_set_agent_project_context with agent="gemini" project_root="/Users/alex/Projects/retro-mystery" cwd="/Users/alex/Projects/retro-mystery" source="codex"
+```
+Or override directly during connect:
+```text
+Call orchestrator_connect_to_leader with agent="gemini" source="codex" project_override="/Users/alex/Projects/retro-mystery"
+```
+Notes:
+- `project_override` is manager-only and rewrites `project_root`/`cwd` for identity checks.
+- Non-manager `project_override` requests are rejected.
+
 ### LLM install/run instruction (copy/paste)
 ```text
 Install MCP server `agent-leader-orchestrator` from this repository with `./scripts/install_agent_leader_mcp.sh --all`, verify via `mcp list`, then call `orchestrator_status` and confirm `server=agent-leader-orchestrator` and `root` is this repository. Then run manager/team member flow (team members connect to leader; manager performs the connection handshake once; then manager bootstraps/creates tasks; team members claim/report; manager validates).
@@ -172,12 +211,33 @@ Call orchestrator_live_status_report with overall_percent=14 phase_1_percent=35 
 ## Token usage guidance
 To minimize token burn:
 - team members call `orchestrator_connect_to_leader` once at session start
-- `orchestrator_connect_to_leader` now auto-claims one available task for that team member by default
+- `orchestrator_connect_to_leader` does not claim tasks; workers must call `orchestrator_claim_next_task`
 - team members use `orchestrator_poll_events(timeout_ms=120000)`
 - team member presence is auto-refreshed by normal team member actions (`poll_events`, `claim_next_task`, `submit_report`, `ack_event`)
 - after ~10 minutes without keepalive, orchestrator emits `agent.stale_reconnect_required` with instructions to rerun handshake (`connect to leader` + `connect_team_members`)
 - avoid rapid `claim_next_task` loops when idle
 - manager uses `orchestrator_connect_team_members` instead of repeated manual ping events
+
+## Leader/Builder Matrix
++-----------------------------+---------------------------+---------------------------+---------------------------+
+| Project Type                | Best Leader               | Primary Builder           | Secondary Builder         |
++-----------------------------+---------------------------+---------------------------+---------------------------+
+| Backend/API platform        | Codex CLI                 | Claude Code               | Gemini CLI                |
+| Frontend product UI         | Codex CLI                 | Gemini CLI                | Claude Code               |
+| Full-stack startup sprint   | Codex CLI                 | Claude Code               | Gemini CLI                |
+| Enterprise/compliance stack | Claude Code or Codex CLI  | Claude Code               | Gemini CLI                |
+| Research/prototyping        | Gemini CLI                | Gemini CLI                | Codex CLI                 |
+| DevOps/SRE automation       | Codex CLI                 | Claude Code               | Gemini CLI                |
+| Data/ML experimentation     | Gemini CLI                | Gemini CLI                | Codex CLI                 |
+| Security hardening          | Codex CLI                 | Claude Code               | Gemini CLI                |
+| Content/art-heavy app       | Codex CLI                 | Gemini CLI                | Claude Code               |
++-----------------------------+---------------------------+---------------------------+---------------------------+
+
+Default universal setup:
+
+1. Codex CLI as manager/integration gate.
+2. Claude Code for critical engineering paths.
+3. Gemini CLI for parallel exploration, UI/content, and fast variants.
 
 ## Auditing and Traceability
 You now have append-only audit logs for operations:
@@ -241,10 +301,14 @@ connect to leader. Then wait for tasks, implement only assigned scope, run tests
 
 ### Wrong root
 - run `orchestrator_status`
+- check `agent_connection_contexts` (and `live_status_text`) for each agent's `project_root` and `cwd`
+- if an agent is mismatched, run `orchestrator_set_agent_project_context` from manager
 - reinstall MCP from this repo with `./scripts/install_agent_leader_mcp.sh --all`
 
 ### Gemini disconnected
 - restart Gemini MCP/session, then run `connect to leader`
+- `orchestrator_connect_to_leader` now auto-fills missing Gemini identity fields (`permissions_mode`, `sandbox_mode`, `session_id`, `connection_id`, `server_version`, `verification_source`) when possible.
+- `cwd` / `project_root` are still required to match the active project root for `same_project` verification.
 
 ## Files
 - Server: `orchestrator_mcp_server.py`
@@ -260,11 +324,21 @@ This is the complete tool contract exposed by `agent-leader-orchestrator`.
 | Tool | Purpose | Key Inputs | Returns |
 |---|---|---|---|
 | `orchestrator_guide` | Returns orchestration playbook and required manager/team member sequences. | none | Guidance object with sequences and report contract. |
-| `orchestrator_status` | Returns current system status. Default output redacts absolute paths. | none | Server/version, `root_name`, `policy_name`, manager, counts, active agents, roles, `live_status_text` (human-readable status block), structured `live_status`, and `recommended_status_cadence_seconds` (default 600). |
+| `orchestrator_status` | Returns current system status. Default output redacts absolute paths. | none | Server/version/protocol identity, runtime path hints, `root_name`, `policy_name`, manager, counts, active agents, roles, `health`, `live_status_text` (human-readable status block with agent `project_root`/`cwd`), structured `live_status`, `agent_connection_contexts`, `active_agent_contexts`, and `recommended_status_cadence_seconds` (default 600). |
+| `orchestrator_health` | Returns runtime health and identity details for MCP server process. | none | `status`, server name/version/protocol, runtime paths, uptime, logging flags. |
 | `orchestrator_get_roles` | Reads runtime role assignment. | none | `leader`, `team_members`, `default_leader`. |
 | `orchestrator_set_role` | Sets runtime role for an agent. | `agent`, `role` (`leader` or `team_member`), optional `source` | Updated role map. |
 | `orchestrator_list_audit_logs` | Reads append-only MCP audit records. | optional `limit`, `tool`, `status` | Filtered audit entries from `bus/audit.jsonl`. |
 | `orchestrator_live_status_report` | Builds standardized progress report text and structured metrics. | optional percent/task overrides | `report_text`, structured report fields, recommended cadence. |
+
+Audit categories in `bus/audit.jsonl`:
+- `mcp_tool_call`: every tool invocation result.
+- `mcp_tool_debug_trace`: high-detail per-tool traces while debug window is active.
+- `mcp_transport_message`: inbound/outbound MCP JSON-RPC traffic (requests, responses, notifications) for transport-level visibility.
+
+Visibility note:
+- The orchestrator can log all MCP traffic it receives/sends, but it cannot automatically log chat text that never traverses MCP.
+- Set `ORCHESTRATOR_AUDIT_TRANSPORT_LOGS=1` (default) to keep transport logging enabled.
 
 ### Presence and Connection
 | Tool | Purpose | Key Inputs | Returns |
@@ -272,7 +346,8 @@ This is the complete tool contract exposed by `agent-leader-orchestrator`.
 | `orchestrator_register_agent` | Registers agent in tenant pool. | `agent`, optional `metadata` | Agent entry with `last_seen`/metadata. |
 | `orchestrator_heartbeat` | Updates presence metadata and `last_seen`. | `agent`, optional `metadata` | Updated agent entry. |
 | `orchestrator_connect_team_members` | Manager handshake. Counts connected only if verified and same-project. | `source`, `team_members`, optional timeouts | `status`, `connected`, `missing`, per-agent `diagnostics`. |
-| `orchestrator_connect_to_leader` | Team member attach + verification + optional announce + auto-claim attempt. | `agent`, optional `metadata`, `status`, `announce`, `source` | `connected`, `verified`, `reason`, `identity`, manager, optional auto-claimed task. |
+| `orchestrator_connect_to_leader` | Team member attach + verification + optional announce. Supports manager-only project context override for recovery. | `agent`, optional `metadata`, `status`, `announce`, `source`, optional `project_override` | `connected`, `verified`, `reason`, `identity`, manager, `auto_claimed_task` (always `null`), `project_override_applied`. |
+| `orchestrator_set_agent_project_context` | Leader-only correction for agent project metadata used by same-project checks. | `agent`, `project_root`, optional `cwd`, `source` | `ok`, normalized project context, refreshed `identity`. |
 | `orchestrator_list_agents` | Lists registered agents with verification identity details. | optional `active_only`, `stale_after_seconds` | Agent list with identity fields and `verified` status. |
 | `orchestrator_discover_agents` | Lists registered + inferred agents with identity/verification details. | optional `active_only`, `stale_after_seconds` | Discovery object with counts and combined list. |
 
