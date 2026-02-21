@@ -1,0 +1,27 @@
+{
+  "name": "shared-governance",
+  "roles": {
+    "manager": "shared",
+    "product_manager": "shared",
+    "scrum_master": "shared",
+    "qa_lead": "codex"
+  },
+  "routing": {
+    "backend": "claude_code",
+    "frontend": "gemini",
+    "qa": "codex",
+    "default": "codex"
+  },
+  "decisions": {
+    "architecture": {
+      "mode": "consensus",
+      "members": ["codex", "claude_code", "gemini"],
+      "tie_breaker": "round_two"
+    }
+  },
+  "triggers": {
+    "heartbeat_timeout_minutes": 10,
+    "auto_open_bug_on_validation_failure": true,
+    "auto_requeue_on_offline": true
+  }
+}
