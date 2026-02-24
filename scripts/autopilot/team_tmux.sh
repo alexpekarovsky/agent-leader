@@ -35,7 +35,9 @@ tmux split-window -h -t "$SESSION_NAME:manager" \
 tmux split-window -v -t "$SESSION_NAME:manager.1" \
   "cd '$ROOT_DIR' && ./scripts/autopilot/worker_loop.sh --cli gemini --agent gemini --project-root '$PROJECT_ROOT' --interval '$WORKER_INTERVAL' --log-dir '$LOG_DIR'"
 tmux split-window -v -t "$SESSION_NAME:manager.0" \
-  "cd '$PROJECT_ROOT' && watch -n 10 'echo project=$PROJECT_ROOT; ls -1 .autopilot-logs 2>/dev/null | tail -n 5; echo; codex mcp list | sed -n \"1,5p\"'"
+  "cd '$ROOT_DIR' && ./scripts/autopilot/watchdog_loop.sh --project-root '$PROJECT_ROOT' --interval 15 --log-dir '$LOG_DIR'"
+tmux new-window -t "$SESSION_NAME" -n monitor \
+  \"cd '$PROJECT_ROOT' && watch -n 10 'echo project=$PROJECT_ROOT; ls -1 .autopilot-logs 2>/dev/null | tail -n 10; echo; codex mcp list | sed -n \\\"1,5p\\\"'\"
 
 tmux select-layout -t "$SESSION_NAME:manager" tiled >/dev/null
 echo "Started tmux session: $SESSION_NAME"

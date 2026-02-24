@@ -92,6 +92,8 @@ class Orchestrator:
             {"policy": self.policy.name, "manager": self.policy.manager()},
             source="orchestrator",
         )
+        self._ensure_list_file(self.bugs_path)
+        self._ensure_list_file(self.blockers_path)
 
     def connect_team_members(
         self,
@@ -720,7 +722,7 @@ class Orchestrator:
         return payload
 
     def list_bugs(self, status: Optional[str] = None, owner: Optional[str] = None) -> List[Dict[str, Any]]:
-        bugs = self._read_json(self.bugs_path)
+        bugs = self._read_json_list(self.bugs_path)
         if status:
             bugs = [bug for bug in bugs if bug.get("status") == status]
         if owner:
@@ -760,7 +762,7 @@ class Orchestrator:
         }
 
         with self._state_lock():
-            blockers = self._read_json(self.blockers_path)
+            blockers = self._read_json_list(self.blockers_path)
             blockers.append(blocker)
             self._write_json(self.blockers_path, blockers)
         self.bus.emit(
@@ -777,7 +779,7 @@ class Orchestrator:
         return blocker
 
     def list_blockers(self, status: Optional[str] = None, agent: Optional[str] = None) -> List[Dict[str, Any]]:
-        blockers = self._read_json(self.blockers_path)
+        blockers = self._read_json_list(self.blockers_path)
         if status:
             blockers = [blk for blk in blockers if blk.get("status") == status]
         if agent:
@@ -786,7 +788,7 @@ class Orchestrator:
 
     def resolve_blocker(self, blocker_id: str, resolution: str, source: str) -> Dict[str, Any]:
         with self._state_lock():
-            blockers = self._read_json(self.blockers_path)
+            blockers = self._read_json_list(self.blockers_path)
             blocker = next((item for item in blockers if item["id"] == blocker_id), None)
             if blocker is None:
                 raise ValueError(f"Blocker not found: {blocker_id}")
@@ -1235,7 +1237,7 @@ class Orchestrator:
             self._write_json(self.cursors_path, cursors)
 
     def _close_bugs_for_task(self, task_id: str, note: str) -> None:
-        bugs = self._read_json(self.bugs_path)
+        bugs = self._read_json_list(self.bugs_path)
         changed = False
         for bug in bugs:
             if bug.get("source_task") != task_id:
@@ -1316,7 +1318,7 @@ class Orchestrator:
         expected: str,
         actual: str,
     ) -> Dict[str, Any]:
-        bugs = self._read_json(self.bugs_path)
+        bugs = self._read_json_list(self.bugs_path)
         bug_id = f"BUG-{uuid.uuid4().hex[:8]}"
         bug = {
             "id": bug_id,
@@ -1656,6 +1658,31 @@ class Orchestrator:
             return []
         with path.open("r", encoding="utf-8") as fh:
             return json.load(fh)
+
+    def _ensure_list_file(self, path: Path) -> List[Dict[str, Any]]:
+        data = self._read_json(path)
+        if isinstance(data, list):
+            return data
+        repaired: List[Dict[str, Any]] = []
+        self._write_json(path, repaired)
+        try:
+            self.bus.append_audit(
+                {
+                    "category": "state_repair",
+                    "path": str(path),
+                    "action": "coerce_to_empty_list",
+                    "previous_type": type(data).__name__,
+                }
+            )
+        except Exception:
+            pass
+        return repaired
+
+    def _read_json_list(self, path: Path) -> List[Dict[str, Any]]:
+        data = self._read_json(path)
+        if isinstance(data, list):
+            return data
+        return self._ensure_list_file(path)
 
     @staticmethod
     def _write_json(path: Path, value: Any) -> None:

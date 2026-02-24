@@ -41,8 +41,10 @@ Required actions, in order:
 3. Call orchestrator_manager_cycle(strict=true).
 4. Call orchestrator_list_blockers(status=\"open\") and summarize blockers.
 5. If there are reported tasks, validate them.
-6. If there are idle/assigned tasks, publish manager execution_plan events to the correct owners.
-7. End with a compact status summary (tasks by status, blockers, bugs).
+6. Inspect .autopilot-logs/watchdog-*.jsonl recent entries for stale_task/state_repair diagnostics.
+7. For stale tasks, publish manager.sync or manager.execution_plan reminders and raise blockers when a task appears stuck beyond timeout.
+8. If there are idle/assigned tasks, publish manager execution_plan events to the correct owners.
+9. End with a compact status summary (tasks by status, blockers, bugs).
 
 Rules:
 - Use MCP tools only for orchestration.
