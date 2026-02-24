@@ -9,6 +9,7 @@ PROJECT_ROOT="$ROOT_DIR"
 INTERVAL=20
 ONCE=false
 LOG_DIR="$ROOT_DIR/.autopilot-logs"
+MAX_LOG_FILES=200
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -16,6 +17,7 @@ while [[ $# -gt 0 ]]; do
     --project-root) PROJECT_ROOT="$2"; shift 2 ;;
     --interval) INTERVAL="$2"; shift 2 ;;
     --log-dir) LOG_DIR="$2"; shift 2 ;;
+    --max-logs) MAX_LOG_FILES="$2"; shift 2 ;;
     --once) ONCE=true; shift ;;
     *) log ERROR "Unknown arg: $1"; exit 1 ;;
   esac
@@ -41,7 +43,7 @@ Required actions, in order:
 3. Call orchestrator_manager_cycle(strict=true).
 4. Call orchestrator_list_blockers(status=\"open\") and summarize blockers.
 5. If there are reported tasks, validate them.
-6. Inspect .autopilot-logs/watchdog-*.jsonl recent entries for stale_task/state_repair diagnostics.
+6. Inspect .autopilot-logs/watchdog-*.jsonl recent entries for stale_task/state_corruption_detected diagnostics.
 7. For stale tasks, publish manager.sync or manager.execution_plan reminders and raise blockers when a task appears stuck beyond timeout.
 8. If there are idle/assigned tasks, publish manager execution_plan events to the correct owners.
 9. End with a compact status summary (tasks by status, blockers, bugs).
@@ -59,6 +61,7 @@ EOF
     log INFO "manager cycle complete; log=$out_file"
   fi
   rm -f "$prompt_file"
+  prune_old_logs "$LOG_DIR" "manager-" "$MAX_LOG_FILES"
 
   if [[ "$ONCE" == true ]]; then
     break

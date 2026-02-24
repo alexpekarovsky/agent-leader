@@ -22,22 +22,27 @@ done
 
 command -v tmux >/dev/null 2>&1 || { echo "tmux is required" >&2; exit 1; }
 mkdir -p "$LOG_DIR"
+chmod +x "$ROOT_DIR"/scripts/autopilot/*.sh >/dev/null 2>&1 || true
 
 if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
   echo "Session already exists: $SESSION_NAME" >&2
   exit 1
 fi
 
+ROOT_Q="$(printf '%q' "$ROOT_DIR")"
+PROJECT_Q="$(printf '%q' "$PROJECT_ROOT")"
+LOG_Q="$(printf '%q' "$LOG_DIR")"
+
 tmux new-session -d -s "$SESSION_NAME" -n manager \
-  "cd '$ROOT_DIR' && ./scripts/autopilot/manager_loop.sh --cli codex --project-root '$PROJECT_ROOT' --interval '$MANAGER_INTERVAL' --log-dir '$LOG_DIR'"
+  "cd $ROOT_Q && ./scripts/autopilot/manager_loop.sh --cli codex --project-root $PROJECT_Q --interval '$MANAGER_INTERVAL' --log-dir $LOG_Q"
 tmux split-window -h -t "$SESSION_NAME:manager" \
-  "cd '$ROOT_DIR' && ./scripts/autopilot/worker_loop.sh --cli claude --agent claude_code --project-root '$PROJECT_ROOT' --interval '$WORKER_INTERVAL' --log-dir '$LOG_DIR'"
+  "cd $ROOT_Q && ./scripts/autopilot/worker_loop.sh --cli claude --agent claude_code --project-root $PROJECT_Q --interval '$WORKER_INTERVAL' --log-dir $LOG_Q"
 tmux split-window -v -t "$SESSION_NAME:manager.1" \
-  "cd '$ROOT_DIR' && ./scripts/autopilot/worker_loop.sh --cli gemini --agent gemini --project-root '$PROJECT_ROOT' --interval '$WORKER_INTERVAL' --log-dir '$LOG_DIR'"
+  "cd $ROOT_Q && ./scripts/autopilot/worker_loop.sh --cli gemini --agent gemini --project-root $PROJECT_Q --interval '$WORKER_INTERVAL' --log-dir $LOG_Q"
 tmux split-window -v -t "$SESSION_NAME:manager.0" \
-  "cd '$ROOT_DIR' && ./scripts/autopilot/watchdog_loop.sh --project-root '$PROJECT_ROOT' --interval 15 --log-dir '$LOG_DIR'"
+  "cd $ROOT_Q && ./scripts/autopilot/watchdog_loop.sh --project-root $PROJECT_Q --interval 15 --log-dir $LOG_Q"
 tmux new-window -t "$SESSION_NAME" -n monitor \
-  \"cd '$PROJECT_ROOT' && watch -n 10 'echo project=$PROJECT_ROOT; ls -1 .autopilot-logs 2>/dev/null | tail -n 10; echo; codex mcp list | sed -n \\\"1,5p\\\"'\"
+  "cd $ROOT_Q && ./scripts/autopilot/monitor_loop.sh $PROJECT_Q 10"
 
 tmux select-layout -t "$SESSION_NAME:manager" tiled >/dev/null
 echo "Started tmux session: $SESSION_NAME"

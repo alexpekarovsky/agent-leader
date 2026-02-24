@@ -8,6 +8,7 @@ PROJECT_ROOT="$ROOT_DIR"
 INTERVAL=15
 ONCE=false
 LOG_DIR="$ROOT_DIR/.autopilot-logs"
+MAX_LOG_FILES=400
 ASSIGNED_TIMEOUT=180
 INPROGRESS_TIMEOUT=900
 REPORTED_TIMEOUT=180
@@ -17,6 +18,7 @@ while [[ $# -gt 0 ]]; do
     --project-root) PROJECT_ROOT="$2"; shift 2 ;;
     --interval) INTERVAL="$2"; shift 2 ;;
     --log-dir) LOG_DIR="$2"; shift 2 ;;
+    --max-logs) MAX_LOG_FILES="$2"; shift 2 ;;
     --assigned-timeout) ASSIGNED_TIMEOUT="$2"; shift 2 ;;
     --inprogress-timeout) INPROGRESS_TIMEOUT="$2"; shift 2 ;;
     --reported-timeout) REPORTED_TIMEOUT="$2"; shift 2 ;;
@@ -52,10 +54,6 @@ def load_json(path, default):
     except Exception:
         return default
 
-def write_json(path, value):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
-
 def emit(kind, payload):
     rec = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -69,11 +67,9 @@ for name in ("bugs.json", "blockers.json"):
     p = state / name
     data = load_json(p, [])
     if isinstance(data, dict):
-        write_json(p, [])
-        emit("state_repair", {"path": str(p), "previous_type": "dict", "new_type": "list"})
+        emit("state_corruption_detected", {"path": str(p), "previous_type": "dict", "expected_type": "list"})
     elif not isinstance(data, list):
-        write_json(p, [])
-        emit("state_repair", {"path": str(p), "previous_type": type(data).__name__, "new_type": "list"})
+        emit("state_corruption_detected", {"path": str(p), "previous_type": type(data).__name__, "expected_type": "list"})
 
 tasks = load_json(state / "tasks.json", [])
 if not isinstance(tasks, list):
@@ -108,6 +104,7 @@ for t in tasks:
         })
 PY
   log INFO "watchdog cycle=$cycle project=$PROJECT_ROOT log=$out_file"
+  prune_old_logs "$LOG_DIR" "watchdog-" "$MAX_LOG_FILES"
   if [[ "$ONCE" == true ]]; then
     break
   fi

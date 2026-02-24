@@ -10,6 +10,7 @@ PROJECT_ROOT="$ROOT_DIR"
 INTERVAL=25
 ONCE=false
 LOG_DIR="$ROOT_DIR/.autopilot-logs"
+MAX_LOG_FILES=200
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -18,6 +19,7 @@ while [[ $# -gt 0 ]]; do
     --project-root) PROJECT_ROOT="$2"; shift 2 ;;
     --interval) INTERVAL="$2"; shift 2 ;;
     --log-dir) LOG_DIR="$2"; shift 2 ;;
+    --max-logs) MAX_LOG_FILES="$2"; shift 2 ;;
     --once) ONCE=true; shift ;;
     *) log ERROR "Unknown arg: $1"; exit 1 ;;
   esac
@@ -66,6 +68,7 @@ EOF
     log INFO "worker cycle complete agent=$AGENT; log=$out_file"
   fi
   rm -f "$prompt_file"
+  prune_old_logs "$LOG_DIR" "worker-${AGENT}-" "$MAX_LOG_FILES"
 
   if [[ "$ONCE" == true ]]; then
     break

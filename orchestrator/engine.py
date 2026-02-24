@@ -92,6 +92,7 @@ class Orchestrator:
             {"policy": self.policy.name, "manager": self.policy.manager()},
             source="orchestrator",
         )
+        # Heal common collection-file corruption (e.g. {} persisted instead of []).
         self._ensure_list_file(self.bugs_path)
         self._ensure_list_file(self.blockers_path)
 
@@ -1682,7 +1683,21 @@ class Orchestrator:
         data = self._read_json(path)
         if isinstance(data, list):
             return data
-        return self._ensure_list_file(path)
+        repaired: List[Dict[str, Any]] = []
+        self._write_json(path, repaired)
+        try:
+            self.bus.append_audit(
+                {
+                    "category": "state_repair",
+                    "path": str(path),
+                    "action": "coerce_to_empty_list",
+                    "previous_type": type(data).__name__,
+                    "via": "_read_json_list",
+                }
+            )
+        except Exception:
+            pass
+        return repaired
 
     @staticmethod
     def _write_json(path: Path, value: Any) -> None:
