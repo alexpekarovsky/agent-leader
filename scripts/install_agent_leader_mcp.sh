@@ -18,6 +18,7 @@ ROLLBACK_ID=""
 SERVER_NAME="agent-leader-orchestrator"
 APP_INSTALL_BASE_DEFAULT="$HOME/.local/share/agent-leader"
 APP_INSTALL_BASE="${AGENT_LEADER_INSTALL_ROOT:-$APP_INSTALL_BASE_DEFAULT}"
+STABLE_TARGET_NAME="current"
 
 usage() {
   cat <<USAGE
@@ -200,7 +201,7 @@ m = re.search(r'__version__\s*=\s*"([^"]+)"', text)
 print(m.group(1) if m else '0.0.0')
 PY
 )"
-TARGET_DIR="$APP_INSTALL_BASE/$APP_VERSION"
+TARGET_DIR="$APP_INSTALL_BASE/$STABLE_TARGET_NAME"
 TARGET_DIR="$(canon_path "$TARGET_DIR")"
 mkdir -p "$TARGET_DIR"
 
@@ -355,21 +356,43 @@ fi
 
 if [[ "$INSTALL_CLAUDE" == true ]]; then
   echo "Installing for Claude Code ($MODE)..."
-  if [[ "$REPLACE_LEGACY" == true ]]; then
-    claude mcp remove orchestrator >/dev/null 2>&1 || true
+  if [[ "$CLAUDE_SCOPE" == "project" ]]; then
+    (
+      cd "$PROJECT_ROOT"
+      if [[ "$REPLACE_LEGACY" == true ]]; then
+        claude mcp remove orchestrator >/dev/null 2>&1 || true
+      fi
+      claude mcp remove "$SERVER_NAME" >/dev/null 2>&1 || true
+      claude mcp add --scope "$CLAUDE_SCOPE" "$SERVER_NAME" env "$ENV_ROOT" "$ENV_EXPECTED_ROOT" "$ENV_POLICY" python3 "$SERVER_PATH"
+    )
+  else
+    if [[ "$REPLACE_LEGACY" == true ]]; then
+      claude mcp remove orchestrator >/dev/null 2>&1 || true
+    fi
+    claude mcp remove "$SERVER_NAME" >/dev/null 2>&1 || true
+    claude mcp add --scope "$CLAUDE_SCOPE" "$SERVER_NAME" env "$ENV_ROOT" "$ENV_EXPECTED_ROOT" "$ENV_POLICY" python3 "$SERVER_PATH"
   fi
-  claude mcp remove "$SERVER_NAME" >/dev/null 2>&1 || true
-  claude mcp add --scope "$CLAUDE_SCOPE" "$SERVER_NAME" env "$ENV_ROOT" "$ENV_EXPECTED_ROOT" "$ENV_POLICY" python3 "$SERVER_PATH"
   log_install_audit "claude" "ok" "installed"
 fi
 
 if [[ "$INSTALL_GEMINI" == true ]]; then
   echo "Installing for Gemini CLI ($MODE)..."
-  if [[ "$REPLACE_LEGACY" == true ]]; then
-    gemini mcp remove orchestrator >/dev/null 2>&1 || true
+  if [[ "$MODE" == "project" ]]; then
+    (
+      cd "$PROJECT_ROOT"
+      if [[ "$REPLACE_LEGACY" == true ]]; then
+        gemini mcp remove orchestrator >/dev/null 2>&1 || true
+      fi
+      gemini mcp remove "$SERVER_NAME" >/dev/null 2>&1 || true
+      gemini mcp add "$SERVER_NAME" env "$ENV_ROOT" "$ENV_EXPECTED_ROOT" "$ENV_POLICY" python3 "$SERVER_PATH"
+    )
+  else
+    if [[ "$REPLACE_LEGACY" == true ]]; then
+      gemini mcp remove orchestrator >/dev/null 2>&1 || true
+    fi
+    gemini mcp remove "$SERVER_NAME" >/dev/null 2>&1 || true
+    gemini mcp add "$SERVER_NAME" env "$ENV_ROOT" "$ENV_EXPECTED_ROOT" "$ENV_POLICY" python3 "$SERVER_PATH"
   fi
-  gemini mcp remove "$SERVER_NAME" >/dev/null 2>&1 || true
-  gemini mcp add "$SERVER_NAME" env "$ENV_ROOT" "$ENV_EXPECTED_ROOT" "$ENV_POLICY" python3 "$SERVER_PATH"
   log_install_audit "gemini" "ok" "installed"
 fi
 
