@@ -11,6 +11,7 @@ INTERVAL=25
 ONCE=false
 LOG_DIR="$ROOT_DIR/.autopilot-logs"
 MAX_LOG_FILES=200
+CLI_TIMEOUT=600
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -20,6 +21,7 @@ while [[ $# -gt 0 ]]; do
     --interval) INTERVAL="$2"; shift 2 ;;
     --log-dir) LOG_DIR="$2"; shift 2 ;;
     --max-logs) MAX_LOG_FILES="$2"; shift 2 ;;
+    --cli-timeout) CLI_TIMEOUT="$2"; shift 2 ;;
     --once) ONCE=true; shift ;;
     *) log ERROR "Unknown arg: $1"; exit 1 ;;
   esac
@@ -62,10 +64,15 @@ Rules:
 EOF
 
   log INFO "worker cycle=$cycle agent=$AGENT cli=$CLI project=$PROJECT_ROOT"
-  if ! run_cli_prompt "$CLI" "$PROJECT_ROOT" "$prompt_file" "$out_file"; then
-    log ERROR "worker cycle failed agent=$AGENT; see $out_file"
-  else
+  if run_cli_prompt "$CLI" "$PROJECT_ROOT" "$prompt_file" "$out_file" "$CLI_TIMEOUT"; then
     log INFO "worker cycle complete agent=$AGENT; log=$out_file"
+  else
+    rc=$?
+    if [[ $rc -eq 124 ]]; then
+      log ERROR "worker cycle timed out agent=$AGENT after ${CLI_TIMEOUT}s; see $out_file"
+    else
+      log ERROR "worker cycle failed agent=$AGENT rc=$rc; see $out_file"
+    fi
   fi
   rm -f "$prompt_file"
   prune_old_logs "$LOG_DIR" "worker-${AGENT}-" "$MAX_LOG_FILES"

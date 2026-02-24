@@ -72,22 +72,48 @@ run_cli_prompt() {
   local cwd="$2"
   local prompt_file="$3"
   local output_file="$4"
+  local timeout_seconds="${5:-300}"
 
-  case "$cli" in
-    codex)
-      codex exec --dangerously-bypass-approvals-and-sandbox -C "$cwd" - <"$prompt_file" >"$output_file" 2>&1
-      ;;
-    claude)
-      (cd "$cwd" && claude --dangerously-skip-permissions -p "") <"$prompt_file" >"$output_file" 2>&1
-      ;;
-    gemini)
-      (cd "$cwd" && gemini --approval-mode yolo -p "") <"$prompt_file" >"$output_file" 2>&1
-      ;;
-    *)
-      log ERROR "Unsupported CLI: $cli"
-      return 2
-      ;;
-  esac
+  [[ "$timeout_seconds" =~ ^[0-9]+$ ]] || timeout_seconds=300
+  (( timeout_seconds > 0 )) || timeout_seconds=300
+  python3 - "$cli" "$cwd" "$prompt_file" "$output_file" "$timeout_seconds" <<'PY'
+import os
+import subprocess
+import sys
+
+cli, cwd, prompt_file, output_file, timeout_seconds = sys.argv[1:]
+timeout_seconds = int(timeout_seconds)
+
+if cli == "codex":
+    cmd = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "-C", cwd, "-"]
+elif cli == "claude":
+    cmd = ["claude", "--dangerously-skip-permissions", "-p", ""]
+elif cli == "gemini":
+    cmd = ["gemini", "--approval-mode", "yolo", "-p", ""]
+else:
+    print(f"Unsupported CLI: {cli}", file=sys.stderr)
+    sys.exit(2)
+
+env = os.environ.copy()
+with open(prompt_file, "rb") as stdin_f, open(output_file, "wb") as out_f:
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            stdin=stdin_f,
+            stdout=out_f,
+            stderr=subprocess.STDOUT,
+            timeout=timeout_seconds,
+            env=env,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        out_f.write(
+            f"\n[AUTOPILOT] CLI timeout after {timeout_seconds}s for {cli}\n".encode("utf-8")
+        )
+        sys.exit(124)
+    sys.exit(result.returncode)
+PY
 }
 
 sleep_with_jitter() {
