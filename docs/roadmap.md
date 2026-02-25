@@ -298,6 +298,36 @@ Acceptance criteria:
   - open blockers requiring user decision
   - fatal policy breach / repeated failures beyond budget
 
+### Phase E.5: Swarm Mode (v0.4.x)
+
+Objective: support "team mode" for a single agent family (for example, multiple Claude Code workers) so a task can be completed by a coordinated worker pool instead of one instance.
+
+Prerequisites:
+
+- Phase B instance-aware presence (`instance_id`)
+- Phase C task leases (to avoid stuck child tasks)
+- Phase D deterministic dispatch/ack/no-op diagnostics (for fan-out reliability)
+
+Tasks:
+
+1. Add instance pool tracking for agent families (`claude_code#worker-01`, `claude_code#worker-02`, etc.)
+2. Add parent/child task model (decomposition + aggregation metadata)
+3. Add manager fan-out helpers for subtask creation and routing
+4. Allow multiple instances of the same agent family to claim child tasks safely
+5. Add fan-in completion gate:
+   - all child tasks done
+   - aggregation/merge step complete
+   - QA/validation pass
+6. Add conflict/retry policy for overlapping edits or failed child subtasks
+7. Add status/observability support for swarm runs (parent progress + child progress by instance)
+
+Acceptance criteria:
+
+- at least two `claude_code` instances can work child tasks under one parent task concurrently
+- parent task remains open until child completion + aggregation gate pass
+- stale/disconnected swarm worker recovers via lease expiry without corrupting swarm state
+- status clearly shows swarm parent, child tasks, and per-instance ownership
+
 ### Phase F: Supervisor Runtime (v0.5.0)
 
 Objective: replace tmux as reliability foundation while keeping tmux as optional console.
@@ -365,6 +395,7 @@ Recommended implementation order:
 2. Lease-based task claims and expiry
 3. Deterministic dispatch/ack/result/no-op events
 4. Status v2 (instance table + stale diagnostics)
-5. Supervisor runtime
+5. Swarm Mode parent/child task support (Claude Code team mode)
+6. Supervisor runtime
 
 This sequence gives the highest reliability gains early while preserving the current tool and workflow shape.
