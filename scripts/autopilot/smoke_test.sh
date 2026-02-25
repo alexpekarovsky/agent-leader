@@ -177,16 +177,40 @@ echo "--- Test 4: watchdog_loop.sh --once ---"
 watchdog_log_dir="$WORK_DIR/watchdog-logs"
 mkdir -p "$watchdog_log_dir"
 
-# Create a minimal state dir with a stale task to trigger diagnostics
+# Create synthetic state with stale tasks in all three monitored statuses
 state_dir="$WORK_DIR/fake-project/state"
 mkdir -p "$state_dir"
 cat >"$state_dir/tasks.json" <<'JSON'
 [
   {
     "id": "TASK-smoke-001",
-    "title": "Stale smoke test task",
+    "title": "Stale assigned task",
     "status": "assigned",
-    "owner": "test_agent",
+    "owner": "agent_a",
+    "created_at": "2020-01-01T00:00:00+00:00",
+    "updated_at": "2020-01-01T00:00:00+00:00"
+  },
+  {
+    "id": "TASK-smoke-002",
+    "title": "Stale in_progress task",
+    "status": "in_progress",
+    "owner": "agent_b",
+    "created_at": "2020-01-01T00:00:00+00:00",
+    "updated_at": "2020-01-01T00:00:00+00:00"
+  },
+  {
+    "id": "TASK-smoke-003",
+    "title": "Stale reported task",
+    "status": "reported",
+    "owner": "agent_a",
+    "created_at": "2020-01-01T00:00:00+00:00",
+    "updated_at": "2020-01-01T00:00:00+00:00"
+  },
+  {
+    "id": "TASK-smoke-004",
+    "title": "Fresh done task (should not appear)",
+    "status": "done",
+    "owner": "agent_a",
     "created_at": "2020-01-01T00:00:00+00:00",
     "updated_at": "2020-01-01T00:00:00+00:00"
   }
@@ -201,6 +225,8 @@ watchdog_rc=0
   --once \
   --log-dir "$watchdog_log_dir" \
   --assigned-timeout 10 \
+  --inprogress-timeout 10 \
+  --reported-timeout 10 \
   2>/dev/null || watchdog_rc=$?
 
 if [[ $watchdog_rc -eq 0 ]]; then
@@ -222,6 +248,58 @@ if [[ -n "$watchdog_jsonl" ]] && grep -q '"stale_task"' "$watchdog_jsonl" 2>/dev
   report "watchdog detects stale task" "true"
 else
   report "watchdog detects stale task" "false" "no stale_task entry in JSONL"
+fi
+
+# Validate stale_task JSONL entries have all required keys
+if [[ -n "$watchdog_jsonl" ]]; then
+  key_check=$(python3 - "$watchdog_jsonl" <<'PYCHECK'
+import json, sys
+path = sys.argv[1]
+required = {"timestamp", "kind", "task_id", "owner", "status", "age_seconds", "timeout_seconds", "title"}
+errors = []
+stale_count = 0
+statuses_seen = set()
+for line in open(path, encoding="utf-8"):
+    line = line.strip()
+    if not line:
+        continue
+    rec = json.loads(line)
+    if rec.get("kind") != "stale_task":
+        continue
+    stale_count += 1
+    missing = required - set(rec.keys())
+    if missing:
+        errors.append(f"entry {stale_count}: missing keys {sorted(missing)}")
+    statuses_seen.add(rec.get("status"))
+if stale_count == 0:
+    print("ERROR:no stale_task entries")
+elif errors:
+    print("ERROR:" + "; ".join(errors))
+else:
+    print(f"OK:count={stale_count},statuses={sorted(statuses_seen)}")
+PYCHECK
+  )
+  if [[ "$key_check" == OK:* ]]; then
+    report "stale_task entries have all required keys" "true"
+  else
+    report "stale_task entries have all required keys" "false" "$key_check"
+  fi
+
+  # Verify all 3 stale statuses detected (done should NOT appear)
+  if echo "$key_check" | grep -q "'assigned'" && \
+     echo "$key_check" | grep -q "'in_progress'" && \
+     echo "$key_check" | grep -q "'reported'"; then
+    report "watchdog detects all 3 stale statuses" "true"
+  else
+    report "watchdog detects all 3 stale statuses" "false" "got: $key_check"
+  fi
+
+  # Verify done tasks are NOT flagged
+  if ! grep -q '"TASK-smoke-004"' "$watchdog_jsonl" 2>/dev/null; then
+    report "watchdog ignores done tasks" "true"
+  else
+    report "watchdog ignores done tasks" "false" "done task appeared in diagnostics"
+  fi
 fi
 
 # Test corruption detection: write a dict where a list is expected
