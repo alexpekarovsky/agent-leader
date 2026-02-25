@@ -15,6 +15,7 @@
 #   8. log_check.sh strict mode with valid and malformed JSONL
 #   9. README-documented commands execute correctly
 #  10. team_tmux.sh --dry-run CLI timeout and session propagation
+#  11. Operator runbook command sequence validation
 #
 # Exit code 0 = all passed, non-zero = failure count.
 
@@ -650,6 +651,110 @@ if [[ "$pane_cmds" -eq 6 ]]; then
   report "dry-run includes all 6 tmux commands" "true"
 else
   report "dry-run includes all 6 tmux commands" "false" "expected 6, got $pane_cmds"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 11: Operator runbook command sequence validation
+# ---------------------------------------------------------------------------
+echo
+echo "--- Test 11: operator runbook command sequence ---"
+# Mirrors key commands from docs/operator-runbook.md sections 2-9.
+# Each command uses --once or bounded timeouts to stay deterministic.
+
+runbook_dir="$WORK_DIR/runbook-test"
+runbook_logs="$runbook_dir/logs"
+runbook_pids="$runbook_dir/pids"
+mkdir -p "$runbook_logs" "$runbook_pids"
+
+# Runbook 2: Dry run (individual loop, not just tmux)
+dry_rc=0
+"$ROOT_DIR/scripts/autopilot/team_tmux.sh" --dry-run \
+  --project-root "$ROOT_DIR" --log-dir "$runbook_logs" \
+  >"$runbook_dir/dry.txt" 2>&1 || dry_rc=$?
+if [[ $dry_rc -eq 0 ]] && grep -q "Session:" "$runbook_dir/dry.txt"; then
+  report "runbook: dry-run produces session plan" "true"
+else
+  report "runbook: dry-run produces session plan" "false" "rc=$dry_rc"
+fi
+
+# Runbook 3: Individual loop — manager --once with timeout
+mgr_rc=0
+"$ROOT_DIR/scripts/autopilot/manager_loop.sh" \
+  --cli codex --project-root "$ROOT_DIR" --once --cli-timeout 1 \
+  --log-dir "$runbook_logs" >/dev/null 2>&1 || mgr_rc=$?
+# Manager should exit 0 (loop completes; CLI may timeout but loop handles it)
+if [[ $mgr_rc -eq 0 ]]; then
+  report "runbook: manager --once completes" "true"
+else
+  report "runbook: manager --once completes" "false" "rc=$mgr_rc"
+fi
+
+# Runbook 3: Individual loop — worker --once with timeout
+wkr_rc=0
+"$ROOT_DIR/scripts/autopilot/worker_loop.sh" \
+  --cli claude --agent claude_code --project-root "$ROOT_DIR" --once --cli-timeout 1 \
+  --log-dir "$runbook_logs" >/dev/null 2>&1 || wkr_rc=$?
+if [[ $wkr_rc -eq 0 ]]; then
+  report "runbook: worker --once completes" "true"
+else
+  report "runbook: worker --once completes" "false" "rc=$wkr_rc"
+fi
+
+# Runbook 3: Individual loop — watchdog --once
+wd_rc=0
+"$ROOT_DIR/scripts/autopilot/watchdog_loop.sh" \
+  --project-root "$ROOT_DIR" --once \
+  --log-dir "$runbook_logs" >/dev/null 2>&1 || wd_rc=$?
+if [[ $wd_rc -eq 0 ]]; then
+  report "runbook: watchdog --once completes" "true"
+else
+  report "runbook: watchdog --once completes" "false" "rc=$wd_rc"
+fi
+
+# Runbook 5: Log inspection — verify files created by loops above
+mgr_logs=$(ls "$runbook_logs"/manager-codex-*.log 2>/dev/null | wc -l | tr -d ' ')
+wkr_logs=$(ls "$runbook_logs"/worker-claude_code-claude-*.log 2>/dev/null | wc -l | tr -d ' ')
+wd_logs=$(ls "$runbook_logs"/watchdog-*.jsonl 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$mgr_logs" -ge 1 && "$wkr_logs" -ge 1 && "$wd_logs" -ge 1 ]]; then
+  report "runbook: all loop log files created" "true"
+else
+  report "runbook: all loop log files created" "false" "mgr=$mgr_logs wkr=$wkr_logs wd=$wd_logs"
+fi
+
+# Runbook 5: CLI timeout markers in manager/worker logs
+timeout_found=false
+for f in "$runbook_logs"/manager-codex-*.log "$runbook_logs"/worker-claude_code-claude-*.log; do
+  if [[ -f "$f" ]] && grep -q '\[AUTOPILOT\] CLI timeout' "$f" 2>/dev/null; then
+    timeout_found=true
+    break
+  fi
+done
+if [[ "$timeout_found" == true ]]; then
+  report "runbook: timeout marker present in logs" "true"
+else
+  report "runbook: timeout marker present in logs" "false" "no [AUTOPILOT] CLI timeout found"
+fi
+
+# Runbook 7: Supervisor status (without starting)
+sv_rc=0
+sv_out="$runbook_dir/sv-status.txt"
+"$ROOT_DIR/scripts/autopilot/supervisor.sh" status \
+  --pid-dir "$runbook_pids" --log-dir "$runbook_logs" \
+  >"$sv_out" 2>&1 || sv_rc=$?
+if [[ $sv_rc -eq 0 ]] && grep -q "stopped" "$sv_out"; then
+  report "runbook: supervisor status shows stopped" "true"
+else
+  report "runbook: supervisor status shows stopped" "false" "rc=$sv_rc"
+fi
+
+# Runbook 9: log_check.sh against runbook logs
+lc_rc=0
+"$ROOT_DIR/scripts/autopilot/log_check.sh" --log-dir "$runbook_logs" --max-age-minutes 99999 \
+  >/dev/null 2>&1 || lc_rc=$?
+if [[ $lc_rc -eq 0 ]]; then
+  report "runbook: log_check passes on runbook logs" "true"
+else
+  report "runbook: log_check passes on runbook logs" "false" "rc=$lc_rc"
 fi
 
 # ---------------------------------------------------------------------------
