@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import os
+import stat
+import subprocess
 import tempfile
 import time
 import unittest
@@ -100,6 +103,15 @@ def _manager_validate_until_done(root_str: str, policy_path_str: str, expected_d
             return
         time.sleep(0.02)
     raise TimeoutError(f"manager validation timeout; expected done={expected_done}")
+
+
+def _write_executable(path: Path, content: str) -> None:
+    path.write_text(content, encoding="utf-8")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+
+def _make_sleeping_cli_stub(bin_dir: Path, name: str, sleep_seconds: int = 5) -> None:
+    _write_executable(bin_dir / name, f"#!/usr/bin/env bash\nsleep {sleep_seconds}\n")
 
 
 class EventBusReliabilityTests(unittest.TestCase):
@@ -673,6 +685,122 @@ class WorkflowReliabilityTests(unittest.TestCase):
             self.assertGreaterEqual(result["submitted"], 1)
             task_after = next(t for t in orch.list_tasks() if t["id"] == task["id"])
             self.assertEqual("reported", task_after["status"])
+
+
+class AutopilotTimeoutBehaviorTests(unittest.TestCase):
+    def test_run_cli_prompt_timeout_writes_marker_and_returns_124(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            _make_sleeping_cli_stub(bin_dir, "codex", sleep_seconds=5)
+            prompt_file = tmp_path / "prompt.txt"
+            out_file = tmp_path / "out.log"
+            prompt_file.write_text("test prompt\n", encoding="utf-8")
+
+            cmd = (
+                f"source '{repo_root / 'scripts/autopilot/common.sh'}' && "
+                f"run_cli_prompt codex '{tmp_path}' '{prompt_file}' '{out_file}' 1"
+            )
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+            start = time.time()
+            proc = subprocess.run(
+                ["bash", "-lc", cmd],
+                cwd=repo_root,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=10,
+            )
+            elapsed = time.time() - start
+
+            self.assertEqual(124, proc.returncode)
+            self.assertLess(elapsed, 4.0)
+            self.assertTrue(out_file.exists())
+            self.assertIn("[AUTOPILOT] CLI timeout after 1s for codex", out_file.read_text(encoding="utf-8"))
+
+    def test_manager_loop_timeout_creates_log_file_with_marker(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bin_dir = tmp_path / "bin"
+            logs_dir = tmp_path / "logs"
+            bin_dir.mkdir()
+            logs_dir.mkdir()
+            _make_sleeping_cli_stub(bin_dir, "codex", sleep_seconds=5)
+
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+            proc = subprocess.run(
+                [
+                    "bash",
+                    "scripts/autopilot/manager_loop.sh",
+                    "--once",
+                    "--project-root",
+                    str(repo_root),
+                    "--log-dir",
+                    str(logs_dir),
+                    "--cli-timeout",
+                    "1",
+                ],
+                cwd=repo_root,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=15,
+            )
+
+            self.assertEqual(0, proc.returncode)
+            self.assertIn("manager cycle timed out after 1s", proc.stderr)
+            logs = list(logs_dir.glob("manager-codex-*.log"))
+            self.assertEqual(1, len(logs))
+            self.assertIn("[AUTOPILOT] CLI timeout after 1s for codex", logs[0].read_text(encoding="utf-8"))
+
+    def test_worker_loop_timeout_creates_log_file_with_marker(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bin_dir = tmp_path / "bin"
+            logs_dir = tmp_path / "logs"
+            bin_dir.mkdir()
+            logs_dir.mkdir()
+            _make_sleeping_cli_stub(bin_dir, "claude", sleep_seconds=5)
+
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+            proc = subprocess.run(
+                [
+                    "bash",
+                    "scripts/autopilot/worker_loop.sh",
+                    "--once",
+                    "--cli",
+                    "claude",
+                    "--agent",
+                    "claude_code",
+                    "--project-root",
+                    str(repo_root),
+                    "--log-dir",
+                    str(logs_dir),
+                    "--cli-timeout",
+                    "1",
+                ],
+                cwd=repo_root,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=15,
+            )
+
+            self.assertEqual(0, proc.returncode)
+            self.assertIn("worker cycle timed out agent=claude_code after 1s", proc.stderr)
+            logs = list(logs_dir.glob("worker-claude_code-claude-*.log"))
+            self.assertEqual(1, len(logs))
+            self.assertIn("[AUTOPILOT] CLI timeout after 1s for claude", logs[0].read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
