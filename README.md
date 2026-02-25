@@ -310,12 +310,60 @@ connect to leader. Then wait for tasks, implement only assigned scope, run tests
 - `orchestrator_connect_to_leader` now auto-fills missing Gemini identity fields (`permissions_mode`, `sandbox_mode`, `session_id`, `connection_id`, `server_version`, `verification_source`) when possible.
 - `cwd` / `project_root` are still required to match the active project root for `same_project` verification.
 
+## Autopilot (Autonomous Loops)
+
+Autopilot scripts run manager/worker/watchdog cycles in a loop without manual prompting.
+
+### Quick start (tmux)
+```bash
+# Preview what will launch
+./scripts/autopilot/team_tmux.sh --dry-run
+
+# Launch all 4 loops in a tmux session
+./scripts/autopilot/team_tmux.sh
+
+# Attach
+tmux attach -t agents-autopilot
+```
+
+### Quick start (supervisor, no tmux)
+```bash
+./scripts/autopilot/supervisor.sh start
+./scripts/autopilot/supervisor.sh status
+./scripts/autopilot/supervisor.sh stop
+./scripts/autopilot/supervisor.sh clean    # remove stale pids + supervisor logs
+```
+
+### Smoke tests
+Verify all autopilot scripts work without real CLI agents:
+```bash
+./scripts/autopilot/smoke_test.sh
+```
+
+This tests dry-run output, manager/worker timeout paths (with stub CLIs), watchdog JSONL emission, state corruption detection, log pruning, and live tmux session launch/teardown (skipped if tmux is unavailable).
+
+### Log inspection
+```bash
+# Check log health
+./scripts/autopilot/log_check.sh
+
+# Strict mode (exits non-zero on errors)
+./scripts/autopilot/log_check.sh --strict
+
+# Latest watchdog diagnostics
+grep '"stale_task"' .autopilot-logs/watchdog-*.jsonl | tail -5
+```
+
+See [docs/operator-runbook.md](docs/operator-runbook.md) for detailed launch, restart, recovery, and troubleshooting procedures.
+
 ## Files
 - Server: `orchestrator_mcp_server.py`
 - Engine: `orchestrator/engine.py`
 - Installer: `scripts/install_agent_leader_mcp.sh`
 - Doctor: `scripts/doctor.sh`
-- Roadmap: `ROADMAP.md`
+- Autopilot: `scripts/autopilot/` (manager/worker/watchdog loops, tmux launcher, supervisor, smoke tests)
+- Roadmap: `docs/roadmap.md`
+- Operator Runbook: `docs/operator-runbook.md`
 
 ## MCP Tools Reference
 This is the complete tool contract exposed by `agent-leader-orchestrator`.
