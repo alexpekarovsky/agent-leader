@@ -14,6 +14,7 @@
 #   7. Log retention under repeated loop runs with --max-logs
 #   8. log_check.sh strict mode with valid and malformed JSONL
 #   9. README-documented commands execute correctly
+#  10. team_tmux.sh --dry-run CLI timeout and session propagation
 #
 # Exit code 0 = all passed, non-zero = failure count.
 
@@ -579,6 +580,76 @@ if [[ $readme_sv_rc -eq 0 ]]; then
   report "README: supervisor.sh status" "true"
 else
   report "README: supervisor.sh status" "false" "rc=$readme_sv_rc"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 10: team_tmux.sh --dry-run CLI timeout and session propagation
+# ---------------------------------------------------------------------------
+echo
+echo "--- Test 10: team_tmux.sh --dry-run timeout/session propagation ---"
+timeout_dry_out="$WORK_DIR/dry-run-timeouts.txt"
+custom_session="custom-smoke-test"
+custom_mgr_timeout=42
+custom_wkr_timeout=99
+custom_log="$WORK_DIR/custom-log-dir"
+mkdir -p "$custom_log"
+
+"$ROOT_DIR/scripts/autopilot/team_tmux.sh" \
+  --dry-run \
+  --session "$custom_session" \
+  --manager-cli-timeout "$custom_mgr_timeout" \
+  --worker-cli-timeout "$custom_wkr_timeout" \
+  --log-dir "$custom_log" \
+  >"$timeout_dry_out" 2>&1
+
+# Session name should appear in output
+if grep -q "$custom_session" "$timeout_dry_out"; then
+  report "dry-run includes custom session name" "true"
+else
+  report "dry-run includes custom session name" "false" "session '$custom_session' not in output"
+fi
+
+# Manager CLI timeout should appear in manager command
+if grep "manager_loop" "$timeout_dry_out" | grep -q "$custom_mgr_timeout"; then
+  report "dry-run includes manager cli-timeout" "true"
+else
+  report "dry-run includes manager cli-timeout" "false" "timeout $custom_mgr_timeout not in manager command"
+fi
+
+# Worker CLI timeout should appear in worker commands
+if grep "worker_loop" "$timeout_dry_out" | grep -q "$custom_wkr_timeout"; then
+  report "dry-run includes worker cli-timeout" "true"
+else
+  report "dry-run includes worker cli-timeout" "false" "timeout $custom_wkr_timeout not in worker command"
+fi
+
+# Custom log-dir should appear in all loop commands
+loop_cmds=$(grep -c "$custom_log" "$timeout_dry_out" || true)
+if [[ "$loop_cmds" -ge 4 ]]; then
+  report "dry-run propagates custom log-dir to all commands" "true"
+else
+  report "dry-run propagates custom log-dir to all commands" "false" "expected >=4 occurrences, got $loop_cmds"
+fi
+
+# Manager timeout should NOT appear in worker commands
+worker_lines=$(grep "worker_loop" "$timeout_dry_out" || true)
+if echo "$worker_lines" | grep -qv "$custom_mgr_timeout"; then
+  report "worker commands use worker timeout (not manager)" "true"
+else
+  report "worker commands use worker timeout (not manager)" "false" "manager timeout found in worker cmd"
+fi
+
+# Verify all 4 pane commands + monitor + select-layout are present
+pane_cmds=0
+for pattern in "tmux new-session" "tmux split-window.*claude" "tmux split-window.*gemini" "tmux split-window.*watchdog" "tmux new-window.*monitor" "tmux select-layout"; do
+  if grep -qE "$pattern" "$timeout_dry_out" 2>/dev/null; then
+    pane_cmds=$((pane_cmds + 1))
+  fi
+done
+if [[ "$pane_cmds" -eq 6 ]]; then
+  report "dry-run includes all 6 tmux commands" "true"
+else
+  report "dry-run includes all 6 tmux commands" "false" "expected 6, got $pane_cmds"
 fi
 
 # ---------------------------------------------------------------------------
