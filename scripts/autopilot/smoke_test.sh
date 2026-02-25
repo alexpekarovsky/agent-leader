@@ -1025,6 +1025,46 @@ else
   report "all linked docs are non-empty" "false" "$empty_check"
 fi
 
+# Broken-link failure detection: create a synthetic index with a bad link
+broken_index="$WORK_DIR/broken-index.md"
+cat >"$broken_index" <<'BROKENMD'
+# Test Index
+| [Good](quickstart-headless-mvp.md) | exists |
+| [Bad](nonexistent-phantom-doc.md) | does not exist |
+BROKENMD
+
+broken_check=$(python3 - "$broken_index" "$docs_dir" <<'PYCHECK'
+import re, sys
+from pathlib import Path
+
+index_path = Path(sys.argv[1])
+docs_dir = Path(sys.argv[2])
+
+content = index_path.read_text(encoding="utf-8")
+links = re.findall(r'\[.*?\]\(([^)]+\.md)\)', content)
+
+missing = []
+found = 0
+for link in links:
+    target = docs_dir / link
+    if target.exists():
+        found += 1
+    else:
+        missing.append(link)
+
+if missing:
+    print(f"MISSING:{','.join(missing)}")
+else:
+    print(f"OK:{found}")
+PYCHECK
+)
+
+if [[ "$broken_check" == MISSING:*nonexistent* ]]; then
+  report "broken-link fixture correctly detected" "true"
+else
+  report "broken-link fixture correctly detected" "false" "expected MISSING, got $broken_check"
+fi
+
 # ---------------------------------------------------------------------------
 # Test 15: tmux pane cheatsheet command validation
 # ---------------------------------------------------------------------------
