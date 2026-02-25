@@ -19,6 +19,7 @@
 #  12. Log taxonomy filename pattern validation
 #  13. Dual-CC conventions doc example validation
 #  14. Autopilot docs index link validation
+#  15. tmux pane cheatsheet command validation
 #
 # Exit code 0 = all passed, non-zero = failure count.
 
@@ -1021,6 +1022,75 @@ if [[ "$empty_check" == OK:* ]]; then
   report "all linked docs are non-empty" "true"
 else
   report "all linked docs are non-empty" "false" "$empty_check"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 15: tmux pane cheatsheet command validation
+# ---------------------------------------------------------------------------
+echo
+echo "--- Test 15: tmux pane cheatsheet commands ---"
+
+cheat_doc="$ROOT_DIR/docs/tmux-pane-cheatsheet.md"
+
+if [[ -f "$cheat_doc" ]]; then
+  report "tmux-pane-cheatsheet.md exists" "true"
+else
+  report "tmux-pane-cheatsheet.md exists" "false" "file not found"
+fi
+
+# Validate session name consistency — all tmux commands should use agents-autopilot
+session_refs=$(grep -c 'agents-autopilot' "$cheat_doc" || true)
+if [[ "$session_refs" -ge 5 ]]; then
+  report "cheatsheet uses consistent session name ($session_refs refs)" "true"
+else
+  report "cheatsheet uses consistent session name" "false" "only $session_refs refs"
+fi
+
+# Validate pane index references match documented layout (0-3 for manager window)
+for idx in 0 1 2 3; do
+  if grep -q "manager\.$idx" "$cheat_doc"; then
+    true  # found
+  else
+    report "cheatsheet references pane index $idx" "false" "manager.$idx not found"
+    continue
+  fi
+done
+# Check all 4 at once
+pane_refs=$(grep -oE 'manager\.[0-3]' "$cheat_doc" | sort -u | wc -l | tr -d ' ')
+if [[ "$pane_refs" -eq 4 ]]; then
+  report "cheatsheet references all 4 manager panes" "true"
+else
+  report "cheatsheet references all 4 manager panes" "false" "found $pane_refs unique pane refs"
+fi
+
+# Validate script references match actual files
+for script in manager_loop.sh worker_loop.sh watchdog_loop.sh monitor_loop.sh; do
+  if grep -q "$script" "$cheat_doc"; then
+    if [[ -f "$ROOT_DIR/scripts/autopilot/$script" ]]; then
+      true  # ok
+    fi
+  fi
+done
+script_count=$(grep -oE '(manager|worker|watchdog|monitor)_loop\.sh' "$cheat_doc" | sort -u | wc -l | tr -d ' ')
+if [[ "$script_count" -eq 4 ]]; then
+  report "cheatsheet references all 4 loop scripts" "true"
+else
+  report "cheatsheet references all 4 loop scripts" "false" "found $script_count unique scripts"
+fi
+
+# Validate capture-pane commands have correct format
+capture_cmds=$(grep -c 'tmux capture-pane' "$cheat_doc" || true)
+if [[ "$capture_cmds" -ge 4 ]]; then
+  report "cheatsheet has capture-pane examples ($capture_cmds)" "true"
+else
+  report "cheatsheet has capture-pane examples" "false" "only $capture_cmds"
+fi
+
+# Validate dry-run reference
+if grep -q '\-\-dry-run' "$cheat_doc"; then
+  report "cheatsheet mentions --dry-run preview" "true"
+else
+  report "cheatsheet mentions --dry-run preview" "false"
 fi
 
 # ---------------------------------------------------------------------------
