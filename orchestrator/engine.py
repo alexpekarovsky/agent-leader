@@ -923,7 +923,9 @@ class Orchestrator:
             entry = agents.get(agent, {})
             entry["agent"] = agent
             entry["status"] = "active"
-            entry["metadata"] = metadata or entry.get("metadata", {})
+            existing_metadata = entry.get("metadata", {}) if isinstance(entry.get("metadata"), dict) else {}
+            incoming_metadata = metadata if isinstance(metadata, dict) else {}
+            entry["metadata"] = self._normalize_agent_metadata(agent=agent, metadata=incoming_metadata, existing=existing_metadata)
             entry["last_seen"] = self._now()
             agents[agent] = entry
             self._write_json(self.agents_path, agents)
@@ -940,7 +942,12 @@ class Orchestrator:
             if metadata:
                 merged = dict(entry.get("metadata", {}))
                 merged.update(metadata)
-                entry["metadata"] = merged
+                entry["metadata"] = self._normalize_agent_metadata(agent=agent, metadata=merged)
+            else:
+                entry["metadata"] = self._normalize_agent_metadata(
+                    agent=agent,
+                    metadata=entry.get("metadata", {}) if isinstance(entry.get("metadata"), dict) else {},
+                )
             entry["last_seen"] = self._now()
             agents[agent] = entry
             self._write_json(self.agents_path, agents)
@@ -959,6 +966,7 @@ class Orchestrator:
         details = dict(metadata or {})
         details.setdefault("role", "team_member")
         details["status"] = status
+        details = self._normalize_agent_metadata(agent=agent, metadata=details)
 
         self.register_agent(agent=agent, metadata=details)
         entry = self.heartbeat(agent=agent, metadata={"status": status})
@@ -1484,6 +1492,7 @@ class Orchestrator:
 
         return {
             "agent_id": entry.get("agent"),
+            "instance_id": metadata.get("instance_id"),
             "client": metadata.get("client"),
             "model": metadata.get("model"),
             "project_root": project_root or cwd,
@@ -1500,6 +1509,31 @@ class Orchestrator:
             "last_seen": last_seen,
             "age_seconds": age,
         }
+
+    def _normalize_agent_metadata(
+        self,
+        agent: str,
+        metadata: Optional[Dict[str, Any]],
+        existing: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        merged: Dict[str, Any] = {}
+        if isinstance(existing, dict):
+            merged.update(existing)
+        if isinstance(metadata, dict):
+            merged.update(metadata)
+
+        instance_id = str(merged.get("instance_id", "")).strip()
+        if not instance_id:
+            session_id = str(merged.get("session_id", "")).strip()
+            connection_id = str(merged.get("connection_id", "")).strip()
+            if session_id:
+                instance_id = session_id
+            elif connection_id:
+                instance_id = connection_id
+            else:
+                instance_id = f"{agent}#default"
+        merged["instance_id"] = instance_id
+        return merged
 
     def _verification_for_entry(self, entry: Dict[str, Any], stale_after_seconds: int) -> Dict[str, Any]:
         metadata = entry.get("metadata", {}) if isinstance(entry, dict) else {}

@@ -982,6 +982,15 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "task_status_counts": by_status,
                 "bug_count": len(bugs),
                 "active_agents": [agent["agent"] for agent in agents],
+                "active_agent_identities": [
+                    {
+                        "agent": agent.get("agent"),
+                        "instance_id": agent.get("instance_id"),
+                        "status": agent.get("status"),
+                        "last_seen": agent.get("last_seen"),
+                    }
+                    for agent in agents
+                ],
                 "live_status_text": live_status.get("report_text", ""),
                 "live_status": live_status.get("report", {}),
                 "recommended_status_cadence_seconds": live_status.get("recommended_cadence_seconds", 600),

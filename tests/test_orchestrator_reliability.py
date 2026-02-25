@@ -515,6 +515,43 @@ class PresenceRefreshTests(unittest.TestCase):
             after = orch._read_json(orch.agents_path)["gemini"]["metadata"]
             self.assertEqual(before, after)
 
+    def test_register_agent_derives_instance_id_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+            entry = orch.register_agent(
+                "gemini",
+                {
+                    "client": "gemini-cli",
+                    "model": "gemini-2.5",
+                    "cwd": str(root),
+                    "session_id": "sess-x",
+                },
+            )
+            self.assertEqual("sess-x", entry.get("metadata", {}).get("instance_id"))
+
+    def test_connect_to_leader_preserves_explicit_instance_id_and_identity_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+            result = orch.connect_to_leader(
+                agent="claude_code",
+                metadata={
+                    **_team_metadata(root, "claude-code", "claude-opus", "team_member", "sid-cc", "cid-cc"),
+                    "instance_id": "claude_code#worker-02",
+                },
+                source="claude_code",
+            )
+            self.assertTrue(result.get("connected"))
+            self.assertEqual("claude_code#worker-02", result.get("identity", {}).get("instance_id"))
+            agents = orch.list_agents(active_only=False)
+            claude = next(item for item in agents if item.get("agent") == "claude_code")
+            self.assertEqual("claude_code#worker-02", claude.get("instance_id"))
+
 
 class WorkflowReliabilityTests(unittest.TestCase):
     def test_core_flow_reliable_across_five_runs(self) -> None:
