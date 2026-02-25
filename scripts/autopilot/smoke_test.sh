@@ -20,6 +20,7 @@
 #  13. Dual-CC conventions doc example validation
 #  14. Autopilot docs index link validation
 #  15. tmux pane cheatsheet command validation
+#  16. Submit report response doc validation
 #
 # Exit code 0 = all passed, non-zero = failure count.
 
@@ -1091,6 +1092,90 @@ if grep -q '\-\-dry-run' "$cheat_doc"; then
   report "cheatsheet mentions --dry-run preview" "true"
 else
   report "cheatsheet mentions --dry-run preview" "false"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 16: Submit report response doc validation
+# ---------------------------------------------------------------------------
+echo
+echo "--- Test 16: submit-report response doc ---"
+
+report_doc="$ROOT_DIR/docs/submit-report-response-notes.md"
+
+if [[ -f "$report_doc" ]]; then
+  report "submit-report-response-notes.md exists" "true"
+else
+  report "submit-report-response-notes.md exists" "false" "file not found"
+fi
+
+# Validate required field names documented
+req_fields_check=$(python3 - "$report_doc" <<'PYCHECK'
+import sys
+from pathlib import Path
+content = Path(sys.argv[1]).read_text(encoding="utf-8")
+required = ["task_id", "agent", "commit_sha", "status", "test_summary"]
+missing = [f for f in required if f not in content]
+if missing:
+    print(f"MISSING:{','.join(missing)}")
+else:
+    print(f"OK:{len(required)}")
+PYCHECK
+)
+if [[ "$req_fields_check" == OK:* ]]; then
+  report "doc lists all required request fields" "true"
+else
+  report "doc lists all required request fields" "false" "$req_fields_check"
+fi
+
+# Validate response structure fields documented
+resp_fields_check=$(python3 - "$report_doc" <<'PYCHECK'
+import sys
+from pathlib import Path
+content = Path(sys.argv[1]).read_text(encoding="utf-8")
+expected = ["auto_manager_cycle", "auto_claim_next", "processed_reports", "passed", "pending_total"]
+missing = [f for f in expected if f not in content]
+if missing:
+    print(f"MISSING:{','.join(missing)}")
+else:
+    print(f"OK:{len(expected)}")
+PYCHECK
+)
+if [[ "$resp_fields_check" == OK:* ]]; then
+  report "doc lists all response structure fields" "true"
+else
+  report "doc lists all response structure fields" "false" "$resp_fields_check"
+fi
+
+# Validate JSON examples are parseable
+json_check=$(python3 - "$report_doc" <<'PYCHECK'
+import json, re, sys
+from pathlib import Path
+content = Path(sys.argv[1]).read_text(encoding="utf-8")
+blocks = re.findall(r'```json\n(.*?)```', content, re.DOTALL)
+errors = []
+for i, block in enumerate(blocks):
+    try:
+        json.loads(block)
+    except json.JSONDecodeError as e:
+        errors.append(f"block {i+1}: {e}")
+if errors:
+    print(f"ERRORS:{'; '.join(errors)}")
+else:
+    print(f"OK:{len(blocks)}")
+PYCHECK
+)
+if [[ "$json_check" == OK:* ]]; then
+  count="${json_check#OK:}"
+  report "doc JSON examples are valid ($count blocks)" "true"
+else
+  report "doc JSON examples are valid" "false" "$json_check"
+fi
+
+# Validate error/retry case documented
+if grep -q 'queued_for_retry' "$report_doc" && grep -q 'submit_error' "$report_doc"; then
+  report "doc covers retry/error cases" "true"
+else
+  report "doc covers retry/error cases" "false" "retry fields not found"
 fi
 
 # ---------------------------------------------------------------------------
