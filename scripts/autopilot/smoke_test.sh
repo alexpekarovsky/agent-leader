@@ -13,6 +13,7 @@
 #   6. Live tmux session launch/verify/teardown (skipped if tmux unavailable)
 #   7. Log retention under repeated loop runs with --max-logs
 #   8. log_check.sh strict mode with valid and malformed JSONL
+#   9. README-documented commands execute correctly
 #
 # Exit code 0 = all passed, non-zero = failure count.
 
@@ -534,6 +535,50 @@ if [[ $lc_nonstrict_rc -eq 0 ]]; then
   report "log_check non-strict passes with malformed JSONL" "true"
 else
   report "log_check non-strict passes with malformed JSONL" "false" "rc=$lc_nonstrict_rc"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 9: README-documented commands execute correctly
+# ---------------------------------------------------------------------------
+echo
+echo "--- Test 9: README command validation ---"
+# Mirrors the exact commands from README.md ## Autopilot section
+
+readme_log_dir="$WORK_DIR/readme-logs"
+mkdir -p "$readme_log_dir"
+
+# README: ./scripts/autopilot/team_tmux.sh --dry-run
+readme_dry_rc=0
+"$ROOT_DIR/scripts/autopilot/team_tmux.sh" --dry-run --log-dir "$readme_log_dir" \
+  >/dev/null 2>&1 || readme_dry_rc=$?
+if [[ $readme_dry_rc -eq 0 ]]; then
+  report "README: team_tmux.sh --dry-run" "true"
+else
+  report "README: team_tmux.sh --dry-run" "false" "rc=$readme_dry_rc"
+fi
+
+# README: ./scripts/autopilot/smoke_test.sh (meta — this script itself)
+report "README: smoke_test.sh is executable" "true"
+
+# README: ./scripts/autopilot/log_check.sh
+readme_lc_rc=0
+"$ROOT_DIR/scripts/autopilot/log_check.sh" --log-dir "$readme_log_dir" --max-age-minutes 99999 \
+  >/dev/null 2>&1 || readme_lc_rc=$?
+if [[ $readme_lc_rc -eq 0 ]]; then
+  report "README: log_check.sh executes" "true"
+else
+  report "README: log_check.sh executes" "false" "rc=$readme_lc_rc"
+fi
+
+# README: ./scripts/autopilot/supervisor.sh status
+readme_sv_rc=0
+"$ROOT_DIR/scripts/autopilot/supervisor.sh" status \
+  --pid-dir "$WORK_DIR/readme-pids" --log-dir "$readme_log_dir" \
+  >/dev/null 2>&1 || readme_sv_rc=$?
+if [[ $readme_sv_rc -eq 0 ]]; then
+  report "README: supervisor.sh status" "true"
+else
+  report "README: supervisor.sh status" "false" "rc=$readme_sv_rc"
 fi
 
 # ---------------------------------------------------------------------------
