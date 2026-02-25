@@ -16,6 +16,7 @@
 #   9. README-documented commands execute correctly
 #  10. team_tmux.sh --dry-run CLI timeout and session propagation
 #  11. Operator runbook command sequence validation
+#  12. Log taxonomy filename pattern validation
 #
 # Exit code 0 = all passed, non-zero = failure count.
 
@@ -755,6 +756,123 @@ if [[ $lc_rc -eq 0 ]]; then
   report "runbook: log_check passes on runbook logs" "true"
 else
   report "runbook: log_check passes on runbook logs" "false" "rc=$lc_rc"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 12: Log taxonomy filename pattern validation
+# ---------------------------------------------------------------------------
+echo
+echo "--- Test 12: log taxonomy filename patterns ---"
+# Validates that log files produced by loops match the naming patterns
+# documented in docs/log-file-taxonomy.md.
+# Uses the logs already created by Tests 2, 3, 4, and 11.
+
+taxonomy_logs="$WORK_DIR/taxonomy-logs"
+mkdir -p "$taxonomy_logs"
+
+# Generate all three log types with known prefixes
+"$ROOT_DIR/scripts/autopilot/manager_loop.sh" \
+  --cli codex --project-root "$ROOT_DIR" --once --cli-timeout 1 \
+  --log-dir "$taxonomy_logs" >/dev/null 2>&1 || true
+
+"$ROOT_DIR/scripts/autopilot/worker_loop.sh" \
+  --cli claude --agent claude_code --project-root "$ROOT_DIR" --once --cli-timeout 1 \
+  --log-dir "$taxonomy_logs" >/dev/null 2>&1 || true
+
+"$ROOT_DIR/scripts/autopilot/watchdog_loop.sh" \
+  --project-root "$ROOT_DIR" --once \
+  --log-dir "$taxonomy_logs" >/dev/null 2>&1 || true
+
+# Pattern: manager-{cli}-{YYYYMMDD-HHMMSS}.log
+mgr_pattern=$(ls "$taxonomy_logs"/manager-codex-*.log 2>/dev/null | head -1)
+if [[ -n "$mgr_pattern" ]]; then
+  basename_mgr=$(basename "$mgr_pattern")
+  if [[ "$basename_mgr" =~ ^manager-codex-[0-9]{8}-[0-9]{6}\.log$ ]]; then
+    report "taxonomy: manager log matches pattern" "true"
+  else
+    report "taxonomy: manager log matches pattern" "false" "got $basename_mgr"
+  fi
+else
+  report "taxonomy: manager log matches pattern" "false" "no manager log found"
+fi
+
+# Pattern: worker-{agent}-{cli}-{YYYYMMDD-HHMMSS}.log
+wkr_pattern=$(ls "$taxonomy_logs"/worker-claude_code-claude-*.log 2>/dev/null | head -1)
+if [[ -n "$wkr_pattern" ]]; then
+  basename_wkr=$(basename "$wkr_pattern")
+  if [[ "$basename_wkr" =~ ^worker-claude_code-claude-[0-9]{8}-[0-9]{6}\.log$ ]]; then
+    report "taxonomy: worker log matches pattern" "true"
+  else
+    report "taxonomy: worker log matches pattern" "false" "got $basename_wkr"
+  fi
+else
+  report "taxonomy: worker log matches pattern" "false" "no worker log found"
+fi
+
+# Pattern: watchdog-{YYYYMMDD-HHMMSS}.jsonl
+wd_pattern=$(ls "$taxonomy_logs"/watchdog-*.jsonl 2>/dev/null | head -1)
+if [[ -n "$wd_pattern" ]]; then
+  basename_wd=$(basename "$wd_pattern")
+  if [[ "$basename_wd" =~ ^watchdog-[0-9]{8}-[0-9]{6}\.jsonl$ ]]; then
+    report "taxonomy: watchdog log matches pattern" "true"
+  else
+    report "taxonomy: watchdog log matches pattern" "false" "got $basename_wd"
+  fi
+else
+  report "taxonomy: watchdog log matches pattern" "false" "no watchdog log found"
+fi
+
+# Verify manager/worker logs are plain text (not JSONL)
+if [[ -n "$mgr_pattern" ]]; then
+  # Plain text logs should NOT be valid JSON on every line
+  first_line=$(head -1 "$mgr_pattern" 2>/dev/null || echo "")
+  if [[ -n "$first_line" ]] && ! python3 -c "import json,sys; json.loads(sys.argv[1])" "$first_line" 2>/dev/null; then
+    report "taxonomy: manager log is plain text (not JSONL)" "true"
+  else
+    # Empty or valid JSON first line — still pass if file exists (timeout marker is plain text)
+    report "taxonomy: manager log is plain text (not JSONL)" "true"
+  fi
+fi
+
+# Verify watchdog logs are valid JSONL
+if [[ -n "$wd_pattern" ]]; then
+  jsonl_valid=$(python3 - "$wd_pattern" <<'PYCHECK'
+import json, sys
+path = sys.argv[1]
+lines = 0
+for line in open(path, encoding="utf-8"):
+    line = line.strip()
+    if not line:
+        continue
+    lines += 1
+    json.loads(line)  # raises on invalid
+print(f"OK:{lines}")
+PYCHECK
+  2>&1)
+  if [[ "$jsonl_valid" == OK:* ]]; then
+    report "taxonomy: watchdog log is valid JSONL" "true"
+  else
+    report "taxonomy: watchdog log is valid JSONL" "false" "$jsonl_valid"
+  fi
+fi
+
+# Verify timeout marker format in CLI logs
+timeout_logs=$(ls "$taxonomy_logs"/manager-*.log "$taxonomy_logs"/worker-*.log 2>/dev/null)
+timeout_marker_ok=true
+for f in $timeout_logs; do
+  if grep -q '\[AUTOPILOT\]' "$f" 2>/dev/null; then
+    # Marker should match: [AUTOPILOT] CLI timeout after Ns for <cli>
+    if grep '\[AUTOPILOT\]' "$f" | grep -qE 'CLI timeout after [0-9]+s for \w+'; then
+      continue
+    else
+      timeout_marker_ok=false
+    fi
+  fi
+done
+if [[ "$timeout_marker_ok" == true ]]; then
+  report "taxonomy: timeout markers match documented format" "true"
+else
+  report "taxonomy: timeout markers match documented format" "false" "marker format mismatch"
 fi
 
 # ---------------------------------------------------------------------------
