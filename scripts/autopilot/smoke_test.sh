@@ -17,6 +17,7 @@
 #  10. team_tmux.sh --dry-run CLI timeout and session propagation
 #  11. Operator runbook command sequence validation
 #  12. Log taxonomy filename pattern validation
+#  13. Dual-CC conventions doc example validation
 #
 # Exit code 0 = all passed, non-zero = failure count.
 
@@ -873,6 +874,72 @@ if [[ "$timeout_marker_ok" == true ]]; then
   report "taxonomy: timeout markers match documented format" "true"
 else
   report "taxonomy: timeout markers match documented format" "false" "marker format mismatch"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 13: Dual-CC conventions doc example validation
+# ---------------------------------------------------------------------------
+echo
+echo "--- Test 13: dual-CC conventions doc examples ---"
+# Validates that docs/dual-cc-conventions.md contains the expected
+# convention patterns and examples.
+
+cc_doc="$ROOT_DIR/docs/dual-cc-conventions.md"
+
+if [[ -f "$cc_doc" ]]; then
+  report "dual-cc-conventions.md exists" "true"
+else
+  report "dual-cc-conventions.md exists" "false" "file not found"
+fi
+
+# Session label convention: CC1/CC2 labels documented
+if grep -q 'CC1' "$cc_doc" && grep -q 'CC2' "$cc_doc"; then
+  report "doc defines CC1/CC2 session labels" "true"
+else
+  report "doc defines CC1/CC2 session labels" "false" "CC1/CC2 labels not found"
+fi
+
+# Report note prefix format: [CC1] and [CC2] examples
+if grep -qE '\[CC1\]' "$cc_doc" && grep -qE '\[CC2\]' "$cc_doc"; then
+  report "doc shows report note prefix examples" "true"
+else
+  report "doc shows report note prefix examples" "false" "prefix examples not found"
+fi
+
+# Claim etiquette: mentions set_claim_override
+if grep -q 'set_claim_override' "$cc_doc"; then
+  report "doc covers claim override coordination" "true"
+else
+  report "doc covers claim override coordination" "false" "set_claim_override not mentioned"
+fi
+
+# Collision avoidance: mentions git branch strategy
+if grep -qi 'git.*branch\|branch.*strategy\|git pull' "$cc_doc"; then
+  report "doc covers git collision avoidance" "true"
+else
+  report "doc covers git collision avoidance" "false" "git strategy not found"
+fi
+
+# References swarm-mode roadmap
+if grep -q 'swarm-mode' "$cc_doc" || grep -q 'Phase B' "$cc_doc"; then
+  report "doc references swarm-mode/Phase B" "true"
+else
+  report "doc references swarm-mode/Phase B" "false" "swarm-mode reference not found"
+fi
+
+# Validate MCP tool call examples are present and reasonable
+# Count orchestrator_ references (code blocks + prose mentions)
+tool_calls=$(grep -c 'orchestrator_' "$cc_doc" || true)
+if [[ "$tool_calls" -ge 3 ]]; then
+  # Check that at least some have function call syntax (parens)
+  with_parens=$(grep 'orchestrator_' "$cc_doc" | grep -cE '\(' || true)
+  if [[ "$with_parens" -ge 3 ]]; then
+    report "doc has MCP tool call examples ($with_parens with parens)" "true"
+  else
+    report "doc has MCP tool call examples" "false" "only $with_parens calls with parens"
+  fi
+else
+  report "doc has MCP tool call examples" "false" "only $tool_calls orchestrator_ refs found"
 fi
 
 # ---------------------------------------------------------------------------
