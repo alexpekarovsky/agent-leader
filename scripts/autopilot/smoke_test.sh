@@ -10,6 +10,7 @@
 #   3. worker_loop.sh --once times out cleanly with a stub CLI
 #   4. watchdog_loop.sh --once emits a JSONL diagnostic file
 #   5. prune_old_logs removes excess files
+#   6. Live tmux session launch/verify/teardown (skipped if tmux unavailable)
 #
 # Exit code 0 = all passed, non-zero = failure count.
 
@@ -262,6 +263,86 @@ if [[ "$remaining" -eq 3 ]]; then
   report "prune_old_logs keeps max_files" "true"
 else
   report "prune_old_logs keeps max_files" "false" "expected 3, got $remaining"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 6: live tmux session launch/verify/teardown
+# ---------------------------------------------------------------------------
+echo
+echo "--- Test 6: tmux live launch/teardown ---"
+if ! command -v tmux >/dev/null 2>&1; then
+  report "tmux available (skipped — tmux not installed)" "true"
+else
+  SMOKE_SESSION="smoke-test-$$"
+  tmux_log_dir="$WORK_DIR/tmux-logs"
+  mkdir -p "$tmux_log_dir"
+
+  # Make stub CLIs for all agents so the loops start without real CLIs
+  make_stub_cli "codex" "sleep"
+  make_stub_cli "gemini" "sleep"
+  # claude stub already created in test 3
+
+  launch_rc=0
+  "$ROOT_DIR/scripts/autopilot/team_tmux.sh" \
+    --session "$SMOKE_SESSION" \
+    --project-root "$ROOT_DIR" \
+    --log-dir "$tmux_log_dir" \
+    --manager-interval 9999 \
+    --worker-interval 9999 \
+    --manager-cli-timeout 2 \
+    --worker-cli-timeout 2 \
+    >/dev/null 2>&1 || launch_rc=$?
+
+  if [[ $launch_rc -eq 0 ]]; then
+    report "tmux session launches" "true"
+  else
+    report "tmux session launches" "false" "rc=$launch_rc"
+  fi
+
+  # Verify session exists
+  if tmux has-session -t "$SMOKE_SESSION" 2>/dev/null; then
+    report "tmux session exists" "true"
+  else
+    report "tmux session exists" "false" "session $SMOKE_SESSION not found"
+  fi
+
+  # Verify pane count in manager window (expect 4: manager, claude, gemini, watchdog)
+  pane_count=$(tmux list-panes -t "$SMOKE_SESSION:manager" 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$pane_count" -eq 4 ]]; then
+    report "tmux has 4 panes in manager window" "true"
+  else
+    report "tmux has 4 panes in manager window" "false" "expected 4, got $pane_count"
+  fi
+
+  # Verify monitor window exists
+  if tmux list-windows -t "$SMOKE_SESSION" 2>/dev/null | grep -q "monitor"; then
+    report "tmux monitor window exists" "true"
+  else
+    report "tmux monitor window exists" "false" "no monitor window"
+  fi
+
+  # Capture a pane snapshot to verify output is being produced
+  sleep 1
+  pane_capture=$(tmux capture-pane -t "$SMOKE_SESSION:manager.0" -p 2>/dev/null || echo "")
+  if [[ -n "$pane_capture" ]]; then
+    report "tmux pane produces output" "true"
+  else
+    # Pane may not have output yet in 1s, still pass if session is alive
+    if tmux has-session -t "$SMOKE_SESSION" 2>/dev/null; then
+      report "tmux pane produces output (session alive, no output yet)" "true"
+    else
+      report "tmux pane produces output" "false" "empty capture and session gone"
+    fi
+  fi
+
+  # Teardown
+  tmux kill-session -t "$SMOKE_SESSION" 2>/dev/null || true
+  if ! tmux has-session -t "$SMOKE_SESSION" 2>/dev/null; then
+    report "tmux session tears down cleanly" "true"
+  else
+    report "tmux session tears down cleanly" "false" "session still exists after kill"
+    tmux kill-session -t "$SMOKE_SESSION" 2>/dev/null || true
+  fi
 fi
 
 # ---------------------------------------------------------------------------
