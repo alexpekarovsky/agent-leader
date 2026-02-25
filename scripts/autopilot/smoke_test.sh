@@ -11,6 +11,7 @@
 #   4. watchdog_loop.sh --once emits a JSONL diagnostic file
 #   5. prune_old_logs removes excess files
 #   6. Live tmux session launch/verify/teardown (skipped if tmux unavailable)
+#   7. Log retention under repeated loop runs with --max-logs
 #
 # Exit code 0 = all passed, non-zero = failure count.
 
@@ -420,6 +421,65 @@ else
   else
     report "tmux session tears down cleanly" "false" "session still exists after kill"
     tmux kill-session -t "$SMOKE_SESSION" 2>/dev/null || true
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Test 7: log retention under repeated loop runs
+# ---------------------------------------------------------------------------
+echo
+echo "--- Test 7: log retention with --max-logs ---"
+retention_log_dir="$WORK_DIR/retention-logs"
+mkdir -p "$retention_log_dir"
+
+# Run watchdog --once 5 times with --max-logs 3
+for run in $(seq 1 5); do
+  "$ROOT_DIR/scripts/autopilot/watchdog_loop.sh" \
+    --project-root "$WORK_DIR/fake-project" \
+    --once \
+    --log-dir "$retention_log_dir" \
+    --max-logs 3 \
+    2>/dev/null || true
+  sleep 0.1  # ensure distinct timestamps
+done
+
+watchdog_count=$(ls "$retention_log_dir"/watchdog-*.jsonl 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$watchdog_count" -le 3 ]]; then
+  report "watchdog retains at most max-logs files" "true"
+else
+  report "watchdog retains at most max-logs files" "false" "expected <=3, got $watchdog_count"
+fi
+
+# Run manager --once 5 times with --max-logs 2 and short timeout
+for run in $(seq 1 5); do
+  "$ROOT_DIR/scripts/autopilot/manager_loop.sh" \
+    --cli codex \
+    --project-root "$ROOT_DIR" \
+    --once \
+    --cli-timeout 1 \
+    --log-dir "$retention_log_dir" \
+    --max-logs 2 \
+    >/dev/null 2>&1 || true
+  sleep 0.1
+done
+
+manager_count=$(ls "$retention_log_dir"/manager-codex-*.log 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$manager_count" -le 2 ]]; then
+  report "manager retains at most max-logs files" "true"
+else
+  report "manager retains at most max-logs files" "false" "expected <=2, got $manager_count"
+fi
+
+# Verify newest files are kept (not oldest)
+if [[ "$watchdog_count" -gt 0 ]]; then
+  newest_watchdog=$(ls -t "$retention_log_dir"/watchdog-*.jsonl 2>/dev/null | head -1)
+  oldest_watchdog=$(ls -t "$retention_log_dir"/watchdog-*.jsonl 2>/dev/null | tail -1)
+  newest_age=$(stat -f %m "$newest_watchdog" 2>/dev/null || stat -c %Y "$newest_watchdog" 2>/dev/null)
+  oldest_age=$(stat -f %m "$oldest_watchdog" 2>/dev/null || stat -c %Y "$oldest_watchdog" 2>/dev/null)
+  if [[ "$newest_age" -ge "$oldest_age" ]]; then
+    report "retention keeps newest files" "true"
+  else
+    report "retention keeps newest files" "false" "newest older than oldest"
   fi
 fi
 
