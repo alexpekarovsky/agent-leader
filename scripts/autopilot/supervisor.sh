@@ -6,6 +6,7 @@
 #   ./scripts/autopilot/supervisor.sh stop     [options]
 #   ./scripts/autopilot/supervisor.sh status   [options]
 #   ./scripts/autopilot/supervisor.sh restart  [options]
+#   ./scripts/autopilot/supervisor.sh clean    [options]   # remove stale pids + supervisor logs
 #
 # Options:
 #   --project-root DIR        Project root (default: repo root)
@@ -223,15 +224,65 @@ do_restart() {
   do_start
 }
 
+do_clean() {
+  local cleaned=0
+
+  # Remove stale pid files (process no longer running)
+  if [[ -d "$PID_DIR" ]]; then
+    for name in "${PROCS[@]}"; do
+      local pf
+      pf="$(pid_file "$name")"
+      if [[ -f "$pf" ]]; then
+        local pid
+        pid="$(cat "$pf" 2>/dev/null)" || pid=""
+        if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+          rm -f "$pf" "$(restart_count_file "$name")"
+          log INFO "removed stale pidfile for $name (pid=$pid)"
+          cleaned=$((cleaned + 1))
+        else
+          log WARN "$name is still running (pid=$pid) — stop it first"
+        fi
+      fi
+    done
+    # Remove pid dir if empty
+    rmdir "$PID_DIR" 2>/dev/null || true
+  fi
+
+  # Remove supervisor log files
+  if [[ -d "$LOG_DIR" ]]; then
+    local sv_logs
+    sv_logs=$(ls "$LOG_DIR"/supervisor-*.log 2>/dev/null || true)
+    if [[ -n "$sv_logs" ]]; then
+      local count
+      count=$(echo "$sv_logs" | wc -l | tr -d ' ')
+      rm -f "$LOG_DIR"/supervisor-*.log
+      log INFO "removed $count supervisor log file(s)"
+      cleaned=$((cleaned + $count))
+    fi
+  fi
+
+  if [[ $cleaned -eq 0 ]]; then
+    echo "Nothing to clean."
+  else
+    echo "Cleaned $cleaned file(s)."
+  fi
+}
+
 case "$ACTION" in
   start)   do_start ;;
   stop)    do_stop ;;
   status)  do_status ;;
   restart) do_restart ;;
+  clean)   do_clean ;;
   *)
-    echo "Usage: $0 {start|stop|status|restart} [options]"
+    echo "Usage: $0 {start|stop|status|restart|clean} [options]"
     echo
-    echo "Run '$0 start --help' is not supported. See script header for options."
+    echo "Commands:"
+    echo "  start    Start all autopilot processes"
+    echo "  stop     Stop all running processes"
+    echo "  status   Show process status"
+    echo "  restart  Stop then start all processes"
+    echo "  clean    Remove stale pid files and supervisor logs"
     exit 1
     ;;
 esac
