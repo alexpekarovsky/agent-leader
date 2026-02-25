@@ -18,6 +18,7 @@
 #  11. Operator runbook command sequence validation
 #  12. Log taxonomy filename pattern validation
 #  13. Dual-CC conventions doc example validation
+#  14. Autopilot docs index link validation
 #
 # Exit code 0 = all passed, non-zero = failure count.
 
@@ -940,6 +941,86 @@ if [[ "$tool_calls" -ge 3 ]]; then
   fi
 else
   report "doc has MCP tool call examples" "false" "only $tool_calls orchestrator_ refs found"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 14: Autopilot docs index link validation
+# ---------------------------------------------------------------------------
+echo
+echo "--- Test 14: docs index link validation ---"
+# Validates all markdown links in docs/autopilot-index.md point to existing files.
+
+index_doc="$ROOT_DIR/docs/autopilot-index.md"
+docs_dir="$ROOT_DIR/docs"
+
+if [[ -f "$index_doc" ]]; then
+  report "autopilot-index.md exists" "true"
+else
+  report "autopilot-index.md exists" "false" "file not found"
+fi
+
+# Extract all markdown links: [text](path.md)
+link_check=$(python3 - "$index_doc" "$docs_dir" <<'PYCHECK'
+import re, sys
+from pathlib import Path
+
+index_path = Path(sys.argv[1])
+docs_dir = Path(sys.argv[2])
+
+content = index_path.read_text(encoding="utf-8")
+links = re.findall(r'\[.*?\]\(([^)]+\.md)\)', content)
+
+missing = []
+found = 0
+for link in links:
+    target = docs_dir / link
+    if target.exists():
+        found += 1
+    else:
+        missing.append(link)
+
+if missing:
+    print(f"MISSING:{','.join(missing)}")
+else:
+    print(f"OK:{found}")
+PYCHECK
+)
+
+if [[ "$link_check" == OK:* ]]; then
+  link_count="${link_check#OK:}"
+  report "all $link_count doc links resolve to existing files" "true"
+else
+  report "all doc links resolve to existing files" "false" "$link_check"
+fi
+
+# Verify each linked doc is non-empty
+empty_check=$(python3 - "$index_doc" "$docs_dir" <<'PYCHECK'
+import re, sys
+from pathlib import Path
+
+index_path = Path(sys.argv[1])
+docs_dir = Path(sys.argv[2])
+
+content = index_path.read_text(encoding="utf-8")
+links = re.findall(r'\[.*?\]\(([^)]+\.md)\)', content)
+
+empty = []
+for link in set(links):
+    target = docs_dir / link
+    if target.exists() and target.stat().st_size == 0:
+        empty.append(link)
+
+if empty:
+    print(f"EMPTY:{','.join(empty)}")
+else:
+    print(f"OK:{len(set(links))}")
+PYCHECK
+)
+
+if [[ "$empty_check" == OK:* ]]; then
+  report "all linked docs are non-empty" "true"
+else
+  report "all linked docs are non-empty" "false" "$empty_check"
 fi
 
 # ---------------------------------------------------------------------------
