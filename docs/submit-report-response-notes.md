@@ -155,6 +155,51 @@ for report in result.auto_manager_cycle.processed_reports:
         # Bug opened — check report.result.bug_id
 ```
 
+## Task State Visibility Caveats (v0.1.0)
+
+### Perceived state lag
+
+Because `auto_manager_cycle` runs inline within the `submit_report`
+call, the task you just reported as `"reported"` may already be
+`"done"` by the time you read the response.  This is expected: the
+manager validated it in the same request.  Do not be surprised if
+`list_tasks` shows `"done"` immediately after submission.
+
+### State is locked, not broadcast
+
+Task mutations use a file-based lock (`fcntl` on `.state.lock`).
+Changes are atomic within a single operation but are **not pushed** to
+other agents.  Agents learn about state changes by:
+
+- Polling events via `orchestrator_poll_events`
+- Reading task contracts broadcast during manager cycles
+
+Do **not** rely on `orchestrator_list_tasks` for real-time visibility
+of another agent's work.
+
+### Stale task reassignment during auto_manager_cycle
+
+The manager cycle may reassign in-progress or blocked tasks from
+silent agents to active workers.  This can happen during **any**
+`auto_manager_cycle`, including ones triggered by another agent's
+`submit_report`.  Check `pending_total` to understand how many tasks
+shifted.
+
+### Race between submit and reassign
+
+If you submit a report while the manager is simultaneously reassigning
+your tasks (due to a stale heartbeat), the report may fail with an
+owner mismatch error and enter the retry queue.  Use
+`orchestrator_heartbeat` regularly to prevent this.
+
+### auto_claim_next and task ordering
+
+The auto-claimed task is selected by the same policy routing as
+`orchestrator_claim_next_task`.  If a `claim_override` was set for
+your agent, that override takes priority.  The claimed task is
+returned with `status: "in_progress"` — there is no separate claim
+step needed.
+
 ## References
 
 - [docs/task-queue-hygiene.md](task-queue-hygiene.md) — Task lifecycle and claim behavior
