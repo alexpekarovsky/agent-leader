@@ -12,6 +12,7 @@
 #   5. prune_old_logs removes excess files
 #   6. Live tmux session launch/verify/teardown (skipped if tmux unavailable)
 #   7. Log retention under repeated loop runs with --max-logs
+#   8. log_check.sh strict mode with valid and malformed JSONL
 #
 # Exit code 0 = all passed, non-zero = failure count.
 
@@ -481,6 +482,58 @@ if [[ "$watchdog_count" -gt 0 ]]; then
   else
     report "retention keeps newest files" "false" "newest older than oldest"
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# Test 8: log_check.sh strict mode with valid and malformed JSONL
+# ---------------------------------------------------------------------------
+echo
+echo "--- Test 8: log_check.sh strict mode ---"
+lc_good_dir="$WORK_DIR/logcheck-good"
+lc_bad_dir="$WORK_DIR/logcheck-bad"
+mkdir -p "$lc_good_dir" "$lc_bad_dir"
+
+# Create valid log files
+echo '{"kind":"stale_task","task_id":"T1","timestamp":"2026-01-01T00:00:00Z"}' \
+  > "$lc_good_dir/watchdog-20260101-000000.jsonl"
+echo "cycle complete" > "$lc_good_dir/manager-codex-20260101-000000.log"
+echo "cycle complete" > "$lc_good_dir/worker-claude-20260101-000000.log"
+
+lc_good_rc=0
+"$ROOT_DIR/scripts/autopilot/log_check.sh" --log-dir "$lc_good_dir" --strict --max-age-minutes 99999 \
+  >/dev/null 2>&1 || lc_good_rc=$?
+
+if [[ $lc_good_rc -eq 0 ]]; then
+  report "log_check strict passes on valid logs" "true"
+else
+  report "log_check strict passes on valid logs" "false" "rc=$lc_good_rc"
+fi
+
+# Create malformed JSONL
+echo '{"kind":"stale_task"}' > "$lc_bad_dir/watchdog-20260101-000000.jsonl"
+echo 'THIS IS NOT JSON' >> "$lc_bad_dir/watchdog-20260101-000000.jsonl"
+echo "cycle complete" > "$lc_bad_dir/manager-codex-20260101-000000.log"
+echo "cycle complete" > "$lc_bad_dir/worker-claude-20260101-000000.log"
+
+lc_bad_rc=0
+"$ROOT_DIR/scripts/autopilot/log_check.sh" --log-dir "$lc_bad_dir" --strict --max-age-minutes 99999 \
+  >/dev/null 2>&1 || lc_bad_rc=$?
+
+if [[ $lc_bad_rc -ne 0 ]]; then
+  report "log_check strict fails on malformed JSONL" "true"
+else
+  report "log_check strict fails on malformed JSONL" "false" "expected non-zero, got 0"
+fi
+
+# Non-strict should pass even with malformed JSONL
+lc_nonstrict_rc=0
+"$ROOT_DIR/scripts/autopilot/log_check.sh" --log-dir "$lc_bad_dir" --max-age-minutes 99999 \
+  >/dev/null 2>&1 || lc_nonstrict_rc=$?
+
+if [[ $lc_nonstrict_rc -eq 0 ]]; then
+  report "log_check non-strict passes with malformed JSONL" "true"
+else
+  report "log_check non-strict passes with malformed JSONL" "false" "rc=$lc_nonstrict_rc"
 fi
 
 # ---------------------------------------------------------------------------
