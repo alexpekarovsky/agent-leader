@@ -62,6 +62,8 @@ EXPECTED_STATUS_KEYS = {
     "active_agents",
     "active_agent_identities",
     "agent_instances",
+    "integrity",
+    "stats_provenance",
 }
 
 EXPECTED_AGENT_IDENTITY_KEYS = {"agent", "instance_id", "status", "last_seen"}
@@ -75,6 +77,9 @@ EXPECTED_INSTANCE_KEYS = {
     "current_task_id",
     "last_seen",
 }
+
+EXPECTED_INTEGRITY_KEYS = {"ok", "warnings", "provenance"}
+EXPECTED_STATS_PROVENANCE_KEYS = {"dashboard_percent", "task_summary", "integrity_state"}
 
 
 class StatusPayloadShapeTests(unittest.TestCase):
@@ -118,6 +123,16 @@ class StatusPayloadShapeTests(unittest.TestCase):
                 }
                 for item in instances
             ],
+            "integrity": {
+                "ok": True,
+                "warnings": [],
+                "provenance": {"task_counts": "live_state"},
+            },
+            "stats_provenance": {
+                "dashboard_percent": "live_status_report_estimate",
+                "task_summary": "live_state",
+                "integrity_state": "ok",
+            },
         }
 
     def test_empty_state_payload_has_required_keys(self) -> None:
@@ -168,6 +183,17 @@ class StatusPayloadShapeTests(unittest.TestCase):
             for key in EXPECTED_AGENT_IDENTITY_KEYS:
                 self.assertIn(key, identity, f"Missing identity key: {key}")
 
+    def test_integrity_and_stats_provenance_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = _make_orch(root)
+            payload = self._build_status_payload(orch)
+
+            for key in EXPECTED_INTEGRITY_KEYS:
+                self.assertIn(key, payload["integrity"], f"Missing integrity key: {key}")
+            for key in EXPECTED_STATS_PROVENANCE_KEYS:
+                self.assertIn(key, payload["stats_provenance"], f"Missing stats provenance key: {key}")
+
 
 class StatusPayloadWithMixedInstancesTests(unittest.TestCase):
     """Fixture: status payload with active and offline instances."""
@@ -208,6 +234,16 @@ class StatusPayloadWithMixedInstancesTests(unittest.TestCase):
                 }
                 for item in instances
             ],
+            "integrity": {
+                "ok": True,
+                "warnings": [],
+                "provenance": {"task_counts": "live_state"},
+            },
+            "stats_provenance": {
+                "dashboard_percent": "live_status_report_estimate",
+                "task_summary": "live_state",
+                "integrity_state": "ok",
+            },
         }
 
     def test_mixed_active_and_offline_instances(self) -> None:

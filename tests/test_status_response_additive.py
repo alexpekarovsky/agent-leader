@@ -85,6 +85,13 @@ def _build_status_payload(orch: Orchestrator) -> dict:
             }
             for item in instances
         ],
+        # Additive status fields introduced for stats/dashboard provenance.
+        "integrity": {"ok": True, "warnings": [], "provenance": {"task_counts": "live_state"}},
+        "stats_provenance": {
+            "dashboard_percent": "live_status_report_estimate",
+            "task_summary": "live_state",
+            "integrity_state": "ok",
+        },
     }
 
 
@@ -102,6 +109,8 @@ class StatusResponseFieldPresenceTests(unittest.TestCase):
 
             self.assertIn("active_agent_identities", payload)
             self.assertIn("agent_instances", payload)
+            self.assertIn("integrity", payload)
+            self.assertIn("stats_provenance", payload)
 
     def test_agent_instances_is_list_of_dicts(self) -> None:
         """agent_instances must be a list of dicts with required keys."""
