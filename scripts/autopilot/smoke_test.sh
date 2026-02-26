@@ -27,6 +27,8 @@
 #  20. Lease operator expectations doc validation
 #  21. Supervisor start/status/stop lifecycle smoke
 #  22. Supervisor command examples validation
+#  23. Reviewer checklist and witness log template validation
+#  24. Restart verification and run log template validation
 #
 # Exit code 0 = all passed, non-zero = failure count.
 
@@ -1913,6 +1915,118 @@ if grep -q "lease-schema-test-plan" "$witness" 2>/dev/null; then
   report "witness log links to lease schema test plan" "true"
 else
   report "witness log links to lease schema test plan" "false"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 24: Restart verification and run log template validation
+# ---------------------------------------------------------------------------
+echo "--- Test 24: restart verification and run log template validation ---"
+
+runlog="docs/restart-verification-run-log.md"
+postrestart="docs/post-restart-verification.md"
+
+# --- run log template checks ---
+
+if [[ -f "$runlog" ]]; then
+  report "run log template exists" "true"
+else
+  report "run log template exists" "false" "missing $runlog"
+fi
+
+# Check all 5 verification steps referenced
+for step_num in 1 2 3 4 5; do
+  if grep -q "| $step_num |" "$runlog" 2>/dev/null; then
+    report "run log has step $step_num row" "true"
+  else
+    report "run log has step $step_num row" "false"
+  fi
+done
+
+# Check run metadata section
+if grep -q "Run Metadata" "$runlog" 2>/dev/null; then
+  report "run log has run metadata" "true"
+else
+  report "run log has run metadata" "false"
+fi
+
+# Check rollup section
+if grep -q "## Rollup" "$runlog" 2>/dev/null; then
+  report "run log has rollup section" "true"
+else
+  report "run log has rollup section" "false"
+fi
+
+# Check pass/fail in rollup
+if grep -q "PASS / FAIL" "$runlog" 2>/dev/null; then
+  report "run log has pass/fail verdict" "true"
+else
+  report "run log has pass/fail verdict" "false"
+fi
+
+# Check signoff block
+if grep -q "## Signoff" "$runlog" 2>/dev/null; then
+  report "run log has signoff section" "true"
+else
+  report "run log has signoff section" "false"
+fi
+
+# Check failure detail section
+if grep -q "Failure Detail" "$runlog" 2>/dev/null; then
+  report "run log has failure detail section" "true"
+else
+  report "run log has failure detail section" "false"
+fi
+
+# Check re-verification section
+if grep -q "Re-verification" "$runlog" 2>/dev/null; then
+  report "run log has re-verification section" "true"
+else
+  report "run log has re-verification section" "false"
+fi
+
+# --- post-restart verification checks ---
+
+if [[ -f "$postrestart" ]]; then
+  report "post-restart verification doc exists" "true"
+else
+  report "post-restart verification doc exists" "false" "missing $postrestart"
+fi
+
+# Check flowchart presence
+if grep -q "Flowchart" "$postrestart" 2>/dev/null; then
+  report "post-restart doc has flowchart" "true"
+else
+  report "post-restart doc has flowchart" "false"
+fi
+
+# Check step-by-step table
+if grep -q "Step-by-Step Table" "$postrestart" 2>/dev/null; then
+  report "post-restart doc has step-by-step table" "true"
+else
+  report "post-restart doc has step-by-step table" "false"
+fi
+
+# Check all 5 steps in flowchart
+for step in "Step 1" "Step 2" "Step 3" "Step 4" "Step 5"; do
+  if grep -q "$step" "$postrestart" 2>/dev/null; then
+    report "post-restart doc has $step" "true"
+  else
+    report "post-restart doc has $step" "false"
+  fi
+done
+
+# Cross-doc: run log references post-restart verification
+if grep -q "post-restart-verification" "$runlog" 2>/dev/null; then
+  report "run log links to post-restart verification" "true"
+else
+  report "run log links to post-restart verification" "false"
+fi
+
+# Cross-doc: post-restart references restart milestone checklist
+if grep -q "restart-milestone-checklist" "$postrestart" 2>/dev/null; then
+  report "post-restart links to restart milestone checklist" "true"
+else
+  report "post-restart links to restart milestone checklist" "false"
 fi
 
 # ---------------------------------------------------------------------------
