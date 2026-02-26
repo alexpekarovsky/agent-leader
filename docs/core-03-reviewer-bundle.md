@@ -2,15 +2,35 @@
 
 Single-document bundle for CORE-03 (lease issuance on claim) acceptance review. Consolidates the artifact inventory, evidence collection, witness observations, cross-source reconciliation, and reviewer checklist into one signoff-ready package.
 
+## How to Use This Bundle
+
+**Preparer (operator/implementer):**
+1. Copy this file to `evidence/core-03/core-03-bundle-YYYY-MM-DD.md`
+2. Fill in Bundle Metadata (use session labels like CC1/CC2 — see Appendix B)
+3. Collect evidence for each artifact in Section 2 (paste raw JSON output)
+4. Record witness observations in Section 3 (fill all Match? columns)
+5. Complete the reconciliation table in Section 4
+6. Set status to **READY** and notify the reviewer
+
+**Reviewer:**
+1. Confirm status is READY and preparer is identified
+2. Walk through Section 5 checklist — reject if any mandatory check fails
+3. Spot-check at least 2 evidence entries against the lease field table
+4. Verify cross-source reconciliation has no contradictions
+5. Record verdict in Section 6 and sign off
+6. See Appendix A for example filled entries to compare against
+
 ## Bundle Metadata
 
 | Field | Value |
 |-------|-------|
 | **Bundle ID** | AUTO-M1-CORE-03-BUNDLE-[DATE] |
-| **Preparer** | |
-| **Reviewer** | |
-| **Date** | |
-| **Commit under test** | |
+| **Project** | claude-multi-ai |
+| **Preparer** | [name / session label, e.g. CC1 or CC-backend] |
+| **Reviewer** | [name / session label] |
+| **Date** | [YYYY-MM-DD] |
+| **Commit under test** | [git SHA] |
+| **Session** | [CC1 / CC2 / CC-backend — see Appendix B] |
 | **Status** | DRAFT / READY / SIGNED OFF |
 
 ---
@@ -262,11 +282,11 @@ The bundle should be rejected if any of the following are true:
 
 ### Signoff
 
-| Role | Name | Date | Approved |
-|------|------|------|----------|
-| Preparer | | | |
-| Observer | | | YES / NO |
-| Reviewer | | | YES / NO |
+| Role | Name / Session | Date | Approved |
+|------|---------------|------|----------|
+| Preparer | [name / CC1 / CC2] | | |
+| Observer | [name / CC1 / CC2] | | YES / NO |
+| Reviewer | [name / CC1 / CC2] | | YES / NO |
 
 ### Anomalies
 
@@ -339,7 +359,8 @@ evidence/
 
 ## Appendix B: Tagging Conventions
 
-All CORE-03 artifacts follow `[claude-multi-ai][AUTO-M1-CORE]` conventions:
+All CORE-03 artifacts follow `[claude-multi-ai][AUTO-M1-CORE]` conventions.
+For session labeling, see [dual-cc-conventions.md](dual-cc-conventions.md).
 
 | Convention | Format | Example |
 |------------|--------|---------|
@@ -348,6 +369,8 @@ All CORE-03 artifacts follow `[claude-multi-ai][AUTO-M1-CORE]` conventions:
 | Evidence directory | `evidence/core-03/` | `evidence/core-03/claim-response.json` |
 | Commit message tag | `[AUTO-M1-CORE-03]` | `feat: [AUTO-M1-CORE-03] add lease schema to claim` |
 | Audit log filter | `tool=orchestrator_claim_next_task` | Filters claim-related audit entries |
+| Session label | CC1 / CC2 / CC-backend | Used in Preparer, Reviewer, and Signoff fields |
+| Report note prefix | `[CC1]` or `[CC-backend]` | `[CC1] Lease issuance verified, all 7 fields present` |
 
 ---
 
@@ -360,3 +383,4 @@ All CORE-03 artifacts follow `[claude-multi-ai][AUTO-M1-CORE]` conventions:
 - [core-03-04-reconciliation-template.md](core-03-04-reconciliation-template.md) — Full reconciliation template
 - [core-03-06-acceptance-packet-index.md](core-03-06-acceptance-packet-index.md) — Combined packet index
 - [core-03-06-reviewer-checklist.md](core-03-06-reviewer-checklist.md) — Combined reviewer checklist
+- [dual-cc-conventions.md](dual-cc-conventions.md) — Session labeling conventions (CC1/CC2)
