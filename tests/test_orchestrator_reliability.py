@@ -1124,7 +1124,7 @@ class AutopilotTimeoutBehaviorTests(unittest.TestCase):
                 timeout=15,
             )
 
-            self.assertEqual(0, proc.returncode)
+            self.assertEqual(124, proc.returncode)
             self.assertIn("worker cycle timed out agent=claude_code after 1s", proc.stderr)
             logs = list(logs_dir.glob("worker-claude_code-claude-*.log"))
             self.assertEqual(1, len(logs))
