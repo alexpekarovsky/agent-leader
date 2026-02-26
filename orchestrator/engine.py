@@ -205,7 +205,7 @@ class Orchestrator:
                 "assigned_at": self._now(),
             }
             tasks.append(task)
-            self._write_json(self.tasks_path, tasks)
+            self._write_tasks_json(tasks)
 
         self.bus.write_command(
             task_id,
@@ -272,7 +272,7 @@ class Orchestrator:
                     self.bus.emit("task.duplicate_closed", entry, source=source)
 
             if changed:
-                self._write_json(self.tasks_path, tasks)
+                self._write_tasks_json(tasks)
 
         return {"deduped_count": len(deduped), "deduped": deduped}
 
@@ -314,7 +314,7 @@ class Orchestrator:
                     forced["updated_at"] = self._now()
                     forced["claimed_at"] = forced["updated_at"]
                     self._issue_task_lease_unlocked(task=forced, owner=owner, owner_instance_id=lease_owner_instance)
-                    self._write_json(self.tasks_path, tasks)
+                    self._write_tasks_json(tasks)
                     del overrides[owner]
                     self._write_json(self.claim_overrides_path, overrides)
                     self.bus.emit(
@@ -354,7 +354,7 @@ class Orchestrator:
                 task["updated_at"] = self._now()
                 task["claimed_at"] = task["updated_at"]
                 self._issue_task_lease_unlocked(task=task, owner=owner, owner_instance_id=lease_owner_instance)
-                self._write_json(self.tasks_path, tasks)
+                self._write_tasks_json(tasks)
                 self.bus.emit(
                     "task.claimed",
                     {"task_id": task["id"], "owner": owner},
@@ -501,7 +501,7 @@ class Orchestrator:
                 task["blocked_at"] = task["updated_at"]
             elif normalized == "in_progress":
                 task["claimed_at"] = task["updated_at"]
-            self._write_json(self.tasks_path, tasks)
+            self._write_tasks_json(tasks)
         self.bus.emit(
             "task.status_changed",
             {"task_id": task_id, "status": status, "owner": task["owner"], "note": note},
@@ -535,7 +535,7 @@ class Orchestrator:
             task["updated_at"] = self._now()
             task["reported_at"] = task["updated_at"]
             task["lease"] = None
-            self._write_json(self.tasks_path, tasks)
+            self._write_tasks_json(tasks)
 
         self.bus.emit(
             "task.reported",
@@ -577,7 +577,7 @@ class Orchestrator:
             lease["expires_at"] = self._timestamp_plus_seconds(ttl)
             task["lease"] = lease
             task["updated_at"] = now
-            self._write_json(self.tasks_path, tasks)
+            self._write_tasks_json(tasks)
         self.bus.emit(
             "task.lease_renewed",
             {"task_id": task_id, "agent": agent, "lease_id": lease_id_norm},
@@ -781,7 +781,7 @@ class Orchestrator:
                 self.bus.emit("task.requeued", record, source="orchestrator")
 
             if changed:
-                self._write_json(self.tasks_path, tasks)
+                self._write_tasks_json(tasks)
             return requeued
 
     def reassign_stale_tasks_to_active_workers(
@@ -846,7 +846,7 @@ class Orchestrator:
                 self.bus.emit("task.reassigned_stale", payload, source=source)
 
             if changed:
-                self._write_json(self.tasks_path, tasks)
+                self._write_tasks_json(tasks)
 
             return {
                 "reassigned_count": len(reassigned),
@@ -944,7 +944,7 @@ class Orchestrator:
                 )
 
             if changed_tasks:
-                self._write_json(self.tasks_path, tasks)
+                self._write_tasks_json(tasks)
             if changed_blockers:
                 self._write_json(self.blockers_path, blockers)
 
@@ -991,7 +991,7 @@ class Orchestrator:
                 }
 
             task["updated_at"] = self._now()
-            self._write_json(self.tasks_path, tasks)
+            self._write_tasks_json(tasks)
         self.bus.emit(event, payload, source=source)
         return payload
 
@@ -1021,7 +1021,7 @@ class Orchestrator:
 
             task["status"] = "blocked"
             task["updated_at"] = self._now()
-            self._write_json(self.tasks_path, tasks)
+            self._write_tasks_json(tasks)
 
         blocker_id = f"BLK-{uuid.uuid4().hex[:8]}"
         blocker = {
@@ -1100,7 +1100,7 @@ class Orchestrator:
                         source="orchestrator",
                     )
                 task["updated_at"] = self._now()
-                self._write_json(self.tasks_path, tasks)
+                self._write_tasks_json(tasks)
 
         self.bus.emit(
             "blocker.resolved",
@@ -2112,6 +2112,43 @@ class Orchestrator:
         except Exception:
             pass
         return repaired
+
+    def _write_tasks_json(self, tasks: Any) -> None:
+        """Write tasks.json with append-only cardinality protection.
+
+        By design, tasks are not deleted from state/tasks.json through normal MCP
+        flows; they only change status. A shrinking task list usually indicates a
+        stale snapshot overwrite or manual corruption. Refuse the write unless an
+        explicit escape hatch is set.
+        """
+        allow_shrink = os.getenv("ORCHESTRATOR_ALLOW_TASK_COUNT_SHRINK", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        if not allow_shrink and isinstance(tasks, list):
+            try:
+                current = self._read_json(self.tasks_path)
+            except Exception:
+                current = None
+            if isinstance(current, list) and len(tasks) < len(current):
+                try:
+                    self.bus.append_audit(
+                        {
+                            "category": "state_guard",
+                            "path": str(self.tasks_path),
+                            "action": "reject_task_count_shrink",
+                            "existing_count": len(current),
+                            "attempted_count": len(tasks),
+                        }
+                    )
+                except Exception:
+                    pass
+                raise RuntimeError(
+                    f"refusing_tasks_json_shrink: existing_count={len(current)} attempted_count={len(tasks)} "
+                    "set ORCHESTRATOR_ALLOW_TASK_COUNT_SHRINK=1 to override intentionally"
+                )
+        self._write_json(self.tasks_path, tasks)
 
     @staticmethod
     def _write_json(path: Path, value: Any) -> None:

@@ -31,6 +31,7 @@ mkdir_logs "$LOG_DIR"
 cycle=0
 while true; do
   cycle=$((cycle + 1))
+  cycle_rc=0
   ts="$(date '+%Y%m%d-%H%M%S')"
   prompt_file="$(mktemp)"
   out_file="$LOG_DIR/manager-${CLI}-${ts}.log"
@@ -62,6 +63,7 @@ EOF
     log INFO "manager cycle complete; log=$out_file"
   else
     rc=$?
+    cycle_rc=$rc
     if [[ $rc -eq 124 ]]; then
       log ERROR "manager cycle timed out after ${CLI_TIMEOUT}s; see $out_file"
     else
@@ -72,7 +74,7 @@ EOF
   prune_old_logs "$LOG_DIR" "manager-" "$MAX_LOG_FILES"
 
   if [[ "$ONCE" == true ]]; then
-    break
+    exit "$cycle_rc"
   fi
   sleep_with_jitter "$INTERVAL"
 done
