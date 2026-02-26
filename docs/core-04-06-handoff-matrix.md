@@ -23,6 +23,16 @@ dependencies, and unblock checkpoints for parallel review preparation.
 | 5 | Lease cleared on successful report submission | C04-05: post-report.json | Task with prior lease shows no active lease after report | Capture task before/after report | BLOCKED |
 | 6 | — | C04-06: reconciliation.md | All C04-01..05 collected and cross-checked | Fill reconciliation template | BLOCKED on #1-5 |
 
+### CORE-04 Example Rows (filled)
+
+These show what completed evidence looks like for reviewer reference:
+
+| # | Codex Output | Evidence Artifact | Checkpoint | CC Action | Status |
+|---|-------------|-------------------|------------|-----------|--------|
+| 1 | Watchdog emits: `{"type":"task.lease_expired","payload":{"task_id":"TASK-abc123","lease_id":"lease-7f3a","elapsed_seconds":605}}` | `evidence/core-04/watchdog-expiry.jsonl` — JSONL with `lease_expired` entry | `grep lease_expired watchdog-expiry.jsonl` returns 1+ rows | Verified: schema has task_id, lease_id, elapsed_seconds | DONE |
+| 2 | `list_tasks` shows: `{"id":"TASK-abc123","status":"assigned","attempt_index":2}` | `evidence/core-04/requeue.json` — before/after snapshots | Before: `in_progress`, After: `assigned`, attempt_index incremented | Captured diff, verified transition | DONE |
+| 5 | `list_tasks` after report: `{"id":"TASK-abc123","status":"reported","lease":null}` | `evidence/core-04/post-report.json` — task record after submit_report | Lease fields absent or null in task record | Captured, verified lease cleared | DONE |
+
 ### CORE-04 Unblock Conditions
 
 ```
@@ -56,6 +66,14 @@ all above complete              ───>  C04-06 reconciliation
 | 4 | Audit log records dispatch lifecycle | C05-04: audit-dispatch.json | `list_audit_logs` shows command→ack→result in order | Capture audit entries | BLOCKED on #1-3 |
 | 5 | — | C05-05: schema-check.md | All C05-01..04 collected and schema verified | Fill schema validation table | BLOCKED on #1-4 |
 
+### CORE-05 Example Rows (filled)
+
+| # | Codex Output | Evidence Artifact | Checkpoint | CC Action | Status |
+|---|-------------|-------------------|------------|-----------|--------|
+| 1 | Manager emits: `{"type":"dispatch.command","payload":{"correlation_id":"corr-9a2b","task_id":"TASK-def456","target_agent":"claude_code","timeout_seconds":30}}` | `evidence/core-05/dispatch-command.json` | Event has correlation_id, task_id, target_agent | Verified: all fields present, schema matches [dispatch-telemetry-schema.md](dispatch-telemetry-schema.md) | DONE |
+| 2 | Worker emits: `{"type":"dispatch.ack","payload":{"correlation_id":"corr-9a2b","source":"claude_code","status":"accepted","task_id":"TASK-def456"}}` | `evidence/core-05/dispatch-ack.json` | correlation_id matches command | Verified: correlation chain command→ack intact | DONE |
+| 4 | Audit log: `[{"tool":"dispatch","status":"ok","correlation_id":"corr-9a2b","events":["command","ack","result"]}]` | `evidence/core-05/audit-dispatch.json` | All 3 events in chronological order | Verified: timestamps monotonic, no gaps | DONE |
+
 ### CORE-05 Unblock Conditions
 
 ```
@@ -88,6 +106,13 @@ all three + audit logging       ───>  C05-04, C05-05
 | 3 | Noop behavior under various timeout scenarios | C06-03: timeout-matrix.md | At least 3 timeout scenarios observed | Fill timeout behavior matrix | BLOCKED on #1 |
 | 4 | — | C06-04: edge-cases.md | Edge cases exercised with real noop events | Fill edge case results | BLOCKED on #1 |
 | 5 | — | C06-05: witness-log.md | All observations signed by observer | Fill witness log | BLOCKED on #1-4 |
+
+### CORE-06 Example Rows (filled)
+
+| # | Codex Output | Evidence Artifact | Checkpoint | CC Action | Status |
+|---|-------------|-------------------|------------|-----------|--------|
+| 1 | Manager emits: `{"type":"dispatch.noop","payload":{"correlation_id":"corr-9a2b","reason":"ack_timeout","target":"claude_code","elapsed_seconds":31}}` | `evidence/core-06/dispatch-noop.json` | Event has reason, correlation_id, elapsed_seconds | Verified: reason is `ack_timeout`, correlation matches command | DONE |
+| 3 | Timeout matrix filled with 3 scenarios: (a) ack_timeout — worker not running, (b) no_available_worker — no agents registered, (c) result_timeout — worker acked but crashed | `evidence/core-06/timeout-matrix.md` | At least 3 distinct timeout scenarios observed | Filled matrix rows, each with correlation chain | DONE |
 
 ### CORE-06 Unblock Conditions
 
