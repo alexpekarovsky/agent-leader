@@ -313,6 +313,19 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
             },
         },
         {
+            "name": "orchestrator_renew_task_lease",
+            "description": "Renew an active task lease for the task owner and current worker instance.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "agent": {"type": "string"},
+                    "lease_id": {"type": "string"},
+                },
+                "required": ["task_id", "agent", "lease_id"],
+            },
+        },
+        {
             "name": "orchestrator_set_claim_override",
             "description": "Manager-enforced claim target: force next claim by agent to pick specific task_id first.",
             "inputSchema": {
@@ -1155,6 +1168,14 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                     },
                 },
             )
+
+        if name == "orchestrator_renew_task_lease":
+            result = ORCH.renew_task_lease(
+                task_id=args["task_id"],
+                agent=args["agent"],
+                lease_id=args["lease_id"],
+            )
+            return _ok_and_audit(request_id, name, args, result)
 
         if name == "orchestrator_set_claim_override":
             result = ORCH.set_claim_override(

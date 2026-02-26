@@ -594,6 +594,100 @@ class PresenceRefreshTests(unittest.TestCase):
             )
 
 
+class LeaseReliabilityTests(unittest.TestCase):
+    def test_claim_next_task_issues_lease_and_report_clears_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+            orch.connect_to_leader(
+                agent="claude_code",
+                metadata={
+                    **_team_metadata(root, "claude-code", "claude-opus", "team_member", "sid-1", "cid-1"),
+                    "instance_id": "claude_code#worker-01",
+                },
+                source="claude_code",
+            )
+            task = orch.create_task(
+                title="Lease me",
+                workstream="backend",
+                owner="claude_code",
+                acceptance_criteria=["lease issued on claim"],
+            )
+
+            claimed = orch.claim_next_task(owner="claude_code")
+            self.assertIsNotNone(claimed)
+            self.assertEqual(task["id"], claimed["id"])
+            self.assertEqual("in_progress", claimed.get("status"))
+            lease = claimed.get("lease")
+            self.assertIsInstance(lease, dict)
+            self.assertTrue(str(lease.get("lease_id", "")).startswith("LEASE-"))
+            self.assertEqual("claude_code", lease.get("owner"))
+            self.assertEqual("claude_code#worker-01", lease.get("owner_instance_id"))
+            self.assertIsInstance(lease.get("expires_at"), str)
+
+            orch.ingest_report(
+                {
+                    "task_id": task["id"],
+                    "agent": "claude_code",
+                    "commit_sha": "abc1234",
+                    "status": "done",
+                    "test_summary": {"command": "pytest -q", "passed": 1, "failed": 0},
+                }
+            )
+            reported_task = next(t for t in orch.list_tasks() if t["id"] == task["id"])
+            self.assertEqual("reported", reported_task.get("status"))
+            self.assertIsNone(reported_task.get("lease"))
+
+    def test_renew_task_lease_succeeds_for_owner_instance_and_rejects_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+            orch.connect_to_leader(
+                agent="claude_code",
+                metadata={
+                    **_team_metadata(root, "claude-code", "claude-opus", "team_member", "sid-a", "cid-a"),
+                    "instance_id": "claude_code#worker-01",
+                },
+                source="claude_code",
+            )
+            task = orch.create_task(
+                title="Renew me",
+                workstream="backend",
+                owner="claude_code",
+                acceptance_criteria=["lease renewal works"],
+            )
+            claimed = orch.claim_next_task(owner="claude_code")
+            lease = dict(claimed["lease"])
+
+            renewed = orch.renew_task_lease(
+                task_id=task["id"],
+                agent="claude_code",
+                lease_id=str(lease["lease_id"]),
+            )
+            self.assertEqual(task["id"], renewed["task_id"])
+            self.assertEqual(str(lease["lease_id"]), renewed["lease"]["lease_id"])
+            self.assertIn("expires_at", renewed["lease"])
+
+            # Simulate a different Claude session attempting renewal.
+            orch.heartbeat(
+                agent="claude_code",
+                metadata={
+                    **_team_metadata(root, "claude-code", "claude-opus", "team_member", "sid-b", "cid-b"),
+                    "instance_id": "claude_code#worker-02",
+                },
+            )
+            with self.assertRaises(ValueError):
+                orch.renew_task_lease(
+                    task_id=task["id"],
+                    agent="claude_code",
+                    lease_id=str(lease["lease_id"]),
+                )
+
+
 class WorkflowReliabilityTests(unittest.TestCase):
     def test_core_flow_reliable_across_five_runs(self) -> None:
         for _ in range(5):

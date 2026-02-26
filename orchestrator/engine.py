@@ -289,6 +289,7 @@ class Orchestrator:
         # Treat a claim attempt as proof-of-life from the team_member.
         with self._state_lock():
             self._refresh_agent_presence_unlocked(owner)
+            lease_owner_instance = self._current_agent_instance_id_unlocked(owner)
             tasks = self._read_json(self.tasks_path)
             overrides = self._read_json(self.claim_overrides_path)
             if not isinstance(overrides, dict):
@@ -299,6 +300,7 @@ class Orchestrator:
                 if forced and forced.get("status") in {"assigned", "bug_open"}:
                     forced["status"] = "in_progress"
                     forced["updated_at"] = self._now()
+                    self._issue_task_lease_unlocked(task=forced, owner=owner, owner_instance_id=lease_owner_instance)
                     self._write_json(self.tasks_path, tasks)
                     del overrides[owner]
                     self._write_json(self.claim_overrides_path, overrides)
@@ -320,6 +322,7 @@ class Orchestrator:
 
                 task["status"] = "in_progress"
                 task["updated_at"] = self._now()
+                self._issue_task_lease_unlocked(task=task, owner=owner, owner_instance_id=lease_owner_instance)
                 self._write_json(self.tasks_path, tasks)
                 self.bus.emit(
                     "task.claimed",
@@ -407,6 +410,7 @@ class Orchestrator:
 
             task["status"] = "reported"
             task["updated_at"] = self._now()
+            task["lease"] = None
             self._write_json(self.tasks_path, tasks)
 
         self.bus.emit(
@@ -415,6 +419,47 @@ class Orchestrator:
             source=report["agent"],
         )
         return report
+
+    def renew_task_lease(self, task_id: str, agent: str, lease_id: str) -> Dict[str, Any]:
+        self._assert_agent_operational(agent)
+        lease_id_norm = str(lease_id).strip()
+        if not lease_id_norm:
+            raise ValueError("lease_id must be a non-empty string")
+        with self._state_lock():
+            self._refresh_agent_presence_unlocked(agent)
+            tasks = self._read_json(self.tasks_path)
+            task = next((item for item in tasks if item.get("id") == task_id), None)
+            if task is None:
+                raise ValueError(f"Task not found: {task_id}")
+            if str(task.get("owner", "")) != agent:
+                raise ValueError(f"lease_owner_mismatch: task_owner={task.get('owner')} agent={agent}")
+            lease = task.get("lease")
+            if not isinstance(lease, dict):
+                raise ValueError("lease_missing")
+            if str(lease.get("lease_id", "")).strip() != lease_id_norm:
+                raise ValueError("lease_id_mismatch")
+            owner_instance_id = str(lease.get("owner_instance_id", "")).strip()
+            current_instance_id = self._current_agent_instance_id_unlocked(agent)
+            if owner_instance_id and current_instance_id and owner_instance_id != current_instance_id:
+                raise ValueError(
+                    f"lease_instance_mismatch: lease_owner_instance={owner_instance_id} current_instance={current_instance_id}"
+                )
+            if self._lease_expired(lease):
+                raise ValueError("lease_expired")
+            now = self._now()
+            lease["renewed_at"] = now
+            ttl = self._lease_ttl_seconds()
+            lease["ttl_seconds"] = ttl
+            lease["expires_at"] = self._timestamp_plus_seconds(ttl)
+            task["lease"] = lease
+            task["updated_at"] = now
+            self._write_json(self.tasks_path, tasks)
+        self.bus.emit(
+            "task.lease_renewed",
+            {"task_id": task_id, "agent": agent, "lease_id": lease_id_norm},
+            source=agent,
+        )
+        return {"task_id": task_id, "agent": agent, "lease": dict(lease)}
 
     def enqueue_report_retry(self, report: Dict[str, Any], error: str) -> Dict[str, Any]:
         now = self._now()
@@ -1581,6 +1626,48 @@ class Orchestrator:
                 instance_id = f"{agent}#default"
         merged["instance_id"] = instance_id
         return merged
+
+    def _current_agent_instance_id_unlocked(self, agent: str) -> str:
+        agents = self._read_json(self.agents_path)
+        if not isinstance(agents, dict):
+            return f"{agent}#default"
+        entry = agents.get(agent, {})
+        metadata = entry.get("metadata", {}) if isinstance(entry, dict) else {}
+        normalized = self._normalize_agent_metadata(agent=agent, metadata=metadata if isinstance(metadata, dict) else {})
+        return str(normalized.get("instance_id", "")).strip() or f"{agent}#default"
+
+    def _lease_ttl_seconds(self) -> int:
+        raw = self.policy.triggers.get("lease_ttl_seconds", 300)
+        try:
+            ttl = int(raw)
+        except Exception:
+            ttl = 300
+        return max(30, ttl)
+
+    def _timestamp_plus_seconds(self, seconds: int) -> str:
+        return datetime.fromtimestamp(datetime.now(timezone.utc).timestamp() + max(0, int(seconds)), tz=timezone.utc).isoformat()
+
+    def _lease_expired(self, lease: Dict[str, Any]) -> bool:
+        expires_at = str(lease.get("expires_at", "")).strip()
+        if not expires_at:
+            return True
+        try:
+            return datetime.fromisoformat(expires_at) <= datetime.now(timezone.utc)
+        except Exception:
+            return True
+
+    def _issue_task_lease_unlocked(self, task: Dict[str, Any], owner: str, owner_instance_id: str) -> None:
+        now = self._now()
+        ttl = self._lease_ttl_seconds()
+        task["lease"] = {
+            "lease_id": f"LEASE-{uuid.uuid4().hex[:8]}",
+            "owner": owner,
+            "owner_instance_id": owner_instance_id or f"{owner}#default",
+            "issued_at": now,
+            "renewed_at": now,
+            "expires_at": self._timestamp_plus_seconds(ttl),
+            "ttl_seconds": ttl,
+        }
 
     def _instance_record_key(self, agent: str, instance_id: str) -> str:
         return f"{agent}::{instance_id}"
