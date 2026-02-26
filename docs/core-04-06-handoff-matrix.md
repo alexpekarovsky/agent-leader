@@ -76,6 +76,7 @@ all above complete              ───>  C04-06 reconciliation
 | 2 | Worker emits: `{"type":"dispatch.ack","payload":{"correlation_id":"corr-9a2b","source":"claude_code","status":"accepted","task_id":"TASK-def456"}}` | `evidence/core-05/dispatch-ack.json` | correlation_id matches command | Verified: correlation chain command→ack intact | DONE |
 | 3 | Worker emits: `{"type":"worker.result","payload":{"correlation_id":"corr-9a2b","source":"claude_code","task_id":"TASK-def456","outcome":"success","duration_seconds":12}}` | `evidence/core-05/worker-result.json` | correlation_id matches command and ack | Verified: full chain command→ack→result with matching correlation_id | DONE |
 | 4 | Audit log: `[{"tool":"dispatch","status":"ok","correlation_id":"corr-9a2b","events":["command","ack","result"]}]` | `evidence/core-05/audit-dispatch.json` | All 3 events in chronological order | Verified: timestamps monotonic, no gaps | DONE |
+| 5 | Schema validation: all 4 events checked against dispatch-telemetry-schema.md | `evidence/core-05/schema-check.md` — field-by-field validation table | Every required field present with correct type in each event | Filled table: 4 events × 5 fields, all PASS | DONE |
 
 ### CORE-05 Unblock Conditions
 
@@ -169,7 +170,7 @@ Practical steps when codex outputs are delayed or missing. Each recommendation a
 | Blocker | Likely Cause | Unblock Action | Owner |
 |---------|-------------|----------------|-------|
 | No `dispatch.noop` event | Noop path not implemented | Write event schema test assuming noop event structure; flag to codex | claude_code |
-| Reason enum not defined | No standard values for noop reasons | Propose enum: `no_available_worker`, `timeout`, `empty_queue`; document in schema doc | claude_code |
+| Reason enum not defined | No standard values for noop reasons | Propose enum: `ack_timeout`, `no_available_worker`, `result_timeout`; document in schema doc | claude_code |
 | Timeout config missing | `dispatch_timeout_seconds` not in policy | Use default (30s) in test; add to policy schema doc | claude_code |
 | Edge cases not observable | Need live noop events to fill matrix | Pre-fill edge case template with expected scenarios; validate when events land | claude_code |
 
