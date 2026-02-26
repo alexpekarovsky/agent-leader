@@ -732,6 +732,105 @@ class Orchestrator:
                 "timestamp": now.isoformat(),
             }
 
+    def recover_expired_task_leases(
+        self,
+        source: str,
+        stale_after_seconds: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        threshold = stale_after_seconds if stale_after_seconds is not None else self._heartbeat_timeout_seconds()
+        with self._state_lock():
+            tasks = self._read_json(self.tasks_path)
+            blockers = self._read_json_list(self.blockers_path)
+            active_agents = self.list_agents(active_only=True, stale_after_seconds=threshold)
+            active_names = [a.get("agent") for a in active_agents if isinstance(a.get("agent"), str)]
+            recoveries: List[Dict[str, Any]] = []
+            changed_tasks = False
+            changed_blockers = False
+
+            for task in tasks:
+                if task.get("status") != "in_progress":
+                    continue
+                lease = task.get("lease")
+                if not isinstance(lease, dict):
+                    continue
+                if not self._lease_expired(lease):
+                    continue
+
+                task_id = str(task.get("id", ""))
+                owner = str(task.get("owner", ""))
+                lease_owner_instance = str(lease.get("owner_instance_id", ""))
+                record: Dict[str, Any] = {
+                    "task_id": task_id,
+                    "owner": owner,
+                    "lease_id": str(lease.get("lease_id", "")),
+                    "lease_owner_instance_id": lease_owner_instance,
+                    "reason": "lease_expired",
+                }
+
+                eligible_owner = owner if owner in active_names else None
+                new_owner = eligible_owner or self._pick_reassignment_owner(
+                    task=task,
+                    active_names=active_names,
+                    tasks=tasks,
+                )
+
+                task["lease"] = None
+                task["lease_recovery_at"] = self._now()
+                changed_tasks = True
+
+                if new_owner:
+                    previous_owner = owner
+                    task["owner"] = new_owner
+                    task["status"] = "assigned"
+                    task["updated_at"] = self._now()
+                    if new_owner != previous_owner:
+                        task["reassigned_from"] = previous_owner
+                        task["reassigned_reason"] = "lease_expired_recovery"
+                        event_type = "task.reassigned_lease_expired"
+                        record["to_owner"] = new_owner
+                    else:
+                        event_type = "task.requeued_lease_expired"
+                    recoveries.append({**record, "action": "requeued", "to_owner": new_owner})
+                    self.bus.emit(event_type, {**record, "to_owner": new_owner}, source=source)
+                    continue
+
+                task["status"] = "blocked"
+                task["updated_at"] = self._now()
+                task["lease_recovery_reason"] = "no_eligible_worker"
+                blocker = {
+                    "id": f"BLK-{uuid.uuid4().hex[:8]}",
+                    "task_id": task_id,
+                    "agent": owner,
+                    "question": (
+                        "Lease expired for in-progress task and no eligible same-project active worker "
+                        "was available for recovery. How should this task proceed?"
+                    ),
+                    "options": [],
+                    "severity": "high",
+                    "status": "open",
+                    "created_at": self._now(),
+                }
+                blockers.append(blocker)
+                changed_blockers = True
+                recoveries.append({**record, "action": "blocked", "blocker_id": blocker["id"]})
+                self.bus.emit(
+                    "task.lease_expired_blocked",
+                    {**record, "blocker_id": blocker["id"]},
+                    source=source,
+                )
+
+            if changed_tasks:
+                self._write_json(self.tasks_path, tasks)
+            if changed_blockers:
+                self._write_json(self.blockers_path, blockers)
+
+            return {
+                "recovered_count": len(recoveries),
+                "recovered": recoveries,
+                "active_agents": active_names,
+                "threshold_seconds": threshold,
+            }
+
     def validate_task(self, task_id: str, passed: bool, notes: str, source: str) -> Dict[str, Any]:
         manager = self.manager_agent()
         if source != manager:

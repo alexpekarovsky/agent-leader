@@ -687,6 +687,77 @@ class LeaseReliabilityTests(unittest.TestCase):
                     lease_id=str(lease["lease_id"]),
                 )
 
+    def test_recover_expired_task_leases_requeues_when_owner_active(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+            orch.connect_to_leader(
+                agent="claude_code",
+                metadata={**_team_metadata(root, "claude-code", "claude-opus", "team_member", "sid-a", "cid-a")},
+                source="claude_code",
+            )
+            task = orch.create_task(
+                title="Expire and recover",
+                workstream="backend",
+                owner="claude_code",
+                acceptance_criteria=["lease recovers"],
+            )
+            claimed = orch.claim_next_task(owner="claude_code")
+            claimed["lease"]["expires_at"] = "2000-01-01T00:00:00+00:00"
+            tasks = orch._read_json(orch.tasks_path)
+            for item in tasks:
+                if item["id"] == task["id"]:
+                    item["lease"] = claimed["lease"]
+            orch._write_json(orch.tasks_path, tasks)
+
+            result = orch.recover_expired_task_leases(source="codex")
+            self.assertEqual(1, result["recovered_count"])
+            self.assertEqual("requeued", result["recovered"][0]["action"])
+
+            refreshed = next(t for t in orch.list_tasks() if t["id"] == task["id"])
+            self.assertEqual("assigned", refreshed["status"])
+            self.assertIsNone(refreshed.get("lease"))
+
+    def test_recover_expired_task_leases_blocks_when_no_eligible_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+            orch.connect_to_leader(
+                agent="claude_code",
+                metadata={**_team_metadata(root, "claude-code", "claude-opus", "team_member", "sid-a", "cid-a")},
+                source="claude_code",
+            )
+            task = orch.create_task(
+                title="Expire and block",
+                workstream="backend",
+                owner="claude_code",
+                acceptance_criteria=["block on no worker"],
+            )
+            claimed = orch.claim_next_task(owner="claude_code")
+            tasks = orch._read_json(orch.tasks_path)
+            for item in tasks:
+                if item["id"] == task["id"]:
+                    item["lease"]["expires_at"] = "2000-01-01T00:00:00+00:00"
+            orch._write_json(orch.tasks_path, tasks)
+            agents = orch._read_json(orch.agents_path)
+            agents["claude_code"]["last_seen"] = "2000-01-01T00:00:00+00:00"
+            orch._write_json(orch.agents_path, agents)
+
+            result = orch.recover_expired_task_leases(source="codex")
+            self.assertEqual(1, result["recovered_count"])
+            self.assertEqual("blocked", result["recovered"][0]["action"])
+            self.assertTrue(result["recovered"][0].get("blocker_id"))
+
+            refreshed = next(t for t in orch.list_tasks() if t["id"] == task["id"])
+            self.assertEqual("blocked", refreshed["status"])
+            self.assertIsNone(refreshed.get("lease"))
+            open_blockers = orch.list_blockers(status="open")
+            self.assertTrue(any(b.get("task_id") == task["id"] for b in open_blockers))
+
 
 class WorkflowReliabilityTests(unittest.TestCase):
     def test_core_flow_reliable_across_five_runs(self) -> None:

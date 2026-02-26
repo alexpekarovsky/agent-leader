@@ -755,6 +755,10 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
         stale_after_seconds=stale_after_seconds,
         include_blocked=True,
     )
+    lease_recoveries = ORCH.recover_expired_task_leases(
+        source=ORCH.manager_agent(),
+        stale_after_seconds=stale_after_seconds,
+    )
     stale_requeues = ORCH.requeue_stale_in_progress_tasks(stale_after_seconds=stale_after_seconds)
 
     latest_tasks = ORCH.list_tasks()
@@ -792,6 +796,7 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
         "report_retry_queue": retry_queue,
         "auto_connect": auto_connect,
         "stale_reassignments": stale_reassignments,
+        "lease_recoveries": lease_recoveries,
         "stale_requeues": stale_requeues,
         "remaining_by_owner": by_owner,
         "pending_total": sum(bucket["pending"] for bucket in by_owner.values()),
