@@ -60,6 +60,33 @@ class WorkerLoopArgTests(unittest.TestCase):
         self.assertNotEqual(0, proc.returncode)
         self.assertIn("--cli and --agent are required", proc.stderr)
 
+    def test_missing_cli_and_agent_exact_error_format(self) -> None:
+        """AL-CORE-27: stderr must contain '[ERROR] --cli and --agent are required'."""
+        proc = self._run_worker([])
+        self.assertEqual(1, proc.returncode)
+        error_lines = [l for l in proc.stderr.splitlines() if "--cli and --agent" in l]
+        self.assertEqual(1, len(error_lines), f"expected 1 error line, got {error_lines}")
+        line = error_lines[0]
+        self.assertIn("[ERROR]", line)
+        self.assertIn("--cli and --agent are required", line)
+        self.assertRegex(line, r"\[.*\] \[ERROR\] --cli and --agent are required")
+
+    def test_missing_agent_only_exact_error_format(self) -> None:
+        """AL-CORE-27: providing --cli without --agent must still show the required args error."""
+        proc = self._run_worker(["--cli", "codex"])
+        self.assertEqual(1, proc.returncode)
+        error_lines = [l for l in proc.stderr.splitlines() if "--cli and --agent" in l]
+        self.assertEqual(1, len(error_lines))
+        self.assertRegex(error_lines[0], r"\[.*\] \[ERROR\] --cli and --agent are required")
+
+    def test_missing_cli_only_exact_error_format(self) -> None:
+        """AL-CORE-27: providing --agent without --cli must still show the required args error."""
+        proc = self._run_worker(["--agent", "claude_code"])
+        self.assertEqual(1, proc.returncode)
+        error_lines = [l for l in proc.stderr.splitlines() if "--cli and --agent" in l]
+        self.assertEqual(1, len(error_lines))
+        self.assertRegex(error_lines[0], r"\[.*\] \[ERROR\] --cli and --agent are required")
+
     def test_unsupported_cli_exits_nonzero_with_error_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bin_dir = Path(tmp) / "bin"

@@ -62,6 +62,39 @@ class ManagerLoopArgTests(unittest.TestCase):
         self.assertNotEqual(0, proc.returncode)
         self.assertIn("--aaa", proc.stderr)
 
+    def test_unknown_arg_exact_error_format(self) -> None:
+        """AL-CORE-28: stderr must contain '[ERROR] Unknown arg: <flag>' on a single line."""
+        proc = subprocess.run(
+            ["bash", MANAGER_LOOP, "--bogus-flag"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=_TIMEOUT,
+        )
+        self.assertEqual(1, proc.returncode)
+        # Find the line containing the error; format is:
+        # [timestamp] [ERROR] Unknown arg: --bogus-flag
+        error_lines = [l for l in proc.stderr.splitlines() if "Unknown arg" in l]
+        self.assertEqual(1, len(error_lines), f"expected exactly 1 error line, got {error_lines}")
+        line = error_lines[0]
+        self.assertIn("[ERROR]", line)
+        self.assertIn("Unknown arg: --bogus-flag", line)
+        # Verify the format: [timestamp] [ERROR] Unknown arg: --bogus-flag
+        self.assertRegex(line, r"\[.*\] \[ERROR\] Unknown arg: --bogus-flag")
+
+    def test_unknown_arg_exact_exit_code_one(self) -> None:
+        """AL-CORE-28: exit code must be exactly 1, not 2 or 127."""
+        for flag in ("--xyz", "--does-not-exist", "--invalid"):
+            with self.subTest(flag=flag):
+                proc = subprocess.run(
+                    ["bash", MANAGER_LOOP, flag],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=_TIMEOUT,
+                )
+                self.assertEqual(1, proc.returncode, f"expected rc=1 for {flag}, got {proc.returncode}")
+
 
 if __name__ == "__main__":
     unittest.main()

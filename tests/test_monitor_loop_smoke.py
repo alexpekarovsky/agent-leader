@@ -92,6 +92,15 @@ class MonitorLoopSmokeTests(unittest.TestCase):
             output = self._run_and_capture(tmp)
             self.assertIn(f"project={tmp}", output)
 
+    def test_project_path_on_startup_is_first_content_line(self) -> None:
+        """AL-CORE-32: project path must appear as the first non-empty output line."""
+        with tempfile.TemporaryDirectory() as tmp:
+            output = self._run_and_capture(tmp)
+            # Filter out empty lines; first content line should be the project path
+            content_lines = [l for l in output.splitlines() if l.strip()]
+            self.assertTrue(content_lines, "no output from monitor_loop")
+            self.assertEqual(f"project={tmp}", content_lines[0])
+
     def test_handles_missing_logs_directory(self) -> None:
         """No .autopilot-logs dir — should not crash."""
         with tempfile.TemporaryDirectory() as tmp:

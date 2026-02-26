@@ -105,6 +105,49 @@ class PruneOldLogsUnrelatedPrefixTests(unittest.TestCase):
             remaining = list(Path(tmp).glob("*.log"))
             self.assertLessEqual(len(remaining), 2)
 
+    def test_max_files_one_keeps_only_newest(self) -> None:
+        """AL-CORE-31: max_files=1 must keep exactly 1 file (the newest)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            for i in range(5):
+                f = Path(tmp) / f"manager-{i:03d}.log"
+                f.write_text(f"log {i}\n")
+                os.utime(f, (1000 + i * 100, 1000 + i * 100))
+
+            proc = _run_prune(tmp, "manager-", 1)
+            self.assertEqual(0, proc.returncode)
+
+            remaining = list(Path(tmp).glob("manager-*.log"))
+            self.assertEqual(1, len(remaining))
+            # The newest file (004) should survive
+            self.assertEqual("manager-004.log", remaining[0].name)
+
+    def test_max_files_one_single_file_no_op(self) -> None:
+        """AL-CORE-31: max_files=1 with exactly 1 file is a no-op."""
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "manager-000.log"
+            f.write_text("only one\n")
+
+            proc = _run_prune(tmp, "manager-", 1)
+            self.assertEqual(0, proc.returncode)
+
+            remaining = list(Path(tmp).glob("manager-*.log"))
+            self.assertEqual(1, len(remaining))
+            self.assertEqual("manager-000.log", remaining[0].name)
+
+    def test_exact_at_max_files_no_pruning(self) -> None:
+        """AL-CORE-31: when file count == max_files, nothing should be pruned."""
+        with tempfile.TemporaryDirectory() as tmp:
+            for i in range(3):
+                f = Path(tmp) / f"manager-{i:03d}.log"
+                f.write_text(f"log {i}\n")
+                os.utime(f, (1000 + i, 1000 + i))
+
+            proc = _run_prune(tmp, "manager-", 3)
+            self.assertEqual(0, proc.returncode)
+
+            remaining = list(Path(tmp).glob("manager-*.log"))
+            self.assertEqual(3, len(remaining))
+
     def test_nonexistent_dir_no_error(self) -> None:
         """Non-existent directory should not cause errors."""
         proc = _run_prune("/tmp/nonexistent-prune-test-xyz", "manager-", 5)

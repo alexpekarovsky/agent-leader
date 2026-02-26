@@ -54,6 +54,8 @@ except Exception as exc:
 
 _AUTO_LOOP_STOP = threading.Event()
 _AUTO_LOOP_THREAD: Optional[threading.Thread] = None
+STATUS_SNAPSHOTS_PATH = ROOT_DIR / "state" / "status_snapshots.jsonl"
+STATUS_SNAPSHOTS_LOCK = ROOT_DIR / "state" / ".status_snapshots.lock"
 
 
 def send_response(response: Dict[str, Any]) -> None:
@@ -62,6 +64,106 @@ def send_response(response: Dict[str, Any]) -> None:
 
 def _json_text(value: Any) -> str:
     return json.dumps(value, indent=2)
+
+
+def _append_jsonl(path: Path, lock_path: Path, row: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if fcntl is None:
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row) + "\n")
+        return
+    with lock_path.open("a+", encoding="utf-8") as lock_fh:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+        try:
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+        finally:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+
+
+def _tail_jsonl(path: Path, limit: int = 200) -> List[Dict[str, Any]]:
+    if not path.exists() or limit <= 0:
+        return []
+    rows: List[Dict[str, Any]] = []
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except Exception:
+                    continue
+    except Exception:
+        return []
+    return rows[-limit:]
+
+
+def _status_integrity_and_provenance(current_task_count: int, current_done_count: int) -> Dict[str, Any]:
+    max_seen_task_count = current_task_count
+    max_seen_done_count = current_done_count
+    last_good_source = "current_status"
+    warnings: List[str] = []
+
+    for row in ORCH.bus.read_audit(limit=400, tool_name="orchestrator_status", status="ok"):
+        result = row.get("result", {})
+        if not isinstance(result, dict):
+            continue
+        try:
+            task_count = int(result.get("task_count", 0))
+        except Exception:
+            continue
+        try:
+            done_count = int((result.get("task_status_counts") or {}).get("done", 0))
+        except Exception:
+            done_count = 0
+        if task_count > max_seen_task_count:
+            max_seen_task_count = task_count
+            max_seen_done_count = max(max_seen_done_count, done_count)
+            last_good_source = "audit.orchestrator_status"
+
+    for snap in _tail_jsonl(STATUS_SNAPSHOTS_PATH, limit=400):
+        try:
+            task_count = int(snap.get("task_count", 0))
+            done_count = int((snap.get("task_status_counts") or {}).get("done", 0))
+        except Exception:
+            continue
+        if task_count > max_seen_task_count:
+            max_seen_task_count = task_count
+            max_seen_done_count = max(max_seen_done_count, done_count)
+            last_good_source = "state.status_snapshots"
+
+    task_count_regression = current_task_count < max_seen_task_count
+    if task_count_regression:
+        warnings.append(
+            f"task_count_regression_detected: current={current_task_count} < historical_max={max_seen_task_count}"
+        )
+
+    corrected_percent: Optional[float] = None
+    if max_seen_task_count > 0:
+        # If current state regressed, prefer historical max counts as safer estimate.
+        numerator = max_seen_done_count if task_count_regression else current_done_count
+        denominator = max_seen_task_count if task_count_regression else current_task_count
+        corrected_percent = round((numerator / denominator) * 100.0, 2)
+
+    return {
+        "ok": not task_count_regression,
+        "warnings": warnings,
+        "task_count_regression_detected": task_count_regression,
+        "current_task_count": current_task_count,
+        "historical_max_task_count": max_seen_task_count,
+        "current_done_count": current_done_count,
+        "historical_max_done_count": max_seen_done_count,
+        "provenance": {
+            "task_counts": "estimated_live_state" if not task_count_regression else "estimated_live_state_degraded",
+            "corrected_percent": "historical_max_from_audit_and_snapshots" if task_count_regression else "live_state",
+            "last_good_source": last_good_source,
+        },
+        "corrected_overall_percent": corrected_percent,
+    }
 
 
 def _parse_json_argument(raw: Any, expected: str) -> Any:
@@ -1187,6 +1289,10 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             by_status: Dict[str, int] = {}
             for task in tasks:
                 by_status[task["status"]] = by_status.get(task["status"], 0) + 1
+            integrity = _status_integrity_and_provenance(
+                current_task_count=len(tasks),
+                current_done_count=int(by_status.get("done", 0)),
+            )
             payload: Dict[str, Any] = {
                 "server": "agent-leader-orchestrator",
                 "version": __version__,
@@ -1221,6 +1327,12 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 ],
                 "live_status_text": live_status.get("report_text", ""),
                 "live_status": live_status.get("report", {}),
+                "integrity": integrity,
+                "stats_provenance": {
+                    "dashboard_percent": "live_status_report_estimate",
+                    "task_summary": integrity.get("provenance", {}).get("task_counts"),
+                    "integrity_state": "ok" if integrity.get("ok") else "degraded",
+                },
                 "recommended_status_cadence_seconds": live_status.get("recommended_cadence_seconds", 600),
                 "run_context": {
                     "run_id": RUN_ID or None,
@@ -1238,6 +1350,25 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             if STATUS_VERBOSE_PATHS:
                 payload["root"] = str(ROOT_DIR)
                 payload["policy"] = str(POLICY_PATH)
+            try:
+                _append_jsonl(
+                    STATUS_SNAPSHOTS_PATH,
+                    STATUS_SNAPSHOTS_LOCK,
+                    {
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "run_id": RUN_ID or None,
+                        "root_name": ROOT_DIR.name,
+                        "task_count": len(tasks),
+                        "task_status_counts": by_status,
+                        "live_status": live_status.get("report", {}),
+                        "integrity_ok": bool(integrity.get("ok")),
+                        "integrity_warnings": integrity.get("warnings", []),
+                        "provenance": payload.get("stats_provenance", {}),
+                    },
+                )
+            except Exception:
+                # Status should still succeed even if snapshot logging fails.
+                pass
             return _ok_and_audit(
                 request_id,
                 name,
