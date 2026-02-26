@@ -21,6 +21,18 @@ except Exception:  # pragma: no cover
     fcntl = None
 
 
+_META_BLOCKER_PATTERNS = (
+    "watchdog",
+    "project_mismatch",
+    "wrong project scope",
+    "stale",
+    "task stale",
+    "marked this task stale",
+    "targets .*, not ",
+    "cannot work on tasks outside my project",
+)
+
+
 @dataclass
 class Orchestrator:
     root: Path
@@ -1151,6 +1163,104 @@ class Orchestrator:
             source=source,
         )
         return blocker
+
+    # ------------------------------------------------------------------
+    # Auto-resolution of stale / meta blockers
+    # ------------------------------------------------------------------
+
+    def _is_meta_blocker(self, blocker: Dict[str, Any]) -> bool:
+        """Return True if the blocker is a meta/watchdog blocker rather
+        than a genuine user-input-required decision."""
+        question = str(blocker.get("question", "")).lower()
+        for pattern in _META_BLOCKER_PATTERNS:
+            if pattern.lower() in question:
+                return True
+        return False
+
+    def auto_resolve_stale_blockers(
+        self,
+        source: str = "auto_policy",
+        stale_after_seconds: int = 3600,
+        limit: int = 50,
+    ) -> Dict[str, Any]:
+        """Auto-resolve open meta/watchdog blockers past their stale age.
+
+        Only meta blockers (watchdog, project-mismatch, stale-task) are
+        eligible.  Blockers that require genuine user input are never
+        auto-resolved.
+
+        Returns a summary dict with resolved IDs and skipped counts.
+        """
+        open_blockers = self.list_blockers(status="open")
+        now = datetime.now(timezone.utc)
+        resolved: List[Dict[str, Any]] = []
+        skipped_actionable = 0
+        skipped_young = 0
+
+        for blocker in open_blockers:
+            if len(resolved) >= limit:
+                break
+
+            # Never auto-resolve actionable (user-input) blockers.
+            if not self._is_meta_blocker(blocker):
+                skipped_actionable += 1
+                continue
+
+            # Check age.
+            created_at = blocker.get("created_at", "")
+            try:
+                created = datetime.fromisoformat(created_at)
+                age_seconds = (now - created).total_seconds()
+            except (ValueError, TypeError):
+                age_seconds = float("inf")  # Unknown age → treat as stale.
+
+            if age_seconds < stale_after_seconds:
+                skipped_young += 1
+                continue
+
+            reason_code = "stale_meta_blocker"
+            if "project" in str(blocker.get("question", "")).lower():
+                reason_code = "project_mismatch_blocker"
+            elif "watchdog" in str(blocker.get("question", "")).lower():
+                reason_code = "stale_watchdog_blocker"
+
+            resolution = (
+                f"Auto-resolved by {source}: {reason_code} "
+                f"(age {int(age_seconds)}s > threshold {stale_after_seconds}s)"
+            )
+
+            self.resolve_blocker(
+                blocker_id=blocker["id"],
+                resolution=resolution,
+                source=source,
+            )
+
+            self.bus.emit(
+                "blocker.auto_resolved",
+                {
+                    "blocker_id": blocker["id"],
+                    "task_id": blocker.get("task_id"),
+                    "reason_code": reason_code,
+                    "age_seconds": int(age_seconds),
+                    "threshold_seconds": stale_after_seconds,
+                },
+                source=source,
+            )
+
+            resolved.append({
+                "blocker_id": blocker["id"],
+                "task_id": blocker.get("task_id"),
+                "reason_code": reason_code,
+                "age_seconds": int(age_seconds),
+            })
+
+        return {
+            "resolved": resolved,
+            "resolved_count": len(resolved),
+            "skipped_actionable": skipped_actionable,
+            "skipped_young": skipped_young,
+            "threshold_seconds": stale_after_seconds,
+        }
 
     # ------------------------------------------------------------------
     # Unsupervised stop / escalation policy

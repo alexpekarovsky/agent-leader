@@ -973,6 +973,12 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
             "timeout_seconds": reconnect_timeout,
         }
 
+    blocker_stale_seconds = int(ORCH.policy.triggers.get("blocker_auto_resolve_stale_seconds", 3600))
+    auto_resolved_blockers = ORCH.auto_resolve_stale_blockers(
+        source=ORCH.manager_agent(),
+        stale_after_seconds=blocker_stale_seconds,
+    )
+
     stale_reassignments = ORCH.reassign_stale_tasks_to_active_workers(
         source=ORCH.manager_agent(),
         stale_after_seconds=stale_after_seconds,
@@ -1037,6 +1043,7 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
         "processed_reports": processed,
         "report_retry_queue": retry_queue,
         "auto_connect": auto_connect,
+        "auto_resolved_blockers": auto_resolved_blockers,
         "stale_reassignments": stale_reassignments,
         "claim_override_noops": claim_override_noops,
         "lease_recoveries": lease_recoveries,
