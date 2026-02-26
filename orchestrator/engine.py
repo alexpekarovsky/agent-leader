@@ -540,6 +540,11 @@ class Orchestrator:
 
             self.bus.write_report(task_id=task_id, report=report)
 
+            review_gate = report.get("review_gate")
+            if isinstance(review_gate, dict):
+                task["review_gate"] = self._normalize_review_gate(review_gate)
+                task["review_gate_updated_at"] = self._now()
+
             task["status"] = "reported"
             task["updated_at"] = self._now()
             task["reported_at"] = task["updated_at"]
@@ -1000,6 +1005,20 @@ class Orchestrator:
                     "owner": task["owner"],
                     "notes": notes,
                 }
+
+            review_gate_snapshot = None
+            if isinstance(task.get("review_gate"), dict):
+                review_gate_snapshot = dict(task["review_gate"])
+            task["validation_gate"] = {
+                "validator_agent": source,
+                "validator_role": "leader",
+                "decision": "accepted" if passed else "rejected",
+                "decision_reason": notes,
+                "decided_at": self._now(),
+                "review_gate": review_gate_snapshot,
+            }
+            if review_gate_snapshot is not None:
+                payload["review_gate"] = review_gate_snapshot
 
             task["updated_at"] = self._now()
             self._write_tasks_json(tasks)
@@ -1695,6 +1714,46 @@ class Orchestrator:
             raise ValueError("test_summary.passed must be a non-negative integer")
         if not isinstance(failed, int) or failed < 0:
             raise ValueError("test_summary.failed must be a non-negative integer")
+
+        review_gate = report.get("review_gate")
+        if review_gate is not None and not isinstance(review_gate, dict):
+            raise ValueError("review_gate must be an object when provided")
+        if isinstance(review_gate, dict):
+            self._normalize_review_gate(review_gate)
+
+    def _normalize_review_gate(self, review_gate: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(review_gate, dict):
+            raise ValueError("review_gate must be an object")
+        normalized: Dict[str, Any] = {}
+        required = bool(review_gate.get("required", False))
+        normalized["required"] = required
+
+        status = str(review_gate.get("status", "")).strip().lower()
+        allowed_statuses = {"pending", "approved", "rejected", "waived", ""}
+        if status not in allowed_statuses:
+            raise ValueError("review_gate.status must be one of pending|approved|rejected|waived")
+        if status:
+            normalized["status"] = status
+        elif required:
+            normalized["status"] = "pending"
+
+        for key in ("reviewer_agent", "reviewer_role", "reviewer_instance_id", "reviewer_notes", "review_commit_sha"):
+            raw = review_gate.get(key)
+            if raw is None:
+                continue
+            if not isinstance(raw, str):
+                raise ValueError(f"review_gate.{key} must be a string")
+            value = raw.strip()
+            if value:
+                normalized[key] = value
+
+        reviewed_at = review_gate.get("reviewed_at")
+        if reviewed_at is not None:
+            if not isinstance(reviewed_at, str) or not reviewed_at.strip():
+                raise ValueError("review_gate.reviewed_at must be a non-empty string")
+            normalized["reviewed_at"] = reviewed_at.strip()
+
+        return normalized
 
     def _task_fingerprint(self, title: str, workstream: str, owner: str) -> str:
         norm_title = re.sub(r"\s+", " ", title.strip().lower())

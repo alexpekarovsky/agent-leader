@@ -328,6 +328,103 @@ class TaskProjectIsolationTests(unittest.TestCase):
                 orch.set_task_status(task_id=task["id"], status="done", source="codex")
 
 
+class ReviewGateContractTests(unittest.TestCase):
+    def _make_orch(self, root: Path) -> Orchestrator:
+        policy = _make_policy(root / "policy.json")
+        orch = Orchestrator(root=root, policy=policy)
+        orch.bootstrap()
+        return orch
+
+    def _connect(self, orch: Orchestrator, root: Path, agent: str) -> None:
+        orch.connect_to_leader(
+            agent=agent,
+            metadata=_team_metadata(
+                root=root,
+                client=f"{agent}-cli",
+                model=f"{agent}-model",
+                role="team_member",
+                sid=f"{agent}-sid",
+                cid=f"{agent}-cid",
+            ),
+            source=agent,
+        )
+
+    def _claim_backend_task(self, orch: Orchestrator, root: Path) -> dict:
+        self._connect(orch, root, "claude_code")
+        task = orch.create_task(
+            title="Review gate task",
+            workstream="backend",
+            acceptance_criteria=["review metadata persists"],
+            owner="claude_code",
+        )
+        claimed = orch.claim_next_task(owner="claude_code")
+        self.assertIsNotNone(claimed)
+        assert claimed is not None
+        self.assertEqual(task["id"], claimed["id"])
+        return claimed
+
+    def test_ingest_report_persists_review_gate_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = self._make_orch(root)
+            task = self._claim_backend_task(orch, root)
+
+            orch.ingest_report(
+                {
+                    "task_id": task["id"],
+                    "agent": "claude_code",
+                    "commit_sha": "abc123",
+                    "status": "done",
+                    "test_summary": {"command": "pytest -q", "passed": 3, "failed": 0},
+                    "review_gate": {
+                        "required": True,
+                        "status": "approved",
+                        "reviewer_role": "code_wingman",
+                        "reviewer_agent": "codex",
+                        "reviewer_instance_id": "codex#wingman",
+                        "reviewer_notes": "Looks good",
+                    },
+                }
+            )
+
+            latest = {t["id"]: t for t in orch.list_tasks()}[task["id"]]
+            self.assertEqual("reported", latest["status"])
+            self.assertEqual("approved", latest["review_gate"]["status"])
+            self.assertEqual("code_wingman", latest["review_gate"]["reviewer_role"])
+            self.assertEqual("codex#wingman", latest["review_gate"]["reviewer_instance_id"])
+
+    def test_validate_task_records_validation_gate_for_rejection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = self._make_orch(root)
+            task = self._claim_backend_task(orch, root)
+
+            orch.ingest_report(
+                {
+                    "task_id": task["id"],
+                    "agent": "claude_code",
+                    "commit_sha": "def456",
+                    "status": "done",
+                    "test_summary": {"command": "pytest -q", "passed": 2, "failed": 1},
+                    "review_gate": {
+                        "required": True,
+                        "status": "rejected",
+                        "reviewer_role": "code_wingman",
+                        "reviewer_agent": "codex",
+                        "reviewer_notes": "Failing edge case",
+                    },
+                }
+            )
+            result = orch.validate_task(task_id=task["id"], passed=False, notes="wingman rejected", source="codex")
+
+            self.assertIn("bug_id", result)
+            latest = {t["id"]: t for t in orch.list_tasks()}[task["id"]]
+            self.assertEqual("bug_open", latest["status"])
+            self.assertEqual("rejected", latest["validation_gate"]["decision"])
+            self.assertEqual("rejected", latest["validation_gate"]["review_gate"]["status"])
+            self.assertEqual("code_wingman", latest["validation_gate"]["review_gate"]["reviewer_role"])
+
+
 class ConnectBehaviorTests(unittest.TestCase):
     def test_manager_connect_does_not_auto_claim(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
