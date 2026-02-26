@@ -21,6 +21,7 @@
 #  14. Autopilot docs index link validation
 #  15. tmux pane cheatsheet command validation
 #  16. Submit report response doc validation
+#  17. Log retention tuning doc validation
 #
 # Exit code 0 = all passed, non-zero = failure count.
 
@@ -1216,6 +1217,86 @@ if grep -q 'queued_for_retry' "$report_doc" && grep -q 'submit_error' "$report_d
   report "doc covers retry/error cases" "true"
 else
   report "doc covers retry/error cases" "false" "retry fields not found"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 17: Log retention tuning doc validation
+# ---------------------------------------------------------------------------
+echo
+echo "--- Test 17: log retention tuning doc ---"
+
+retention_doc="$ROOT_DIR/docs/log-retention-tuning.md"
+
+if [[ -f "$retention_doc" ]]; then
+  report "log-retention-tuning.md exists" "true"
+else
+  report "log-retention-tuning.md exists" "false" "file not found"
+fi
+
+# Validate --max-logs flag is documented
+if grep -q '\-\-max-logs' "$retention_doc"; then
+  max_logs_refs=$(grep -c '\-\-max-logs' "$retention_doc" || true)
+  report "doc references --max-logs flag ($max_logs_refs times)" "true"
+else
+  report "doc references --max-logs flag" "false" "not found"
+fi
+
+# Validate all three loop types are covered
+for loop in manager worker watchdog; do
+  if ! grep -qi "$loop" "$retention_doc"; then
+    report "doc covers $loop loop" "false"
+  fi
+done
+loop_count=$(grep -ciE 'manager|worker|watchdog' "$retention_doc" || true)
+if [[ "$loop_count" -ge 6 ]]; then
+  report "doc covers all loop types ($loop_count refs)" "true"
+else
+  report "doc covers all loop types" "false" "only $loop_count refs"
+fi
+
+# Validate example commands reference actual scripts
+if grep -q 'manager_loop.sh' "$retention_doc" && \
+   grep -q 'worker_loop.sh' "$retention_doc" && \
+   grep -q 'watchdog_loop.sh' "$retention_doc"; then
+  report "doc examples reference actual loop scripts" "true"
+else
+  report "doc examples reference actual loop scripts" "false"
+fi
+
+# Validate default values match actual scripts
+defaults_check=$(python3 - "$retention_doc" "$ROOT_DIR" <<'PYCHECK'
+import re, sys
+from pathlib import Path
+
+doc = Path(sys.argv[1]).read_text(encoding="utf-8")
+root = Path(sys.argv[2])
+
+# Check manager default (200)
+mgr_script = (root / "scripts/autopilot/manager_loop.sh").read_text(encoding="utf-8")
+mgr_default = re.search(r'MAX_LOG_FILES=(\d+)', mgr_script)
+mgr_val = mgr_default.group(1) if mgr_default else "?"
+
+# Check watchdog default (400)
+wd_script = (root / "scripts/autopilot/watchdog_loop.sh").read_text(encoding="utf-8")
+wd_default = re.search(r'MAX_LOG_FILES=(\d+)', wd_script)
+wd_val = wd_default.group(1) if wd_default else "?"
+
+errors = []
+if mgr_val not in doc:
+    errors.append(f"manager default {mgr_val} not in doc")
+if wd_val not in doc:
+    errors.append(f"watchdog default {wd_val} not in doc")
+
+if errors:
+    print(f"MISMATCH:{'; '.join(errors)}")
+else:
+    print(f"OK:mgr={mgr_val},wd={wd_val}")
+PYCHECK
+)
+if [[ "$defaults_check" == OK:* ]]; then
+  report "doc defaults match script values" "true"
+else
+  report "doc defaults match script values" "false" "$defaults_check"
 fi
 
 # ---------------------------------------------------------------------------
