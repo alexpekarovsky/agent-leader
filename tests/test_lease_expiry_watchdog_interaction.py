@@ -216,6 +216,58 @@ class WatchdogDoesNotMutateStateTests(unittest.TestCase):
             self.assertGreaterEqual(len(stale_entries), 1)
             self.assertEqual(stale_entries[0]["kind"], "stale_task")
             self.assertEqual(stale_entries[0]["task_id"], task["id"])
+            for field in (
+                "timestamp",
+                "kind",
+                "task_id",
+                "owner",
+                "status",
+                "age_seconds",
+                "timeout_seconds",
+                "title",
+            ):
+                self.assertIn(field, stale_entries[0])
+            self.assertEqual(stale_entries[0]["status"], "in_progress")
+            self.assertEqual(stale_entries[0]["timeout_seconds"], 1)
+            self.assertIsInstance(stale_entries[0]["age_seconds"], int)
+
+    def test_watchdog_emits_state_corruption_detected_for_dict_collection(self) -> None:
+        """Corrupted bugs/blockers collection types should emit diagnostics."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = _make_orch(root)
+            # Corrupt list-backed files with dicts to trigger watchdog diagnostics.
+            orch._write_json(orch.bugs_path, {"bad": True})
+            orch._write_json(orch.blockers_path, {"also_bad": True})
+
+            log_dir = root / "watchdog-logs"
+            log_dir.mkdir(exist_ok=True)
+            script = Path(__file__).resolve().parent.parent / "scripts" / "autopilot" / "watchdog_loop.sh"
+            if not script.exists():
+                self.skipTest("watchdog_loop.sh not found")
+
+            subprocess.run(
+                ["bash", str(script), "--project-root", str(root), "--log-dir", str(log_dir), "--once"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+
+            jsonl_files = list(log_dir.glob("watchdog-*.jsonl"))
+            self.assertGreaterEqual(len(jsonl_files), 1)
+            entries = [
+                json.loads(line)
+                for line in jsonl_files[0].read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            corruption = [e for e in entries if e.get("kind") == "state_corruption_detected"]
+            self.assertGreaterEqual(len(corruption), 2)
+            for entry in corruption:
+                for field in ("timestamp", "kind", "path", "previous_type", "expected_type"):
+                    self.assertIn(field, entry)
+                self.assertEqual("list", entry["expected_type"])
+                self.assertEqual("dict", entry["previous_type"])
 
 
 # ---------------------------------------------------------------------------
