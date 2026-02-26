@@ -261,6 +261,23 @@ CORE-04 (lease expiry)          CORE-05 (dispatch telemetry)
 | CP-11 | ALL | Live session evidence collected | | |
 | CP-12 | ALL | Reconciliation + witness logs filled | | |
 
+## Appendix: Reviewer Pitfalls and Fixes
+
+Common mistakes during CORE-04/05/06 review prep, with recommended fixes.
+
+| # | Pitfall | Affected Row(s) | Fix |
+|---|---------|-----------------|-----|
+| 1 | **Stale evidence**: Reviewer uses evidence captured against an older commit while code has changed | All CORE-04/05/06 | Always verify the `commit under test` in the bundle metadata matches the current HEAD. Re-collect evidence if the commit has advanced. |
+| 2 | **Correlation ID mismatch accepted**: Reviewer overlooks that `dispatch.ack` has a different `correlation_id` than the `dispatch.command` | C05-01, C05-02 | Cross-check correlation IDs character-by-character. Use `grep -c <correlation_id>` across all evidence files — count must equal the number of events in the chain. |
+| 3 | **Noop without command**: `dispatch.noop` evidence exists but no corresponding `dispatch.command` captured | C06-01, C06-02 | Every noop must link back to a command via `correlation_id`. If the command is missing from evidence, the noop chain is incomplete — reject and re-collect. |
+| 4 | **Lease TTL not verified numerically**: Reviewer accepts `expires_at` without computing `claimed_at + TTL` | C04-01, C04-05 | Parse both timestamps and subtract. The difference must equal the configured `lease_ttl_seconds` (default: 600). Off-by-one second is acceptable; larger drift is a bug. |
+| 5 | **Attempt index starts at 0**: Evidence shows `attempt_index: 0` on first claim instead of 1 | C04-02, C04-03 | Per the lease schema, `attempt_index` starts at 1. If evidence shows 0, this is a code bug — reject and file against engine. |
+| 6 | **Fallback path not documented**: Review evidence only shows the happy path without noting that the fallback condition was checked | All rows | Each row in the happy-path/fallback table should have a note: either "happy path observed" or "fallback taken — see details." Absence of either means incomplete review. |
+| 7 | **Reconciliation done against single source**: Cross-source reconciliation table filled using only the event bus, ignoring audit log and status API | C04-06, C05-05 | All three sources (status API, audit log, event bus) must be independently checked. Single-source reconciliation masks inconsistencies. |
+| 8 | **Timeout matrix has duplicate scenarios**: Three timeout rows all describe `ack_timeout` with slightly different wording | C06-03 | The three scenarios must be distinct: `ack_timeout` (worker not running), `no_available_worker` (no agents registered), `result_timeout` (worker acked but crashed). If duplicates exist, re-test with different setups. |
+
+---
+
 ## References
 
 - [core-04-06-reviewer-packet-gaps.md](core-04-06-reviewer-packet-gaps.md) — Gap analysis
