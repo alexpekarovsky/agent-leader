@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -889,6 +890,113 @@ def _avg_int(values: List[int]) -> Optional[int]:
     return int(round(sum(values) / len(values)))
 
 
+def _collect_commit_metrics(commit_sha: str) -> Dict[str, Any]:
+    sha = str(commit_sha).strip()
+    if not sha:
+        return {"collected": False, "error": "empty_commit_sha", "provenance": "git"}
+    try:
+        proc = subprocess.run(
+            ["git", "diff-tree", "--no-commit-id", "--numstat", "-r", sha],
+            cwd=str(ROOT_DIR),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except Exception as exc:
+        return {"collected": False, "error": str(exc), "provenance": "git"}
+    if proc.returncode != 0:
+        return {
+            "collected": False,
+            "error": (proc.stderr or proc.stdout or f"git rc={proc.returncode}").strip(),
+            "provenance": "git",
+        }
+    files_changed = 0
+    lines_added = 0
+    lines_deleted = 0
+    for raw in proc.stdout.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        add_s, del_s, _path = parts[0], parts[1], parts[2]
+        files_changed += 1
+        if add_s.isdigit():
+            lines_added += int(add_s)
+        if del_s.isdigit():
+            lines_deleted += int(del_s)
+    return {
+        "collected": True,
+        "commit_sha": sha,
+        "files_changed": files_changed,
+        "lines_added": lines_added,
+        "lines_deleted": lines_deleted,
+        "net_lines": lines_added - lines_deleted,
+        "provenance": "git",
+    }
+
+
+def _report_metrics_snapshot() -> Dict[str, Any]:
+    reports_dir = ORCH.bus.reports_dir
+    totals = {
+        "reports_total": 0,
+        "reports_with_commit_metrics": 0,
+        "unique_commits": 0,
+        "files_changed_total": 0,
+        "lines_added_total": 0,
+        "lines_deleted_total": 0,
+        "net_lines_total": 0,
+    }
+    by_agent: Dict[str, Dict[str, int]] = {}
+    seen_commits = set()
+    try:
+        report_files = sorted(reports_dir.glob("*.json"))
+    except Exception:
+        report_files = []
+    for path in report_files:
+        try:
+            item = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        totals["reports_total"] += 1
+        agent = str(item.get("agent", "unknown"))
+        bucket = by_agent.setdefault(
+            agent,
+            {
+                "reports": 0,
+                "commits": 0,
+                "files_changed": 0,
+                "lines_added": 0,
+                "lines_deleted": 0,
+                "net_lines": 0,
+            },
+        )
+        bucket["reports"] += 1
+        commit_sha = str(item.get("commit_sha", "")).strip()
+        if commit_sha:
+            seen_commits.add(commit_sha)
+        cm = item.get("commit_metrics")
+        if not isinstance(cm, dict) or not cm.get("collected"):
+            continue
+        totals["reports_with_commit_metrics"] += 1
+        bucket["commits"] += 1
+        for src, dst in [
+            ("files_changed", "files_changed"),
+            ("lines_added", "lines_added"),
+            ("lines_deleted", "lines_deleted"),
+            ("net_lines", "net_lines"),
+        ]:
+            value = cm.get(src)
+            if isinstance(value, int):
+                totals[f"{dst}_total"] += value
+                bucket[dst] += value
+    totals["unique_commits"] = len(seen_commits)
+    return {"totals": totals, "by_agent": by_agent, "provenance": "report_commit_metrics"}
+
+
 def _status_metrics(tasks: List[Dict[str, Any]], bugs_open: List[Dict[str, Any]], blockers_open: List[Dict[str, Any]]) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     done_tasks = [t for t in tasks if t.get("status") == "done"]
@@ -911,7 +1019,7 @@ def _status_metrics(tasks: List[Dict[str, Any]], bugs_open: List[Dict[str, Any]]
         if ts and (now - ts).total_seconds() > 600:
             stale_reported += 1
 
-    # Commit/LOC proxy metrics are tracked from reports/commits outside core engine today; expose placeholders + counts.
+    report_metrics = _report_metrics_snapshot()
     return {
         "throughput": {
             "tasks_total": len(tasks),
@@ -933,12 +1041,13 @@ def _status_metrics(tasks: List[Dict[str, Any]], bugs_open: List[Dict[str, Any]]
             "stale_reported_over_10m": stale_reported,
         },
         "code_output": {
-            "commits_tracked": "not_yet_collected_in_core_metrics",
-            "lines_added_deleted": "planned_via_report_and_git_collection",
+            **report_metrics.get("totals", {}),
+            "by_agent": report_metrics.get("by_agent", {}),
+            "provenance": report_metrics.get("provenance"),
         },
         "efficiency": {
             "energy_mode": "not_yet_instrumented",
-            "metrics_provenance": "derived_from_task_state_only",
+            "metrics_provenance": "task_state + report_commit_metrics",
         },
     }
 
@@ -1309,6 +1418,14 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "artifacts": args.get("artifacts", []),
                 "notes": args.get("notes", ""),
             }
+            report["run_context"] = {
+                "run_id": RUN_ID or None,
+                "orchestrator_version": __version__,
+                "policy_name": POLICY.name,
+                "prompt_profile_version": PROMPT_PROFILE_VERSION or None,
+                "root_name": ROOT_DIR.name,
+            }
+            report["commit_metrics"] = _collect_commit_metrics(report["commit_sha"])
             try:
                 result = ORCH.ingest_report(report)
             except Exception as exc:
