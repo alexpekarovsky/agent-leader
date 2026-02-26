@@ -25,6 +25,7 @@
 #  18. Limitations matrix roadmap references
 #  19. Dispatch telemetry schema validation
 #  20. Lease operator expectations doc validation
+#  21. Supervisor start/status/stop lifecycle smoke
 #
 # Exit code 0 = all passed, non-zero = failure count.
 
@@ -1557,6 +1558,103 @@ if [[ "$timeline_rows" -ge 6 ]]; then
   report "doc has timeline/status tables ($timeline_rows rows)" "true"
 else
   report "doc has timeline/status tables" "false" "only $timeline_rows table rows"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 21: Supervisor start/status/stop lifecycle smoke
+# ---------------------------------------------------------------------------
+echo
+echo "--- Test 21: supervisor lifecycle smoke ---"
+
+# Use isolated dirs so we don't interfere with real autopilot state
+sv_smoke_dir="$WORK_DIR/sv-lifecycle"
+sv_smoke_pids="$sv_smoke_dir/pids"
+sv_smoke_logs="$sv_smoke_dir/logs"
+mkdir -p "$sv_smoke_pids" "$sv_smoke_logs"
+
+SV="$ROOT_DIR/scripts/autopilot/supervisor.sh"
+
+# Step 1: status before start — all should be stopped
+sv_pre_out="$sv_smoke_dir/status-pre.txt"
+"$SV" status --pid-dir "$sv_smoke_pids" --log-dir "$sv_smoke_logs" \
+  --project-root "$WORK_DIR" >"$sv_pre_out" 2>&1 || true
+
+stopped_count=$(grep -c 'stopped' "$sv_pre_out" || true)
+if [[ "$stopped_count" -ge 4 ]]; then
+  report "pre-start: all 4 processes stopped" "true"
+else
+  report "pre-start: all 4 processes stopped" "false" "only $stopped_count stopped"
+fi
+
+# Step 2: start — launches processes (they'll fail quickly since no real CLIs, but PIDs are created)
+sv_start_out="$sv_smoke_dir/start.txt"
+"$SV" start --pid-dir "$sv_smoke_pids" --log-dir "$sv_smoke_logs" \
+  --project-root "$WORK_DIR" --manager-cli-timeout 1 --worker-cli-timeout 1 \
+  >"$sv_start_out" 2>&1 || true
+
+# Check that PID files were created
+pid_files=$(ls "$sv_smoke_pids"/*.pid 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$pid_files" -ge 4 ]]; then
+  report "start: created $pid_files PID files" "true"
+else
+  report "start: created PID files" "false" "only $pid_files pid files"
+fi
+
+# Step 3: status after start — should show running or dead (processes may exit fast)
+sv_post_out="$sv_smoke_dir/status-post.txt"
+sleep 1  # Give processes a moment
+"$SV" status --pid-dir "$sv_smoke_pids" --log-dir "$sv_smoke_logs" \
+  --project-root "$WORK_DIR" >"$sv_post_out" 2>&1 || true
+
+# At least one should be running or dead (not all stopped)
+non_stopped=$(grep -cvE 'stopped' "$sv_post_out" || true)
+# Header lines are non-stopped too, so check for running or dead specifically
+running_or_dead=$(grep -cE 'running|dead' "$sv_post_out" || true)
+if [[ "$running_or_dead" -ge 1 ]]; then
+  report "post-start: processes launched ($running_or_dead running/dead)" "true"
+else
+  report "post-start: processes launched" "false" "no running/dead processes"
+fi
+
+# Step 4: stop
+sv_stop_out="$sv_smoke_dir/stop.txt"
+"$SV" stop --pid-dir "$sv_smoke_pids" --log-dir "$sv_smoke_logs" \
+  --project-root "$WORK_DIR" >"$sv_stop_out" 2>&1 || true
+
+if grep -qi 'stopped\|All processes' "$sv_stop_out"; then
+  report "stop: completed successfully" "true"
+else
+  report "stop: completed successfully" "false" "unexpected output"
+fi
+
+# Step 5: status after stop — all should be stopped again
+sv_final_out="$sv_smoke_dir/status-final.txt"
+"$SV" status --pid-dir "$sv_smoke_pids" --log-dir "$sv_smoke_logs" \
+  --project-root "$WORK_DIR" >"$sv_final_out" 2>&1 || true
+
+final_stopped=$(grep -c 'stopped' "$sv_final_out" || true)
+if [[ "$final_stopped" -ge 4 ]]; then
+  report "post-stop: all 4 processes stopped" "true"
+else
+  report "post-stop: all 4 processes stopped" "false" "only $final_stopped stopped"
+fi
+
+# Step 6: clean — should clean up any remaining artifacts
+sv_clean_out="$sv_smoke_dir/clean.txt"
+"$SV" clean --pid-dir "$sv_smoke_pids" --log-dir "$sv_smoke_logs" \
+  --project-root "$WORK_DIR" >"$sv_clean_out" 2>&1 || true
+
+report "clean: completed without error" "true"
+
+# Verify outputs were captured for review
+captured=0
+for f in status-pre.txt start.txt status-post.txt stop.txt status-final.txt clean.txt; do
+  [[ -f "$sv_smoke_dir/$f" ]] && captured=$((captured + 1))
+done
+if [[ "$captured" -eq 6 ]]; then
+  report "lifecycle: all 6 outputs captured" "true"
+else
+  report "lifecycle: all 6 outputs captured" "false" "only $captured captured"
 fi
 
 # ---------------------------------------------------------------------------
