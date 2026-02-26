@@ -338,6 +338,30 @@ The bundle should be rejected if any of the following are true:
 | 4 | Lease field verification table has any unmatched fields |
 | 5 | Witness observations are unsigned or undated |
 
+### Checklist-to-Evidence Traceability
+
+Use this matrix to quickly locate the evidence backing each checklist item. "Example" entries reference Appendix A filled examples; "Section" entries reference the evidence slots in Section 2.
+
+| Checklist Item | Verify Against | Example Reference |
+|----------------|---------------|-------------------|
+| C03-01 present and valid | Section 2 → C03-01 slot | Appendix A → Example C03-01 (line 388) |
+| C03-02 present and valid | Section 2 → C03-02 slot | Section 2 → C03-02 example JSON |
+| C03-03 present and valid | Section 2 → C03-03 slot | Section 2 → C03-03 example JSON |
+| C03-04 all 7 fields checked | Section 2 → C03-04 table | Appendix A → Example C03-04 (line 408) |
+| C03-05 tests pass | Section 2 → C03-05 output | Section 2 → C03-05 example output |
+| `lease_id` non-empty, unique | C03-01 → `lease.lease_id` | Example: `"lease-7f3a9e2b"` in Appendix A C03-01 |
+| `expires_at` = `claimed_at` + TTL | C03-04 → `expires_at` row | Example: `08:00 + 600s = 08:10` in Appendix A C03-04 |
+| `owner_instance_id` matches claimer | C03-01 → `lease.owner_instance_id` | Example: `"claude_code#worker-01"` in Appendix A C03-01 |
+| `attempt_index` starts at 1 | C03-04 → `attempt_index` row | Example: `1` in Appendix A C03-04 |
+| T7 concurrent claim atomic | C03-05 → T7 test result | Section 2 → C03-05 test output |
+| Witness observations filled | Section 3 → Observations 1-4 | Match? columns all YES/NO |
+| Cross-source reconciliation clean | Section 4 → reconciliation table | All Match? columns YES |
+| Reject #1: artifact missing | Section 1 → Collected? column | All 5 rows checked |
+| Reject #2: test failures | C03-05 → Pass/Fail column | All T1/T2/T6/T7 = Pass |
+| Reject #3: reconciliation contradictions | Section 4 → Match? column | No unresolved NO entries |
+| Reject #4: unmatched lease fields | C03-04 → Match? column | All 7 rows = YES |
+| Reject #5: unsigned observations | Section 3 → Timestamp/Audit fields | All `____` slots filled |
+
 ---
 
 ## Section 6: Verdict and Signoff

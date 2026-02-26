@@ -23,14 +23,16 @@ Full details: [core-03-reviewer-bundle.md](core-03-reviewer-bundle.md)
 
 ## Pass/Fail Checks
 
-- [ ] All 5 artifacts present and non-empty
-- [ ] `lease_id` non-empty and unique per claim
-- [ ] `expires_at` = `claimed_at` + configured TTL
-- [ ] `owner_instance_id` matches claimer's instance
-- [ ] `attempt_index` starts at 1
-- [ ] T7 (concurrent claim) shows atomic behavior
-- [ ] Cross-source reconciliation: no contradictions
-- [ ] Witness observations: all Match? columns filled
+| Check | Verify in bundle |
+|-------|-----------------|
+| All 5 artifacts present and non-empty | Section 2 slots + Section 1 Collected? |
+| `lease_id` non-empty and unique per claim | C03-01 → `lease.lease_id` |
+| `expires_at` = `claimed_at` + configured TTL | C03-04 → `expires_at` row |
+| `owner_instance_id` matches claimer's instance | C03-01 → `lease.owner_instance_id` |
+| `attempt_index` starts at 1 | C03-04 → `attempt_index` row |
+| T7 (concurrent claim) shows atomic behavior | C03-05 → T7 test result |
+| Cross-source reconciliation: no contradictions | Section 4 → Match? columns |
+| Witness observations: all Match? columns filled | Section 3 → Observations 1-4 |
 
 ## Reject If
 
