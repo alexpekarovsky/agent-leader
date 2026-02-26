@@ -294,8 +294,19 @@ class Orchestrator:
             overrides = self._read_json(self.claim_overrides_path)
             if not isinstance(overrides, dict):
                 overrides = {}
-            override_task_id = overrides.get(owner)
-            if isinstance(override_task_id, str) and override_task_id.strip():
+            override_entry = overrides.get(owner)
+            override_task_id = ""
+            override_correlation_id: Optional[str] = None
+            if isinstance(override_entry, str) and override_entry.strip():
+                override_task_id = override_entry.strip()
+            elif isinstance(override_entry, dict):
+                task_id_raw = override_entry.get("task_id")
+                if isinstance(task_id_raw, str) and task_id_raw.strip():
+                    override_task_id = task_id_raw.strip()
+                corr_raw = override_entry.get("correlation_id")
+                if isinstance(corr_raw, str) and corr_raw.strip():
+                    override_correlation_id = corr_raw.strip()
+            if override_task_id:
                 forced = next((t for t in tasks if t.get("id") == override_task_id and t.get("owner") == owner), None)
                 if forced and forced.get("status") in {"assigned", "bug_open"}:
                     forced["status"] = "in_progress"
@@ -306,9 +317,26 @@ class Orchestrator:
                     self._write_json(self.claim_overrides_path, overrides)
                     self.bus.emit(
                         "task.claimed",
-                        {"task_id": forced["id"], "owner": owner, "via": "manager_override"},
+                        {
+                            "task_id": forced["id"],
+                            "owner": owner,
+                            "via": "manager_override",
+                            "correlation_id": override_correlation_id,
+                        },
                         source=owner,
                     )
+                    if override_correlation_id:
+                        self.bus.emit(
+                            "dispatch.ack",
+                            {
+                                "correlation_id": override_correlation_id,
+                                "agent": owner,
+                                "instance_id": lease_owner_instance,
+                                "task_id": forced["id"],
+                                "ack_type": "claim_override_consumed",
+                            },
+                            source=owner,
+                        )
                     return forced
                 # Override no longer valid; clear it and continue normal claim order.
                 del overrides[owner]
@@ -347,14 +375,102 @@ class Orchestrator:
             overrides = self._read_json(self.claim_overrides_path)
             if not isinstance(overrides, dict):
                 overrides = {}
-            overrides[agent] = task_id
+            correlation_id = f"CMD-{uuid.uuid4().hex[:10]}"
+            overrides[agent] = {
+                "task_id": task_id,
+                "correlation_id": correlation_id,
+                "source": source,
+                "created_at": self._now(),
+            }
             self._write_json(self.claim_overrides_path, overrides)
         self.bus.emit(
             "manager.claim_override",
-            {"agent": agent, "task_id": task_id},
+            {"agent": agent, "task_id": task_id, "correlation_id": correlation_id},
             source=source,
         )
-        return {"ok": True, "agent": agent, "task_id": task_id}
+        self.bus.emit(
+            "dispatch.command",
+            {
+                "correlation_id": correlation_id,
+                "command_type": "claim_override",
+                "agent": agent,
+                "task_id": task_id,
+            },
+            source=source,
+        )
+        return {"ok": True, "agent": agent, "task_id": task_id, "correlation_id": correlation_id}
+
+    def emit_stale_claim_override_noops(
+        self,
+        source: str,
+        timeout_seconds: int = 60,
+    ) -> Dict[str, Any]:
+        manager = self.manager_agent()
+        if source != manager:
+            raise ValueError(f"leader_mismatch: source={source}, current_leader={manager}")
+        threshold = max(5, int(timeout_seconds))
+        emitted: List[Dict[str, Any]] = []
+        now_dt = datetime.now(timezone.utc)
+        with self._state_lock():
+            overrides = self._read_json(self.claim_overrides_path)
+            if not isinstance(overrides, dict):
+                return {"emitted_count": 0, "emitted": [], "timeout_seconds": threshold}
+            changed = False
+            tasks = self._read_json(self.tasks_path)
+            for agent, entry in list(overrides.items()):
+                if not isinstance(entry, dict):
+                    continue
+                corr = entry.get("correlation_id")
+                task_id = entry.get("task_id")
+                created_at_raw = entry.get("created_at")
+                if not isinstance(corr, str) or not corr.strip():
+                    continue
+                if not isinstance(task_id, str) or not task_id.strip():
+                    continue
+                if entry.get("noop_emitted_at"):
+                    continue
+                try:
+                    created_dt = datetime.fromisoformat(str(created_at_raw))
+                except Exception:
+                    created_dt = now_dt
+                age = int((now_dt - created_dt).total_seconds())
+                if age < threshold:
+                    continue
+                # Suppress noop if override was already consumed or task advanced.
+                task = next((t for t in tasks if t.get("id") == task_id), None)
+                if task and task.get("status") not in {"assigned", "bug_open"}:
+                    entry["noop_suppressed_at"] = self._now()
+                    entry["noop_suppressed_reason"] = f"task_status={task.get('status')}"
+                    changed = True
+                    continue
+                entry["noop_emitted_at"] = self._now()
+                entry["noop_reason"] = "claim_override_timeout"
+                changed = True
+                emitted.append(
+                    {
+                        "agent": agent,
+                        "task_id": task_id,
+                        "correlation_id": corr,
+                        "age_seconds": age,
+                        "reason": "claim_override_timeout",
+                    }
+                )
+            if changed:
+                self._write_json(self.claim_overrides_path, overrides)
+        for item in emitted:
+            self.bus.emit(
+                "dispatch.noop",
+                {
+                    "correlation_id": item["correlation_id"],
+                    "command_type": "claim_override",
+                    "agent": item["agent"],
+                    "task_id": item["task_id"],
+                    "reason": item["reason"],
+                    "age_seconds": item["age_seconds"],
+                },
+                source=source,
+            )
+        return {"emitted_count": len(emitted), "emitted": emitted, "timeout_seconds": threshold}
 
     def set_task_status(self, task_id: str, status: str, source: str, note: str = "") -> Dict[str, Any]:
         manager = self.manager_agent()

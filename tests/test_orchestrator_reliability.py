@@ -758,6 +758,91 @@ class LeaseReliabilityTests(unittest.TestCase):
             open_blockers = orch.list_blockers(status="open")
             self.assertTrue(any(b.get("task_id") == task["id"] for b in open_blockers))
 
+    def test_claim_override_emits_dispatch_command_and_ack_with_correlation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+            orch.connect_to_leader(
+                agent="codex",
+                metadata=_team_metadata(root, "codex-cli", "gpt-5", "manager", "m-sid", "m-cid"),
+                source="codex",
+            )
+            orch.connect_to_leader(
+                agent="claude_code",
+                metadata=_team_metadata(root, "claude-code", "claude-opus", "team_member", "c-sid", "c-cid"),
+                source="claude_code",
+            )
+            task = orch.create_task(
+                title="dispatch telemetry",
+                workstream="backend",
+                acceptance_criteria=["done"],
+                owner="claude_code",
+            )
+            override = orch.set_claim_override(agent="claude_code", task_id=task["id"], source="codex")
+            corr = override.get("correlation_id")
+            self.assertIsInstance(corr, str)
+            self.assertTrue(corr.startswith("CMD-"))
+
+            claimed = orch.claim_next_task(owner="claude_code")
+            self.assertEqual(task["id"], claimed["id"])
+
+            events = list(orch.bus.iter_events())
+            command_event = next(
+                evt
+                for evt in events
+                if evt.get("type") == "dispatch.command" and evt.get("payload", {}).get("correlation_id") == corr
+            )
+            self.assertEqual("claim_override", command_event["payload"]["command_type"])
+
+            ack_event = next(
+                evt for evt in events if evt.get("type") == "dispatch.ack" and evt.get("payload", {}).get("correlation_id") == corr
+            )
+            self.assertEqual("claude_code", ack_event["payload"]["agent"])
+            self.assertEqual(task["id"], ack_event["payload"]["task_id"])
+            self.assertEqual("claim_override_consumed", ack_event["payload"]["ack_type"])
+
+    def test_emit_stale_claim_override_noops_emits_once_after_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+            orch.connect_to_leader(
+                agent="codex",
+                metadata=_team_metadata(root, "codex-cli", "gpt-5", "manager", "m-sid", "m-cid"),
+                source="codex",
+            )
+            orch.create_task(
+                title="override timeout diagnostic",
+                workstream="backend",
+                acceptance_criteria=["done"],
+                owner="claude_code",
+            )
+            task = orch.list_tasks()[0]
+            override = orch.set_claim_override(agent="claude_code", task_id=task["id"], source="codex")
+            corr = override["correlation_id"]
+
+            overrides = orch._read_json(orch.claim_overrides_path)
+            overrides["claude_code"]["created_at"] = "2000-01-01T00:00:00+00:00"
+            orch._write_json(orch.claim_overrides_path, overrides)
+
+            result = orch.emit_stale_claim_override_noops(source="codex", timeout_seconds=5)
+            self.assertEqual(1, result["emitted_count"])
+            self.assertEqual(corr, result["emitted"][0]["correlation_id"])
+            self.assertEqual("claim_override_timeout", result["emitted"][0]["reason"])
+
+            result_again = orch.emit_stale_claim_override_noops(source="codex", timeout_seconds=5)
+            self.assertEqual(0, result_again["emitted_count"])
+
+            events = list(orch.bus.iter_events())
+            noop_events = [
+                evt for evt in events if evt.get("type") == "dispatch.noop" and evt.get("payload", {}).get("correlation_id") == corr
+            ]
+            self.assertEqual(1, len(noop_events))
+            self.assertEqual("claim_override", noop_events[0]["payload"]["command_type"])
+
 
 class WorkflowReliabilityTests(unittest.TestCase):
     def test_core_flow_reliable_across_five_runs(self) -> None:
