@@ -11,9 +11,9 @@ Full details: [core-03-reviewer-bundle.md](core-03-reviewer-bundle.md)
 
 | ID | What | Source | Quick check |
 |----|------|--------|------------|
-| C03-01 | Claim response JSON | `claim_next_task()` | Has `lease` object with 7 fields |
-| C03-02 | Task list with lease | `list_tasks(in_progress)` | At least 1 task shows lease |
-| C03-03 | Audit log entry | `list_audit_logs()` | `task.claimed` with matching task_id |
+| C03-01 | Claim response JSON | `orchestrator_claim_next_task()` | Has `lease` object with 7 fields |
+| C03-02 | Task list with lease | `orchestrator_list_tasks(status="in_progress")` | At least 1 task shows lease |
+| C03-03 | Audit log entry | `orchestrator_list_audit_logs()` | `task.claimed` with matching task_id |
 | C03-04 | Field verification | Manual table | All 7 fields matched |
 | C03-05 | Test results | `test_lease_schema_test_plan.py` | T1, T2, T6, T7 all pass |
 
