@@ -1787,6 +1787,135 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Test 23: Reviewer checklist and witness log template validation
+# ---------------------------------------------------------------------------
+echo "--- Test 23: reviewer checklist and witness log template validation ---"
+
+reviewer="docs/core-03-06-reviewer-checklist.md"
+witness="docs/lease-witness-log-template.md"
+
+# --- reviewer checklist checks ---
+
+if [[ -f "$reviewer" ]]; then
+  report "reviewer checklist exists" "true"
+else
+  report "reviewer checklist exists" "false" "missing $reviewer"
+fi
+
+# Check all 4 CORE sections present
+for core_section in "CORE-03" "CORE-04" "CORE-05" "CORE-06"; do
+  if grep -q "## $core_section" "$reviewer" 2>/dev/null; then
+    report "reviewer checklist has $core_section section" "true"
+  else
+    report "reviewer checklist has $core_section section" "false"
+  fi
+done
+
+# Check reviewer verdict tables
+verdict_count=$(grep -c "Reviewer Verdict" "$reviewer" 2>/dev/null || true)
+if [[ "$verdict_count" -ge 4 ]]; then
+  report "reviewer checklist has per-section verdicts" "true"
+else
+  report "reviewer checklist has per-section verdicts" "false" "found $verdict_count, expected >=4"
+fi
+
+# Check combined verdict
+if grep -q "Combined Verdict" "$reviewer" 2>/dev/null; then
+  report "reviewer checklist has combined verdict" "true"
+else
+  report "reviewer checklist has combined verdict" "false"
+fi
+
+# Check rejection criteria
+if grep -q "Rejection Criteria" "$reviewer" 2>/dev/null; then
+  report "reviewer checklist has rejection criteria" "true"
+else
+  report "reviewer checklist has rejection criteria" "false"
+fi
+
+# Check reviewer signoff
+if grep -q "Reviewer Signoff" "$reviewer" 2>/dev/null; then
+  report "reviewer checklist has signoff block" "true"
+else
+  report "reviewer checklist has signoff block" "false"
+fi
+
+# Check artifact IDs referenced (C03-xx through C06-xx)
+artifact_refs=$(grep -oE 'C0[3-6]-[0-9]+' "$reviewer" 2>/dev/null | sort -u | wc -l | tr -d ' ')
+if [[ "$artifact_refs" -ge 10 ]]; then
+  report "reviewer checklist references >=10 artifact IDs" "true"
+else
+  report "reviewer checklist references >=10 artifact IDs" "false" "found $artifact_refs"
+fi
+
+# --- witness log checks ---
+
+if [[ -f "$witness" ]]; then
+  report "witness log template exists" "true"
+else
+  report "witness log template exists" "false" "missing $witness"
+fi
+
+# Check observation sections
+obs_count=$(grep -c "### Observation" "$witness" 2>/dev/null || true)
+if [[ "$obs_count" -ge 4 ]]; then
+  report "witness log has >=4 observation sections" "true"
+else
+  report "witness log has >=4 observation sections" "false" "found $obs_count"
+fi
+
+# Check rollup table
+if grep -q "## Rollup" "$witness" 2>/dev/null; then
+  report "witness log has rollup section" "true"
+else
+  report "witness log has rollup section" "false"
+fi
+
+# Check overall verdict
+if grep -q "Overall Verdict" "$witness" 2>/dev/null; then
+  report "witness log has overall verdict" "true"
+else
+  report "witness log has overall verdict" "false"
+fi
+
+# Check CORE-03 and CORE-04 signoff rows
+for core_ref in "CORE-03" "CORE-04"; do
+  if grep -q "$core_ref" "$witness" 2>/dev/null; then
+    report "witness log references $core_ref" "true"
+  else
+    report "witness log references $core_ref" "false"
+  fi
+done
+
+# Check source provenance fields
+if grep -q "Source provenance" "$witness" 2>/dev/null; then
+  report "witness log has source provenance fields" "true"
+else
+  report "witness log has source provenance fields" "false"
+fi
+
+# Check signoff block
+if grep -q "## Signoff" "$witness" 2>/dev/null; then
+  report "witness log has signoff block" "true"
+else
+  report "witness log has signoff block" "false"
+fi
+
+# Cross-doc: reviewer checklist references witness log
+if grep -q "lease-witness-log-template" "$reviewer" 2>/dev/null; then
+  report "reviewer checklist links to witness log" "true"
+else
+  report "reviewer checklist links to witness log" "false"
+fi
+
+# Cross-doc: witness log references lease schema test plan
+if grep -q "lease-schema-test-plan" "$witness" 2>/dev/null; then
+  report "witness log links to lease schema test plan" "true"
+else
+  report "witness log links to lease schema test plan" "false"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo
