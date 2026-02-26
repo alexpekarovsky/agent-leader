@@ -24,6 +24,7 @@ def _dry_run(
     manager_cli_timeout: int | None = None,
     worker_cli_timeout: int | None = None,
     log_dir: str | None = None,
+    project_root: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Invoke team_tmux.sh --dry-run with optional overrides."""
     cmd: list[str] = ["bash", TEAM_TMUX, "--dry-run"]
@@ -35,6 +36,8 @@ def _dry_run(
         cmd += ["--worker-cli-timeout", str(worker_cli_timeout)]
     if log_dir is not None:
         cmd += ["--log-dir", log_dir]
+    if project_root is not None:
+        cmd += ["--project-root", project_root]
     return subprocess.run(
         cmd,
         cwd=REPO_ROOT,
@@ -129,6 +132,64 @@ class TeamTmuxDryRunTests(unittest.TestCase):
             self.assertIn("tmux new-window", proc.stdout)
             self.assertIn("tmux select-layout", proc.stdout)
 
+    def test_monitor_command_present_in_dry_run(self) -> None:
+        """AL-CORE-24: dry-run output must include the monitor_loop command."""
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = _dry_run(log_dir=tmp)
+            lines = proc.stdout.splitlines()
+            monitor_lines = [l for l in lines if "monitor_loop" in l]
+            self.assertTrue(monitor_lines, "no monitor_loop line in dry-run output")
+
+    def test_monitor_interval_in_dry_run(self) -> None:
+        """AL-CORE-24: monitor command must include the fixed interval value (10)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = _dry_run(log_dir=tmp)
+            lines = proc.stdout.splitlines()
+            monitor_lines = [l for l in lines if "monitor_loop" in l]
+            self.assertTrue(monitor_lines, "no monitor_loop line in dry-run output")
+            # monitor_loop.sh is invoked as: monitor_loop.sh $PROJECT_Q 10
+            self.assertIn(" 10", monitor_lines[0])
+
+    def test_monitor_in_new_window_tmux_command(self) -> None:
+        """AL-CORE-24: monitor should be launched via tmux new-window."""
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = _dry_run(log_dir=tmp)
+            lines = proc.stdout.splitlines()
+            monitor_window_lines = [
+                l for l in lines
+                if "tmux new-window" in l and "monitor" in l
+            ]
+            self.assertTrue(
+                monitor_window_lines,
+                "no tmux new-window line containing 'monitor' found",
+            )
+
+    def test_custom_session_name_with_hyphens(self) -> None:
+        """AL-CORE-25: session names with hyphens must propagate correctly."""
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = _dry_run(session="my-test-session", log_dir=tmp)
+            self.assertEqual(0, proc.returncode)
+            self.assertIn("Session: my-test-session", proc.stdout)
+            self.assertIn("tmux new-session -d -s my-test-session", proc.stdout)
+
+    def test_custom_session_name_with_underscores(self) -> None:
+        """AL-CORE-25: session names with underscores must propagate correctly."""
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = _dry_run(session="my_test_session", log_dir=tmp)
+            self.assertEqual(0, proc.returncode)
+            self.assertIn("Session: my_test_session", proc.stdout)
+            self.assertIn("tmux new-session -d -s my_test_session", proc.stdout)
+
+    def test_custom_session_name_with_mixed_hyphens_underscores(self) -> None:
+        """AL-CORE-25: session names mixing hyphens and underscores."""
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = _dry_run(session="dev-team_alpha", log_dir=tmp)
+            self.assertEqual(0, proc.returncode)
+            self.assertIn("Session: dev-team_alpha", proc.stdout)
+            # Session name should appear in all tmux commands that reference it
+            self.assertIn("tmux new-session -d -s dev-team_alpha", proc.stdout)
+            self.assertIn("-t dev-team_alpha:", proc.stdout)
+
     def test_log_dir_propagated_to_loop_commands(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             proc = _dry_run(log_dir=tmp)
@@ -142,6 +203,76 @@ class TeamTmuxDryRunTests(unittest.TestCase):
             self.assertEqual(4, len(loop_lines), f"expected 4 loop commands, got {len(loop_lines)}")
             for ll in loop_lines:
                 self.assertIn(tmp, ll, f"log dir not in command: {ll}")
+
+
+class TeamTmuxDryRunSpacesTests(unittest.TestCase):
+    """AL-CORE-30: Stress tests with project-root containing spaces."""
+
+    def test_project_root_with_spaces_exits_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            spaced = Path(tmp) / "my project dir"
+            spaced.mkdir()
+            proc = _dry_run(project_root=str(spaced), log_dir=tmp)
+            self.assertEqual(0, proc.returncode)
+
+    def test_project_root_with_spaces_in_commands(self) -> None:
+        """All loop commands should contain the quoted project-root path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            spaced = Path(tmp) / "path with spaces"
+            spaced.mkdir()
+            proc = _dry_run(project_root=str(spaced), log_dir=tmp)
+            self.assertIn("Project root: " + str(spaced), proc.stdout)
+            lines = proc.stdout.splitlines()
+            loop_lines = [l for l in lines if "_loop" in l and "tmux" in l]
+            self.assertTrue(len(loop_lines) >= 4, f"expected >=4 loop commands, got {len(loop_lines)}")
+            for ll in loop_lines:
+                # The path should appear shell-quoted somewhere in the command
+                self.assertTrue(
+                    str(spaced) in ll or str(spaced).replace(" ", "\\ ") in ll
+                    or "path\\ with\\ spaces" in ll or "path with spaces" in ll,
+                    f"project root not found in: {ll}",
+                )
+
+    def test_combined_spaces_custom_session_and_log_dir(self) -> None:
+        """All three custom values should appear correctly in rendered output."""
+        with tempfile.TemporaryDirectory() as tmp:
+            spaced_proj = Path(tmp) / "my project"
+            spaced_proj.mkdir()
+            spaced_log = Path(tmp) / "my logs"
+            spaced_log.mkdir()
+            proc = _dry_run(
+                project_root=str(spaced_proj),
+                session="test-sess_01",
+                log_dir=str(spaced_log),
+            )
+            self.assertEqual(0, proc.returncode)
+            self.assertIn("Session: test-sess_01", proc.stdout)
+            self.assertIn("test-sess_01", proc.stdout)
+            # Log dir should appear in header
+            self.assertIn(str(spaced_log), proc.stdout)
+
+    def test_spaces_do_not_break_tmux_command_count(self) -> None:
+        """Should still emit 5 tmux commands even with spaced paths."""
+        with tempfile.TemporaryDirectory() as tmp:
+            spaced = Path(tmp) / "has spaces here"
+            spaced.mkdir()
+            proc = _dry_run(project_root=str(spaced), log_dir=tmp)
+            lines = proc.stdout.splitlines()
+            tmux_lines = [l for l in lines if l.strip().startswith("tmux ")]
+            # new-session, split-window x2, split-window, new-window, select-layout = 6
+            self.assertEqual(6, len(tmux_lines), f"expected 6 tmux commands, got {tmux_lines}")
+
+    def test_monitor_command_intact_with_spaced_project_root(self) -> None:
+        """Monitor command should contain the project root even with spaces."""
+        with tempfile.TemporaryDirectory() as tmp:
+            spaced = Path(tmp) / "spaced dir"
+            spaced.mkdir()
+            proc = _dry_run(project_root=str(spaced), log_dir=tmp)
+            lines = proc.stdout.splitlines()
+            monitor_lines = [l for l in lines if "monitor_loop" in l]
+            self.assertTrue(monitor_lines, "no monitor_loop line found")
+            # Should contain the project path and the interval
+            self.assertIn(" 10", monitor_lines[0])
 
 
 if __name__ == "__main__":
