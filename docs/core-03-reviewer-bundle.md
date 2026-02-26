@@ -373,7 +373,7 @@ _Record any unexpected behavior, edge cases, or warnings observed during the rev
 
 ## Appendix A: Example Acceptance Packet Layout
 
-Example of a completed CORE-03 acceptance packet directory structure using `[claude-multi-ai][AUTO-M1-CORE]` conventions:
+Example of a completed CORE-03 acceptance packet directory structure using `[claude-multi-ai][AUTO-M1-CORE-03]` conventions:
 
 ```
 evidence/
@@ -390,7 +390,7 @@ evidence/
 ```json
 {
   "id": "TASK-abc12345",
-  "title": "[claude-multi-ai][AUTO-M1-CORE] Implement lease schema",
+  "title": "[claude-multi-ai][AUTO-M1-CORE-03] Implement lease schema",
   "status": "in_progress",
   "owner": "claude_code",
   "lease": {
@@ -432,7 +432,7 @@ evidence/
 
 ## Appendix B: Tagging Conventions
 
-All CORE-03 artifacts follow `[claude-multi-ai][AUTO-M1-CORE]` conventions.
+All CORE-03 artifacts follow `[claude-multi-ai][AUTO-M1-CORE-03]` conventions.
 For session labeling, see [dual-cc-conventions.md](dual-cc-conventions.md).
 
 | Convention | Format | Example |
