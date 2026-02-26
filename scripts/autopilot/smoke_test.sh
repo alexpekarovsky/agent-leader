@@ -24,6 +24,7 @@
 #  17. Log retention tuning doc validation
 #  18. Limitations matrix roadmap references
 #  19. Dispatch telemetry schema validation
+#  20. Lease operator expectations doc validation
 #
 # Exit code 0 = all passed, non-zero = failure count.
 
@@ -1475,6 +1476,87 @@ if grep -q 'roadmap.md' "$dispatch_doc" || grep -q 'Phase D' "$dispatch_doc"; th
   report "doc references Phase D / roadmap" "true"
 else
   report "doc references Phase D / roadmap" "false"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 20: Lease operator expectations doc validation
+# ---------------------------------------------------------------------------
+echo
+echo "--- Test 20: lease operator expectations ---"
+
+lease_ops_doc="$ROOT_DIR/docs/lease-operator-expectations.md"
+
+if [[ -f "$lease_ops_doc" ]]; then
+  report "lease-operator-expectations.md exists" "true"
+else
+  report "lease-operator-expectations.md exists" "false" "file not found"
+fi
+
+# Validate AUTO-M1 task references
+task_ref_check=$(python3 - "$lease_ops_doc" <<'PYCHECK'
+import sys
+from pathlib import Path
+content = Path(sys.argv[1]).read_text(encoding="utf-8")
+required_refs = ["AUTO-M1-CORE-03", "AUTO-M1-CORE-04"]
+missing = [r for r in required_refs if r not in content]
+if missing:
+    print(f"MISSING:{','.join(missing)}")
+else:
+    print(f"OK:{len(required_refs)}")
+PYCHECK
+)
+if [[ "$task_ref_check" == OK:* ]]; then
+  report "doc references AUTO-M1-CORE-03/04 tasks" "true"
+else
+  report "doc references AUTO-M1-CORE-03/04 tasks" "false" "$task_ref_check"
+fi
+
+# Validate key lease terms from roadmap
+lease_term_check=$(python3 - "$lease_ops_doc" <<'PYCHECK'
+import sys
+from pathlib import Path
+content = Path(sys.argv[1]).read_text(encoding="utf-8").lower()
+terms = ["lease", "expiry", "requeue", "claim", "heartbeat"]
+missing = [t for t in terms if t not in content]
+if missing:
+    print(f"MISSING:{','.join(missing)}")
+else:
+    print(f"OK:{len(terms)}")
+PYCHECK
+)
+if [[ "$lease_term_check" == OK:* ]]; then
+  report "doc covers key lease terms" "true"
+else
+  report "doc covers key lease terms" "false" "$lease_term_check"
+fi
+
+# Validate before/after comparison table
+if grep -q 'Before leases' "$lease_ops_doc" && grep -q 'After leases' "$lease_ops_doc"; then
+  report "doc has before/after lease comparison" "true"
+else
+  report "doc has before/after lease comparison" "false"
+fi
+
+# Validate roadmap reference
+if grep -q 'roadmap.md' "$lease_ops_doc" || grep -q 'Phase C' "$lease_ops_doc"; then
+  report "doc references roadmap/Phase C" "true"
+else
+  report "doc references roadmap/Phase C" "false"
+fi
+
+# Validate recovery steps documented
+if grep -q 'reassign_stale_tasks\|orchestrator_list_tasks\|orchestrator_update_task_status' "$lease_ops_doc"; then
+  report "doc includes recovery commands" "true"
+else
+  report "doc includes recovery commands" "false"
+fi
+
+# Validate timeline table exists with task phases
+timeline_rows=$(grep -c '|.*|.*|.*|' "$lease_ops_doc" || true)
+if [[ "$timeline_rows" -ge 6 ]]; then
+  report "doc has timeline/status tables ($timeline_rows rows)" "true"
+else
+  report "doc has timeline/status tables" "false" "only $timeline_rows table rows"
 fi
 
 # ---------------------------------------------------------------------------
