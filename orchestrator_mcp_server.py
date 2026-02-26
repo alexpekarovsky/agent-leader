@@ -966,6 +966,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             tasks = ORCH.list_tasks()
             bugs = ORCH.list_bugs()
             agents = ORCH.list_agents(active_only=True)
+            agent_instances = ORCH.list_agent_instances(active_only=False)
             roles = ORCH.get_roles()
             live_status = _live_status_report({})
             by_status: Dict[str, int] = {}
@@ -990,6 +991,18 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                         "last_seen": agent.get("last_seen"),
                     }
                     for agent in agents
+                ],
+                "agent_instances": [
+                    {
+                        "agent_name": item.get("agent_name"),
+                        "instance_id": item.get("instance_id"),
+                        "role": item.get("role"),
+                        "status": item.get("status"),
+                        "project_root": item.get("project_root"),
+                        "current_task_id": item.get("current_task_id"),
+                        "last_seen": item.get("last_seen"),
+                    }
+                    for item in agent_instances
                 ],
                 "live_status_text": live_status.get("report_text", ""),
                 "live_status": live_status.get("report", {}),

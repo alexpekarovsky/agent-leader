@@ -552,6 +552,47 @@ class PresenceRefreshTests(unittest.TestCase):
             claude = next(item for item in agents if item.get("agent") == "claude_code")
             self.assertEqual("claude_code#worker-02", claude.get("instance_id"))
 
+    def test_list_agent_instances_supports_multiple_same_agent_family(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+
+            orch.connect_to_leader(
+                agent="claude_code",
+                metadata={
+                    **_team_metadata(root, "claude-code", "claude-opus", "team_member", "sid-a", "cid-a"),
+                    "instance_id": "claude_code#worker-01",
+                },
+                source="claude_code",
+            )
+            orch.heartbeat(
+                agent="claude_code",
+                metadata={
+                    "instance_id": "claude_code#worker-02",
+                    "client": "claude-code",
+                    "model": "claude-opus",
+                    "cwd": str(root),
+                    "project_root": str(root),
+                    "permissions_mode": "default",
+                    "sandbox_mode": "workspace-write",
+                    "session_id": "sid-b",
+                    "connection_id": "cid-b",
+                    "server_version": "0.1.0",
+                    "verification_source": "test",
+                    "role": "team_member",
+                },
+            )
+
+            instances = orch.list_agent_instances(active_only=False)
+            claude_instances = [i for i in instances if i.get("agent_name") == "claude_code"]
+            self.assertEqual(2, len(claude_instances))
+            self.assertEqual(
+                {"claude_code#worker-01", "claude_code#worker-02"},
+                {i.get("instance_id") for i in claude_instances},
+            )
+
 
 class WorkflowReliabilityTests(unittest.TestCase):
     def test_core_flow_reliable_across_five_runs(self) -> None:

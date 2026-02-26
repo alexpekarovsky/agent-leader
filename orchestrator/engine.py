@@ -37,6 +37,7 @@ class Orchestrator:
         self.cursors_path = self.state_dir / "event_cursors.json"
         self.acks_path = self.state_dir / "event_acks.json"
         self.agents_path = self.state_dir / "agents.json"
+        self.agent_instances_path = self.state_dir / "agent_instances.json"
         self.stale_notices_path = self.state_dir / "stale_notices.json"
         self.claim_overrides_path = self.state_dir / "claim_overrides.json"
         self.report_retry_queue_path = self.state_dir / "report_retry_queue.json"
@@ -76,6 +77,8 @@ class Orchestrator:
             self.acks_path.write_text("{}\n", encoding="utf-8")
         if not self.agents_path.exists():
             self.agents_path.write_text("{}\n", encoding="utf-8")
+        if not self.agent_instances_path.exists():
+            self.agent_instances_path.write_text("{}\n", encoding="utf-8")
         if not self.stale_notices_path.exists():
             self.stale_notices_path.write_text("{}\n", encoding="utf-8")
         if not self.claim_overrides_path.exists():
@@ -929,6 +932,7 @@ class Orchestrator:
             entry["last_seen"] = self._now()
             agents[agent] = entry
             self._write_json(self.agents_path, agents)
+            self._record_agent_instance_locked(agent=agent, entry=entry)
         self.bus.emit("agent.registered", {"agent": agent, "metadata": entry["metadata"]}, source=agent)
         return entry
 
@@ -951,6 +955,7 @@ class Orchestrator:
             entry["last_seen"] = self._now()
             agents[agent] = entry
             self._write_json(self.agents_path, agents)
+            self._record_agent_instance_locked(agent=agent, entry=entry)
         self.bus.emit("agent.heartbeat", {"agent": agent}, source=agent)
         return entry
 
@@ -1107,6 +1112,48 @@ class Orchestrator:
         if stale_changed:
             self._write_json(self.stale_notices_path, stale_notices)
         results.sort(key=lambda x: x.get("agent", ""))
+        return results
+
+    def list_agent_instances(
+        self,
+        active_only: bool = False,
+        stale_after_seconds: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        stale_after = stale_after_seconds if stale_after_seconds is not None else self._heartbeat_timeout_seconds()
+        instances = self._read_json(self.agent_instances_path)
+        if not isinstance(instances, dict):
+            return []
+        now = datetime.now(timezone.utc)
+        results: List[Dict[str, Any]] = []
+
+        for _, raw in instances.items():
+            if not isinstance(raw, dict):
+                continue
+            item = dict(raw)
+            entry = {
+                "agent": item.get("agent"),
+                "metadata": item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {},
+                "last_seen": item.get("last_seen"),
+                "status": item.get("status", "unknown"),
+            }
+            identity = self._identity_snapshot(entry=entry, stale_after_seconds=stale_after)
+            age = self._age_seconds(str(item.get("last_seen")), now=now) if item.get("last_seen") else None
+            computed_status = "active" if age is not None and age <= stale_after else "offline"
+            if not bool(identity.get("same_project")):
+                computed_status = "offline"
+            item["status"] = computed_status
+            item["age_seconds"] = age
+            item["identity"] = identity
+            item["instance_id"] = identity.get("instance_id")
+            item["agent_name"] = item.get("agent")
+            item["role"] = str(item.get("metadata", {}).get("role", "")).strip().lower() or None
+            item["project_root"] = identity.get("project_root")
+            item["current_task_id"] = item.get("metadata", {}).get("current_task_id")
+            if active_only and computed_status != "active":
+                continue
+            results.append(item)
+
+        results.sort(key=lambda x: (str(x.get("agent_name", "")), str(x.get("instance_id", ""))))
         return results
 
     def discover_agents(self, active_only: bool = False, stale_after_seconds: Optional[int] = None) -> Dict[str, Any]:
@@ -1534,6 +1581,27 @@ class Orchestrator:
                 instance_id = f"{agent}#default"
         merged["instance_id"] = instance_id
         return merged
+
+    def _instance_record_key(self, agent: str, instance_id: str) -> str:
+        return f"{agent}::{instance_id}"
+
+    def _record_agent_instance_locked(self, agent: str, entry: Dict[str, Any]) -> None:
+        instances = self._read_json(self.agent_instances_path)
+        if not isinstance(instances, dict):
+            instances = {}
+        metadata = entry.get("metadata", {}) if isinstance(entry.get("metadata"), dict) else {}
+        normalized = self._normalize_agent_metadata(agent=agent, metadata=metadata)
+        instance_id = str(normalized.get("instance_id", "")).strip() or f"{agent}#default"
+        key = self._instance_record_key(agent=agent, instance_id=instance_id)
+        instances[key] = {
+            "agent": agent,
+            "instance_id": instance_id,
+            "metadata": normalized,
+            "status": entry.get("status", "active"),
+            "last_seen": entry.get("last_seen", self._now()),
+            "updated_at": self._now(),
+        }
+        self._write_json(self.agent_instances_path, instances)
 
     def _verification_for_entry(self, entry: Dict[str, Any], stale_after_seconds: int) -> Dict[str, Any]:
         metadata = entry.get("metadata", {}) if isinstance(entry, dict) else {}
