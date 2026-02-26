@@ -1,128 +1,76 @@
-# CORE-05/06 Telemetry/No-Op Acceptance Witness Log
+# CORE-05/06 Witness Log Template
 
-Witness log for recording telemetry and no-op acceptance observations
-in real time during verification runs.
+Timestamped log for telemetry/noop acceptance observation.
 
-## Session info
-
-```
-Witness: _______________
-Date: _______________
-Test environment: [local | staging]
-```
-
-## Event log
-
-Record each observed event as it happens:
-
-| # | Time (HH:MM:SS) | Event type | Correlation ID | Source agent | Task ID | Notes |
-|---|-----------------|------------|----------------|-------------|---------|-------|
-| 1 | | `dispatch.command` | | | | |
-| 2 | | `dispatch.ack` | | | | |
-| 3 | | `worker.result` | | | | |
-| 4 | | `dispatch.noop` | | | | |
-| 5 | | | | | | |
-
-## Command path witness
-
-### Dispatch command observed
-
-```json
-[paste raw event]
-```
-
-- Correlation ID: `_______________`
-- Task ID: `_______________`
-- Target agent: `_______________`
-- Timestamp: `_______________`
-
-### Ack observed
-
-```json
-[paste raw event]
-```
-
-- Correlation ID matches command: YES / NO
-- Latency (command to ack): _____ ms
-
-### Result observed
-
-```json
-[paste raw event]
-```
-
-- Correlation ID matches command: YES / NO
-- Latency (ack to result): _____ s
-
-## No-op/timeout path witness
-
-### Timeout trigger setup
+## Metadata
 
 ```
-Method: [stopped worker | no worker connected | artificial delay]
-Expected timeout window: _____ ms
+Observer: _______________
+Date:     _______________
+Commit:   _______________
 ```
 
-### No-op observed
-
-```json
-[paste raw dispatch.noop event]
-```
-
-- Correlation ID: `_______________`
-- Reason field value: `_______________`
-- Actual wait before noop: _____ ms
-- Task state after noop: `_______________` (should be unchanged)
-
-### Timeout escalation
-
-| Escalation step | Observed? | Details |
-|-----------------|-----------|---------|
-| Manager retry | | |
-| Manager reassign | | |
-| Blocker raised | | |
-| Noop count incremented | | |
-
-## Correlation chain summary
-
-| Chain # | Correlation ID | command? | ack? | result/noop? | Complete? |
-|---------|---------------|----------|------|--------------|-----------|
-| 1 | | | | | |
-| 2 | | | | | |
-| 3 | | | | | |
-
-## Timing summary
-
-| Metric | Value |
-|--------|-------|
-| Avg command-to-ack latency | |
-| Avg ack-to-result latency | |
-| Timeout-to-noop latency | |
-| Total chains observed | |
-| Complete chains | |
-| Orphaned commands | |
-
-## CORE-05/06 signoff
-
-| Check | Pass/Fail |
-|-------|-----------|
-| dispatch.command events visible | |
-| dispatch.ack events with matching correlation | |
-| worker.result events with matching correlation | |
-| dispatch.noop events on timeout | |
-| Noop includes reason field | |
-| No task state change on noop | |
-| Audit log has all events | |
-| Timestamps monotonically increasing | |
+## Log format
 
 ```
-Witness: _______________
-Verdict: PASS / FAIL
-Date: _______________
+[TIME] EVENT_TYPE | source=X | correlation_id=Y | details
+```
+
+## Witness log
+
+Copy and fill rows as events occur:
+
+```
+[__:__:__.___] dispatch.command  | source=codex        | correlation_id=________ | task_id=________ target=claude_code
+[__:__:__.___] dispatch.ack      | source=claude_code   | correlation_id=________ | status=accepted task_id=________
+[__:__:__.___] worker.result     | source=claude_code   | correlation_id=________ | task_id=________ status=done
+[__:__:__.___] dispatch.result   | source=codex        | correlation_id=________ | validated=true
+[__:__:__.___] dispatch.command  | source=codex        | correlation_id=________ | task_id=________ target=claude_code
+[__:__:__.___] dispatch.noop     | source=watchdog     | correlation_id=________ | reason=ack_timeout elapsed_ms=________
+```
+
+## Timing measurements
+
+| From event          | To event            | elapsed_ms | Within budget? |
+|---------------------|---------------------|------------|----------------|
+| dispatch.command    | dispatch.ack        |            | YES / NO       |
+| dispatch.ack        | worker.result       |            | YES / NO       |
+| dispatch.command    | dispatch.noop       |            | YES / NO       |
+| worker.result       | dispatch.result     |            | YES / NO       |
+
+## Noop observation
+
+| Field             | Value |
+|-------------------|-------|
+| Trigger scenario  |       |
+| Noop reason       |       |
+| Timeout configured|       |
+| Actual elapsed_ms |       |
+| Worker state      |       |
+
+## Chain completeness
+
+| Correlation ID | command | ack | result/noop | Complete? |
+|----------------|---------|-----|-------------|-----------|
+|                | Y/N     | Y/N | Y/N         | YES / NO  |
+|                | Y/N     | Y/N | Y/N         | YES / NO  |
+
+## Anomalies
+
+| # | Time  | Description | Severity |
+|---|-------|-------------|----------|
+| 1 |       |             | low/med/high |
+
+## Signoff
+
+```
+Observer: _______________
+Date:     _______________
+Verdict:  PASS / FAIL
 ```
 
 ## References
 
-- [core-05-06-telemetry-verification.md](core-05-06-telemetry-verification.md) -- Verification checklist
-- [core-05-06-evidence-template.md](core-05-06-evidence-template.md) -- Evidence capture template
-- [dispatch-telemetry-schema.md](dispatch-telemetry-schema.md) -- Event schema
+- [core-05-06-telemetry-verification-checklist.md](core-05-06-telemetry-verification-checklist.md)
+- [core-05-06-evidence-template.md](core-05-06-evidence-template.md)
+- [dispatch-telemetry-schema.md](dispatch-telemetry-schema.md)

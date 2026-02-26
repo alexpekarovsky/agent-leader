@@ -1,124 +1,89 @@
-# CORE-06 No-Op Timeout Edge Cases Addendum
+# CORE-06 No-Op Timeout Edge Cases
 
-Additional edge-case coverage for CORE-05/06 operator verification
-focusing on no-op diagnostics under unusual conditions.
+Addendum covering edge cases beyond the standard ack-timeout path.
 
-## Edge case 1: No active worker connected
+## Edge case 1: No active worker
 
-### Setup
+**Scenario:** Manager emits `dispatch.command` but no worker is connected.
 
-No worker is connected when manager dispatches a task.
+**Expected:** `dispatch.noop` with `reason: "no_active_worker"` after timeout.
 
-### Expected behavior
+**Verification:**
+```
+# 1. Stop all workers
+# 2. Trigger manager cycle
+orchestrator_manager_cycle()
+# 3. Poll for noop
+orchestrator_poll_events(agent="codex", timeout_ms=5000)
+```
 
-| Step | Expected | Verification |
-|------|----------|--------------|
-| Manager dispatches | `dispatch.command` event emitted | Check event bus |
-| Timeout window expires | `dispatch.noop` with `reason: "ack_timeout"` | Check event bus |
-| Task state | Unchanged (still `assigned` or `in_progress`) | `list_tasks` |
-| Manager reaction | May retry or raise blocker | Check audit log |
+**Evidence:**
+```json
+PASTE_NOOP_EVENT_HERE
+```
 
-### Witness checklist
+| Check                              | P/F |
+|------------------------------------|-----|
+| `dispatch.command` emitted         |     |
+| No `dispatch.ack` received         |     |
+| `dispatch.noop` with `no_active_worker` |  |
 
-- [ ] `dispatch.noop` emitted (not stuck waiting forever)
-- [ ] Correlation ID present in noop
-- [ ] Reason is `ack_timeout` (not `worker_error` or other)
-- [ ] No phantom ack appears later
-- [ ] Manager does not crash or hang
+## Edge case 2: Duplicate claim race
 
-## Edge case 2: Duplicate-claim risk during noop window
+**Scenario:** Two workers both attempt to ack the same `dispatch.command`.
 
-### Setup
+**Expected:** Only one `dispatch.ack` succeeds; other gets rejected or a different command.
 
-Two workers connected. Manager dispatches to worker A, but worker A
-is slow to ack. Worker B may attempt to claim the same task.
+**Verification:**
+```
+# 1. Start two workers
+# 2. Dispatch single command
+orchestrator_manager_cycle()
+# 3. Check audit log for duplicate ack attempts
+orchestrator_list_audit_logs(limit=10)
+```
 
-### Expected behavior
+**Evidence:**
+```json
+PASTE_AUDIT_ENTRIES_HERE
+```
 
-| Step | Expected | Verification |
-|------|----------|--------------|
-| Dispatch to worker A | `dispatch.command` event | Event bus |
-| Worker A slow/no ack | `dispatch.noop` after timeout | Event bus |
-| Worker B claims same task | Should succeed only if task reassigned | Audit log |
-| Duplicate claim guard | At most one active lease | `list_tasks` |
+| Check                              | P/F |
+|------------------------------------|-----|
+| Exactly one `dispatch.ack` for the correlation_id |  |
+| Second worker got different command or rejection   |  |
+| No task claimed by both workers    |     |
 
-### Witness checklist
+## Edge case 3: Worker crashes mid-task
 
-- [ ] Only one worker holds the task at any time
-- [ ] Noop does not automatically reassign (advisory only)
-- [ ] Manager explicitly reassigns before worker B can claim
-- [ ] No duplicate `in_progress` entries for same task
+**Scenario:** Worker sends `dispatch.ack` but crashes before producing a result.
 
-## Edge case 3: Worker acks after noop already emitted
+**Expected:** `dispatch.noop` with `reason: "worker_timeout"` after result timeout.
 
-### Setup
+**Verification:**
+```
+# 1. Worker acks command, then kill worker process
+# 2. Wait for result timeout
+# 3. Check event bus and watchdog
+orchestrator_poll_events(agent="codex", timeout_ms=5000)
+```
 
-Manager emits noop, then worker belatedly sends ack.
+**Evidence:** `PASTE_NOOP_EVENT` | **Watchdog:** `PASTE_STALE_TASK_ENTRY`
 
-### Expected behavior
+| Check | P/F |
+|-------|-----|
+| `dispatch.ack` received initially, no `worker.result` within timeout | |
+| `dispatch.noop` with `worker_timeout` | |
+| Watchdog `stale_task` event emitted | |
 
-| Step | Expected | Verification |
-|------|----------|--------------|
-| Noop emitted | `dispatch.noop` in event log | Event bus |
-| Late ack arrives | `dispatch.ack` also in event log | Event bus |
-| Manager sees both | Should prefer ack and cancel noop reaction | Audit log |
-| Task state | Proceeds normally if ack is valid | `list_tasks` |
+## Summary
 
-### Witness checklist
-
-- [ ] Both noop and late ack visible in event log
-- [ ] Manager handles late ack gracefully (no error)
-- [ ] Task is not double-processed
-- [ ] Correlation IDs match across all three events
-
-## Edge case 4: Rapid successive dispatches with mixed ack/noop
-
-### Setup
-
-Manager dispatches 3 tasks rapidly. Task A gets ack, task B times out
-(noop), task C gets ack.
-
-### Expected behavior
-
-| Task | Expected events | Correlation ID unique? |
-|------|----------------|----------------------|
-| A | command + ack + result | Yes |
-| B | command + noop | Yes |
-| C | command + ack + result | Yes |
-
-### Witness checklist
-
-- [ ] Each task has its own correlation ID
-- [ ] Noop for task B does not interfere with A or C
-- [ ] All correlation chains are complete (no orphans)
-- [ ] Event ordering is correct per correlation chain
-
-## Edge case 5: Manager restart during noop window
-
-### Setup
-
-Manager crashes and restarts while waiting for ack.
-
-### Expected behavior
-
-- [ ] Restarted manager does not re-emit the same dispatch.command
-- [ ] Previous noop timer is effectively cancelled (or fires harmlessly)
-- [ ] Task state is consistent after restart
-- [ ] No duplicate correlation IDs from pre/post restart
-
-## Telemetry/noop witness log mapping
-
-| Edge case | Witness log field | What to record |
-|-----------|-------------------|----------------|
-| No worker | Noop observed section | Noop event + reason |
-| Duplicate risk | Correlation chain summary | Both workers' events |
-| Late ack | Event log table | Noop + late ack timestamps |
-| Rapid dispatch | Correlation chain summary | All 3 chains |
-| Manager restart | Timing summary | Pre/post restart events |
+| Edge case | Result | | Edge case | Result |
+|-----------|--------|-|-----------|--------|
+| 1 No active worker | PASS / FAIL | | 3 Worker crash mid-task | PASS / FAIL |
+| 2 Duplicate claim race | PASS / FAIL | | | |
 
 ## References
 
-- [core-05-06-telemetry-verification.md](core-05-06-telemetry-verification.md) -- Base checklist
-- [core-05-06-witness-log-template.md](core-05-06-witness-log-template.md) -- Witness log
-- [supervisor-known-limitations.md](supervisor-known-limitations.md) -- Dispatch ack gap
-- [duplicate-claim-playbook.md](duplicate-claim-playbook.md) -- Collision response
+- [core-05-06-telemetry-verification-checklist.md](core-05-06-telemetry-verification-checklist.md)
+- [supervisor-known-limitations.md](supervisor-known-limitations.md)
