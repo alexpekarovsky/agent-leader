@@ -22,6 +22,7 @@
 #  15. tmux pane cheatsheet command validation
 #  16. Submit report response doc validation
 #  17. Log retention tuning doc validation
+#  18. Limitations matrix roadmap references
 #
 # Exit code 0 = all passed, non-zero = failure count.
 
@@ -1297,6 +1298,88 @@ if [[ "$defaults_check" == OK:* ]]; then
   report "doc defaults match script values" "true"
 else
   report "doc defaults match script values" "false" "$defaults_check"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 18: Limitations matrix roadmap references
+# ---------------------------------------------------------------------------
+echo
+echo "--- Test 18: limitations matrix roadmap refs ---"
+
+limits_doc="$ROOT_DIR/docs/current-limitations-matrix.md"
+roadmap_doc="$ROOT_DIR/docs/roadmap.md"
+
+if [[ -f "$limits_doc" ]]; then
+  report "current-limitations-matrix.md exists" "true"
+else
+  report "current-limitations-matrix.md exists" "false"
+fi
+
+# Validate Phase references match roadmap
+phase_check=$(python3 - "$limits_doc" "$roadmap_doc" <<'PYCHECK'
+import re, sys
+from pathlib import Path
+
+limits = Path(sys.argv[1]).read_text(encoding="utf-8")
+roadmap = Path(sys.argv[2]).read_text(encoding="utf-8")
+
+# Extract phase refs from limitations doc
+phases_in_limits = set(re.findall(r'Phase [A-D]', limits))
+
+# Check each referenced phase exists in roadmap
+missing = []
+for phase in sorted(phases_in_limits):
+    if phase not in roadmap:
+        missing.append(phase)
+
+if missing:
+    print(f"MISSING:{','.join(missing)}")
+else:
+    print(f"OK:{len(phases_in_limits)} phases verified")
+PYCHECK
+)
+if [[ "$phase_check" == OK:* ]]; then
+  report "phase references match roadmap ($phase_check)" "true"
+else
+  report "phase references match roadmap" "false" "$phase_check"
+fi
+
+# Validate key roadmap terms appear in both docs
+term_check=$(python3 - "$limits_doc" "$roadmap_doc" <<'PYCHECK'
+import sys
+from pathlib import Path
+
+limits = Path(sys.argv[1]).read_text(encoding="utf-8").lower()
+roadmap = Path(sys.argv[2]).read_text(encoding="utf-8").lower()
+
+terms = ["instance_id", "lease", "dispatch"]
+in_both = []
+missing_from_limits = []
+
+for term in terms:
+    if term in limits and term in roadmap:
+        in_both.append(term)
+    elif term not in limits:
+        missing_from_limits.append(term)
+
+if missing_from_limits:
+    print(f"MISSING:{','.join(missing_from_limits)}")
+else:
+    print(f"OK:{len(in_both)} terms consistent")
+PYCHECK
+)
+if [[ "$term_check" == OK:* ]]; then
+  report "key roadmap terms present in matrix" "true"
+else
+  report "key roadmap terms present in matrix" "false" "$term_check"
+fi
+
+# Validate table format (has | separators)
+table_rows=$(grep -c '|.*|.*|.*|' "$limits_doc" || true)
+if [[ "$table_rows" -ge 10 ]]; then
+  report "matrix uses table format ($table_rows rows)" "true"
+else
+  report "matrix uses table format" "false" "only $table_rows table rows"
 fi
 
 # ---------------------------------------------------------------------------
