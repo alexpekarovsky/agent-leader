@@ -1082,7 +1082,7 @@ class AutopilotTimeoutBehaviorTests(unittest.TestCase):
                 timeout=15,
             )
 
-            self.assertEqual(0, proc.returncode)
+            self.assertNotEqual(0, proc.returncode)
             self.assertIn("manager cycle timed out after 1s", proc.stderr)
             logs = list(logs_dir.glob("manager-codex-*.log"))
             self.assertEqual(1, len(logs))
