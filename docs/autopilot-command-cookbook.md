@@ -99,11 +99,45 @@ python3 -m unittest tests.test_team_tmux_dryrun -v
 ## Supervisor (alternative to tmux)
 
 ```bash
+# Full team: start all processes (manager + claude + gemini + watchdog)
+./scripts/autopilot/supervisor.sh start
+
 # Check supervisor status
 ./scripts/autopilot/supervisor.sh status
 
-# See supervisor help
-./scripts/autopilot/supervisor.sh --help
+# Stop all processes
+./scripts/autopilot/supervisor.sh stop
+
+# Clean up stale PIDs and supervisor logs
+./scripts/autopilot/supervisor.sh clean
+```
+
+## Supervisor startup profiles
+
+The supervisor always starts all 4 processes.  For reduced profiles,
+run individual loops directly:
+
+```bash
+# Profile: docs-only (manager + one claude worker + watchdog)
+./scripts/autopilot/manager_loop.sh \
+  --cli codex --cli-timeout 300 --log-dir .autopilot-logs &
+./scripts/autopilot/worker_loop.sh \
+  --cli claude --agent claude_code --cli-timeout 600 --log-dir .autopilot-logs &
+./scripts/autopilot/watchdog_loop.sh \
+  --log-dir .autopilot-logs &
+
+# Profile: smoke-only (manager + watchdog, no workers)
+./scripts/autopilot/manager_loop.sh \
+  --cli codex --cli-timeout 120 --log-dir .autopilot-logs &
+./scripts/autopilot/watchdog_loop.sh \
+  --log-dir .autopilot-logs &
+
+# Profile: full team via supervisor (all 4 processes)
+./scripts/autopilot/supervisor.sh start
+
+# Profile: full team with custom timeouts
+./scripts/autopilot/supervisor.sh start \
+  --manager-cli-timeout 120 --worker-cli-timeout 300
 ```
 
 ## References
@@ -112,3 +146,4 @@ python3 -m unittest tests.test_team_tmux_dryrun -v
 - [operator-runbook.md](operator-runbook.md) — Detailed operational procedures
 - [tmux-pane-cheatsheet.md](tmux-pane-cheatsheet.md) — Pane index reference
 - [troubleshooting-autopilot.md](troubleshooting-autopilot.md) — Common issues
+- [supervisor-cli-spec.md](supervisor-cli-spec.md) — Supervisor command reference
