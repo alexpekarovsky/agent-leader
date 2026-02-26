@@ -31,6 +31,8 @@ These show what completed evidence looks like for reviewer reference:
 |---|-------------|-------------------|------------|-----------|--------|
 | 1 | Watchdog emits: `{"type":"task.lease_expired","payload":{"task_id":"TASK-abc123","lease_id":"lease-7f3a","elapsed_seconds":605}}` | `evidence/core-04/watchdog-expiry.jsonl` — JSONL with `lease_expired` entry | `grep lease_expired watchdog-expiry.jsonl` returns 1+ rows | Verified: schema has task_id, lease_id, elapsed_seconds | DONE |
 | 2 | `list_tasks` shows: `{"id":"TASK-abc123","status":"assigned","attempt_index":2}` | `evidence/core-04/requeue.json` — before/after snapshots | Before: `in_progress`, After: `assigned`, attempt_index incremented | Captured diff, verified transition | DONE |
+| 3 | `list_tasks` shows: `{"id":"TASK-abc123","status":"blocked","attempt_index":4}` | `evidence/core-04/blocked-task.json` — task record after max retries | `attempt_index` (4) > `max_lease_retries` (3) and status is `blocked` | Captured, verified attempt_index exceeds threshold | DONE |
+| 4 | `list_blockers` returns: `{"id":"BLK-abc123","task_id":"TASK-abc123","reason":"lease_expiry_max_retries","severity":"high"}` | `evidence/core-04/auto-blocker.json` — blocker record | Blocker references lease expiry with matching task_id | Captured, verified reason field and task_id | DONE |
 | 5 | `list_tasks` after report: `{"id":"TASK-abc123","status":"reported","lease":null}` | `evidence/core-04/post-report.json` — task record after submit_report | Lease fields absent or null in task record | Captured, verified lease cleared | DONE |
 
 ### CORE-04 Unblock Conditions
@@ -72,6 +74,7 @@ all above complete              ───>  C04-06 reconciliation
 |---|-------------|-------------------|------------|-----------|--------|
 | 1 | Manager emits: `{"type":"dispatch.command","payload":{"correlation_id":"corr-9a2b","task_id":"TASK-def456","target_agent":"claude_code","timeout_seconds":30}}` | `evidence/core-05/dispatch-command.json` | Event has correlation_id, task_id, target_agent | Verified: all fields present, schema matches [dispatch-telemetry-schema.md](dispatch-telemetry-schema.md) | DONE |
 | 2 | Worker emits: `{"type":"dispatch.ack","payload":{"correlation_id":"corr-9a2b","source":"claude_code","status":"accepted","task_id":"TASK-def456"}}` | `evidence/core-05/dispatch-ack.json` | correlation_id matches command | Verified: correlation chain command→ack intact | DONE |
+| 3 | Worker emits: `{"type":"worker.result","payload":{"correlation_id":"corr-9a2b","source":"claude_code","task_id":"TASK-def456","outcome":"success","duration_seconds":12}}` | `evidence/core-05/worker-result.json` | correlation_id matches command and ack | Verified: full chain command→ack→result with matching correlation_id | DONE |
 | 4 | Audit log: `[{"tool":"dispatch","status":"ok","correlation_id":"corr-9a2b","events":["command","ack","result"]}]` | `evidence/core-05/audit-dispatch.json` | All 3 events in chronological order | Verified: timestamps monotonic, no gaps | DONE |
 
 ### CORE-05 Unblock Conditions
@@ -111,8 +114,10 @@ all three + audit logging       ───>  C05-04, C05-05
 
 | # | Codex Output | Evidence Artifact | Checkpoint | CC Action | Status |
 |---|-------------|-------------------|------------|-----------|--------|
-| 1 | Manager emits: `{"type":"dispatch.noop","payload":{"correlation_id":"corr-9a2b","reason":"ack_timeout","target":"claude_code","elapsed_seconds":31}}` | `evidence/core-06/dispatch-noop.json` | Event has reason, correlation_id, elapsed_seconds | Verified: reason is `ack_timeout`, correlation matches command | DONE |
+| 1 | Manager emits: `{"type":"dispatch.noop","payload":{"correlation_id":"corr-f1d2","reason":"ack_timeout","target":"claude_code","elapsed_seconds":31}}` | `evidence/core-06/dispatch-noop.json` | Event has reason, correlation_id, elapsed_seconds | Verified: reason is `ack_timeout`, correlation matches command | DONE |
+| 2 | Correlation capture: command `corr-f1d2` → noop `corr-f1d2` (same ID, timeout after 31s) | `evidence/core-06/noop-chain.md` — correlation chain doc | command and noop share `correlation_id`, timestamps show noop after timeout | Verified: chain intact, elapsed_seconds matches timeout config | DONE |
 | 3 | Timeout matrix filled with 3 scenarios: (a) ack_timeout — worker not running, (b) no_available_worker — no agents registered, (c) result_timeout — worker acked but crashed | `evidence/core-06/timeout-matrix.md` | At least 3 distinct timeout scenarios observed | Filled matrix rows, each with correlation chain | DONE |
+| 4 | Edge cases: (a) noop emitted twice for same command — dedup check, (b) noop after partial ack — ack received but worker crashed, (c) noop with zero-length timeout — config edge | `evidence/core-06/edge-cases.md` | At least 3 edge cases exercised or documented as "validated by design" | Filled results, each with expected vs actual behavior | DONE |
 
 ### CORE-06 Unblock Conditions
 
@@ -129,7 +134,7 @@ all above + live session        ───>  C06-05 witness log
 | Deliverable | Engine method/config | Test coverage needed |
 |------------|---------------------|---------------------|
 | `dispatch.noop` event | Manager emits when dispatch times out or no worker | Event schema test |
-| `reason` field enum | Defined values: `no_available_worker`, `timeout`, `empty_queue` | Reason field validation |
+| `reason` field enum | Defined values: `ack_timeout`, `no_available_worker`, `result_timeout` | Reason field validation |
 | `correlation_id` in noop | Links noop to the triggering dispatch command | Correlation chain test |
 | Timeout configuration | `dispatch_timeout_seconds` in policy or config | Config read test |
 
@@ -195,6 +200,7 @@ For each CORE task row, the reviewer should expect one of two outcomes. Use thes
 | C04-03: Max retries block | Task status becomes `blocked` when `attempt_index` > `max_lease_retries` | Task keeps re-assigning past max retries without blocking | Verify `max_lease_retries` config (default: 3); check engine logic for attempt_index threshold |
 | C04-04: Auto-blocker | `list_blockers` returns blocker with `source_task` matching expired task | No blocker raised after max retries exceeded | Manually verify `raise_blocker` is called from expiry path; check `test_blocker_lifecycle.py` passes |
 | C04-05: Lease clear on report | After `submit_report`, task record has `lease: null` | Lease fields persist after report | Verify `ingest_report` clears lease; file bug against engine if not |
+| C04-06: Reconciliation | All C04-01..05 artifacts collected, cross-checked across status API, audit log, and event bus | One or more C04-0x artifacts still missing or status API disagrees with bus | Complete whichever artifacts are ready; mark incomplete ones with "`PENDING: [reason]`" in reconciliation table; do not sign off until all 5 are present and three-source check passes |
 
 ### CORE-05 Path Examples
 
@@ -204,6 +210,7 @@ For each CORE task row, the reviewer should expect one of two outcomes. Use thes
 | C05-02: dispatch.ack | Worker emits ack with `correlation_id` matching command | Worker claims task but no ack event emitted | Verify worker claim path calls `bus.emit("dispatch.ack", ...)`; check correlation_id is passed through |
 | C05-03: worker.result | Completion emits result with `correlation_id` and outcome | Report submitted but no `worker.result` event | Verify `ingest_report` or worker loop emits result event; stub with manual `publish_event` if needed |
 | C05-04: Audit chain | Audit log contains command, ack, and result with matching correlation_id | Audit entries missing or out of order | Run `test_audit_log.py` to verify audit read/write; check `append_audit` is called for dispatch events |
+| C05-05: Schema validation | All C05-01..04 collected, each event matches [dispatch-telemetry-schema.md](dispatch-telemetry-schema.md) | One or more events fail schema check (missing field, wrong type) | File bug with field name and expected type; patch schema doc if the event is correct but schema is outdated |
 
 ### CORE-06 Path Examples
 
@@ -213,6 +220,7 @@ For each CORE task row, the reviewer should expect one of two outcomes. Use thes
 | C06-02: Noop chain | Correlation capture shows command → noop link with matching IDs | Noop event has different or missing correlation_id | Verify correlation_id is threaded from command to noop in timeout handler |
 | C06-03: Timeout matrix | At least 3 timeout scenarios observed (ack_timeout, no_available_worker, result_timeout) | Only 1-2 scenarios reproducible | Document which scenarios were observed; mark missing scenarios as "not yet observable" with justification |
 | C06-04: Edge cases | All 3 edge cases from [core-06-noop-edge-cases.md](core-06-noop-edge-cases.md) exercised | Edge case scenario not reproducible in test environment | Pre-fill expected outcomes in template; mark as "validated by design" with code review reference |
+| C06-05: Witness log | All observations from C06-01..04 signed by observer with timestamp and session ID | Observer unable to reproduce noop in live session | Use evidence from automated tests (with commit hash) as substitute; note "witness: automated test" in the log and require human co-sign on next live session |
 
 ---
 
