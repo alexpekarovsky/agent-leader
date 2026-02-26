@@ -95,7 +95,7 @@ Command: `orchestrator_claim_next_task(agent="claude_code")`
   "owner": "claude_code",
   "status": "in_progress",
   "lease": {
-    "lease_id": "LEASE-e5f6a7b8",
+    "lease_id": "lease-e5f6a7b8",
     "task_id": "TASK-a1b2c3d4",
     "owner_instance_id": "claude_code#sess-cc-001",
     "claimed_at": "2026-02-26T10:00:00+00:00",
@@ -119,7 +119,7 @@ Command: `orchestrator_list_tasks(status="in_progress")`
     "status": "in_progress",
     "owner": "claude_code",
     "lease": {
-      "lease_id": "LEASE-e5f6a7b8",
+      "lease_id": "lease-e5f6a7b8",
       "task_id": "TASK-a1b2c3d4",
       "owner_instance_id": "claude_code#sess-cc-001",
       "claimed_at": "2026-02-26T10:00:00+00:00",
@@ -146,7 +146,7 @@ Command: `orchestrator_list_audit_logs(tool="orchestrator_claim_next_task", limi
   "payload": {
     "task_id": "TASK-a1b2c3d4",
     "owner": "claude_code",
-    "lease_id": "LEASE-e5f6a7b8"
+    "lease_id": "lease-e5f6a7b8"
   }
 }
 ```
@@ -278,19 +278,19 @@ When sources disagree, use this priority:
 **Status API:**
 ```json
 // EXAMPLE — paste actual list_tasks output for mismatched row
-{"id": "TASK-a1b2c3d4", "lease": {"lease_id": "LEASE-e5f6a7b8", "claimed_at": "..."}}
+{"id": "TASK-a1b2c3d4", "lease": {"lease_id": "lease-e5f6a7b8", "claimed_at": "..."}}
 ```
 
 **Audit log:**
 ```json
 // EXAMPLE — paste actual audit entry for mismatched row
-{"entry_id": "AUD-001", "event": "task.claimed", "payload": {"lease_id": "LEASE-e5f6a7b8"}}
+{"entry_id": "AUD-001", "event": "task.claimed", "payload": {"lease_id": "lease-e5f6a7b8"}}
 ```
 
 **Event bus:**
 ```json
 // EXAMPLE — paste actual event for mismatched row
-{"event_id": "EVT-xyz", "type": "task.claimed", "payload": {"lease_id": "LEASE-e5f6a7b8"}}
+{"event_id": "EVT-xyz", "type": "task.claimed", "payload": {"lease_id": "lease-e5f6a7b8"}}
 ```
 
 **Reconciliation verdict**: PASS / FAIL
@@ -344,14 +344,14 @@ Use this matrix to quickly locate the evidence backing each checklist item. "Exa
 
 | Checklist Item | Verify Against | Example Reference |
 |----------------|---------------|-------------------|
-| C03-01 present and valid | Section 2 → C03-01 slot | Appendix A → Example C03-01 (line 388) |
+| C03-01 present and valid | Section 2 → C03-01 slot | Appendix A → "Example C03-01: Claim Response" |
 | C03-02 present and valid | Section 2 → C03-02 slot | Section 2 → C03-02 example JSON |
 | C03-03 present and valid | Section 2 → C03-03 slot | Section 2 → C03-03 example JSON |
-| C03-04 all 7 fields checked | Section 2 → C03-04 table | Appendix A → Example C03-04 (line 408) |
+| C03-04 all 7 fields checked | Section 2 → C03-04 table | Appendix A → "Example C03-04: Lease Field Verification" |
 | C03-05 tests pass | Section 2 → C03-05 output | Section 2 → C03-05 example output |
-| `lease_id` non-empty, unique | C03-01 → `lease.lease_id` | Example: `"lease-7f3a9e2b"` in Appendix A C03-01 |
+| `lease_id` non-empty, unique | C03-01 → `lease.lease_id` | Example: `"lease-e5f6a7b8"` in Appendix A C03-01 |
 | `expires_at` = `claimed_at` + TTL | C03-04 → `expires_at` row | Example: `08:00 + 600s = 08:10` in Appendix A C03-04 |
-| `owner_instance_id` matches claimer | C03-01 → `lease.owner_instance_id` | Example: `"claude_code#worker-01"` in Appendix A C03-01 |
+| `owner_instance_id` matches claimer | C03-01 → `lease.owner_instance_id` | Example: `"claude_code#sess-cc-001"` in Appendix A C03-01 |
 | `attempt_index` starts at 1 | C03-04 → `attempt_index` row | Example: `1` in Appendix A C03-04 |
 | T7 concurrent claim atomic | C03-05 → T7 test result | Section 2 → C03-05 test output |
 | Witness observations filled | Section 3 → Observations 1-4 | Match? columns all YES/NO |
@@ -406,21 +406,21 @@ evidence/
     task-lease.json              # C03-02: list_tasks showing lease fields
     audit-claim.json             # C03-03: Audit log task.claimed entry
     field-check.md               # C03-04: Filled lease field verification
-    test-results.txt             # C03-05: pytest output for T1,T2,T6,T7
+    test-results.txt             # C03-05: unittest output for T1,T2,T6,T7
 ```
 
 ### Example C03-01: Claim Response (filled)
 
 ```json
 {
-  "id": "TASK-abc12345",
+  "id": "TASK-a1b2c3d4",
   "title": "[claude-multi-ai][AUTO-M1-CORE-03] Implement lease schema",
   "status": "in_progress",
   "owner": "claude_code",
   "lease": {
-    "lease_id": "lease-7f3a9e2b",
-    "task_id": "TASK-abc12345",
-    "owner_instance_id": "claude_code#worker-01",
+    "lease_id": "lease-e5f6a7b8",
+    "task_id": "TASK-a1b2c3d4",
+    "owner_instance_id": "claude_code#sess-cc-001",
     "claimed_at": "2026-02-26T08:00:00+00:00",
     "expires_at": "2026-02-26T08:10:00+00:00",
     "renewed_at": null,
@@ -433,9 +433,9 @@ evidence/
 
 | Field | Expected | Observed | Match? |
 |-------|----------|----------|--------|
-| `lease_id` | Non-empty string | `lease-7f3a9e2b` | YES |
-| `task_id` | Matches claimed task | `TASK-abc12345` | YES |
-| `owner_instance_id` | Matches claimer | `claude_code#worker-01` | YES |
+| `lease_id` | Non-empty string | `lease-e5f6a7b8` | YES |
+| `task_id` | Matches claimed task | `TASK-a1b2c3d4` | YES |
+| `owner_instance_id` | Matches claimer | `claude_code#sess-cc-001` | YES |
 | `claimed_at` | Valid ISO 8601 | `2026-02-26T08:00:00+00:00` | YES |
 | `expires_at` | `claimed_at + 600s` | `2026-02-26T08:10:00+00:00` | YES |
 | `renewed_at` | null (first claim) | `null` | YES |
