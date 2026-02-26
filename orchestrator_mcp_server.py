@@ -11,6 +11,7 @@ import os
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -33,6 +34,8 @@ POLICY_PATH = Path(
     os.getenv("ORCHESTRATOR_POLICY", str(ROOT_DIR / "config" / "policy.codex-manager.json"))
 ).resolve()
 STATUS_VERBOSE_PATHS = os.getenv("ORCHESTRATOR_STATUS_VERBOSE_PATHS", "").strip().lower() in {"1", "true", "yes"}
+RUN_ID = os.getenv("ORCHESTRATOR_RUN_ID", "").strip()
+PROMPT_PROFILE_VERSION = os.getenv("ORCHESTRATOR_PROMPT_PROFILE_VERSION", "").strip()
 
 if EXPECTED_ROOT_RAW:
     expected_root = Path(EXPECTED_ROOT_RAW).resolve()
@@ -860,6 +863,86 @@ def _percent(done: int, total: int) -> int:
     return int(round((done / total) * 100))
 
 
+def _parse_iso(ts: Any) -> Optional[datetime]:
+    if not isinstance(ts, str) or not ts.strip():
+        return None
+    try:
+        return datetime.fromisoformat(ts)
+    except Exception:
+        return None
+
+
+def _seconds_between(start: Any, end: Any) -> Optional[int]:
+    s = _parse_iso(start)
+    e = _parse_iso(end)
+    if s is None or e is None:
+        return None
+    try:
+        return max(0, int((e - s).total_seconds()))
+    except Exception:
+        return None
+
+
+def _avg_int(values: List[int]) -> Optional[int]:
+    if not values:
+        return None
+    return int(round(sum(values) / len(values)))
+
+
+def _status_metrics(tasks: List[Dict[str, Any]], bugs_open: List[Dict[str, Any]], blockers_open: List[Dict[str, Any]]) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    done_tasks = [t for t in tasks if t.get("status") == "done"]
+    reported_tasks = [t for t in tasks if t.get("status") == "reported"]
+    in_progress_tasks = [t for t in tasks if t.get("status") == "in_progress"]
+    blocked_tasks = [t for t in tasks if t.get("status") == "blocked"]
+
+    time_to_claim = [v for v in (_seconds_between(t.get("assigned_at") or t.get("created_at"), t.get("claimed_at")) for t in tasks) if v is not None]
+    time_to_report = [v for v in (_seconds_between(t.get("claimed_at"), t.get("reported_at")) for t in tasks) if v is not None]
+    time_to_validate = [v for v in (_seconds_between(t.get("reported_at"), t.get("validated_at")) for t in tasks) if v is not None]
+
+    stale_in_progress = 0
+    stale_reported = 0
+    for task in in_progress_tasks:
+        ts = _parse_iso(task.get("claimed_at") or task.get("updated_at"))
+        if ts and (now - ts).total_seconds() > 1800:
+            stale_in_progress += 1
+    for task in reported_tasks:
+        ts = _parse_iso(task.get("reported_at") or task.get("updated_at"))
+        if ts and (now - ts).total_seconds() > 600:
+            stale_reported += 1
+
+    # Commit/LOC proxy metrics are tracked from reports/commits outside core engine today; expose placeholders + counts.
+    return {
+        "throughput": {
+            "tasks_total": len(tasks),
+            "tasks_done": len(done_tasks),
+            "tasks_reported": len(reported_tasks),
+            "tasks_in_progress": len(in_progress_tasks),
+            "tasks_blocked": len(blocked_tasks),
+            "completion_rate_percent": _percent(len(done_tasks), len(tasks)),
+        },
+        "timings_seconds": {
+            "avg_time_to_claim": _avg_int(time_to_claim),
+            "avg_time_to_report": _avg_int(time_to_report),
+            "avg_time_to_validate": _avg_int(time_to_validate),
+        },
+        "reliability": {
+            "open_bugs": len(bugs_open),
+            "open_blockers": len(blockers_open),
+            "stale_in_progress_over_30m": stale_in_progress,
+            "stale_reported_over_10m": stale_reported,
+        },
+        "code_output": {
+            "commits_tracked": "not_yet_collected_in_core_metrics",
+            "lines_added_deleted": "planned_via_report_and_git_collection",
+        },
+        "efficiency": {
+            "energy_mode": "not_yet_instrumented",
+            "metrics_provenance": "derived_from_task_state_only",
+        },
+    }
+
+
 def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
     tasks = ORCH.list_tasks()
     blockers_open = ORCH.list_blockers(status="open")
@@ -1030,6 +1113,14 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "live_status_text": live_status.get("report_text", ""),
                 "live_status": live_status.get("report", {}),
                 "recommended_status_cadence_seconds": live_status.get("recommended_cadence_seconds", 600),
+                "run_context": {
+                    "run_id": RUN_ID or None,
+                    "orchestrator_version": __version__,
+                    "policy_name": POLICY.name,
+                    "prompt_profile_version": PROMPT_PROFILE_VERSION or None,
+                    "root_name": ROOT_DIR.name,
+                },
+                "metrics": _status_metrics(tasks=tasks, bugs_open=ORCH.list_bugs(status="open"), blockers_open=ORCH.list_blockers(status="open")),
                 "auto_manager_cycle": {
                     "running": bool(_AUTO_LOOP_THREAD and _AUTO_LOOP_THREAD.is_alive()),
                     "interval_seconds": max(5, min(int(os.getenv("ORCHESTRATOR_AUTO_MANAGER_CYCLE_SECONDS", "15")), 300)),

@@ -202,6 +202,7 @@ class Orchestrator:
                 "acceptance_criteria": acceptance_criteria,
                 "created_at": self._now(),
                 "updated_at": self._now(),
+                "assigned_at": self._now(),
             }
             tasks.append(task)
             self._write_json(self.tasks_path, tasks)
@@ -311,6 +312,7 @@ class Orchestrator:
                 if forced and forced.get("status") in {"assigned", "bug_open"}:
                     forced["status"] = "in_progress"
                     forced["updated_at"] = self._now()
+                    forced["claimed_at"] = forced["updated_at"]
                     self._issue_task_lease_unlocked(task=forced, owner=owner, owner_instance_id=lease_owner_instance)
                     self._write_json(self.tasks_path, tasks)
                     del overrides[owner]
@@ -350,6 +352,7 @@ class Orchestrator:
 
                 task["status"] = "in_progress"
                 task["updated_at"] = self._now()
+                task["claimed_at"] = task["updated_at"]
                 self._issue_task_lease_unlocked(task=task, owner=owner, owner_instance_id=lease_owner_instance)
                 self._write_json(self.tasks_path, tasks)
                 self.bus.emit(
@@ -494,6 +497,10 @@ class Orchestrator:
 
             task["status"] = status
             task["updated_at"] = self._now()
+            if normalized == "blocked":
+                task["blocked_at"] = task["updated_at"]
+            elif normalized == "in_progress":
+                task["claimed_at"] = task["updated_at"]
             self._write_json(self.tasks_path, tasks)
         self.bus.emit(
             "task.status_changed",
@@ -526,6 +533,7 @@ class Orchestrator:
 
             task["status"] = "reported"
             task["updated_at"] = self._now()
+            task["reported_at"] = task["updated_at"]
             task["lease"] = None
             self._write_json(self.tasks_path, tasks)
 
@@ -959,11 +967,13 @@ class Orchestrator:
 
             if passed:
                 task["status"] = "done"
+                task["validated_at"] = self._now()
                 self._close_bugs_for_task(task_id=task_id, note=notes)
                 event = "validation.passed"
                 payload = {"task_id": task_id, "owner": task["owner"], "notes": notes}
             else:
                 task["status"] = "bug_open"
+                task["validated_at"] = self._now()
                 bug = self._open_bug(
                     source_task=task_id,
                     owner=task["owner"],

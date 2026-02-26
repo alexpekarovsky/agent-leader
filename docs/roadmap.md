@@ -154,6 +154,111 @@ Design rule:
 
 - every visible failure state must have an explicit reason string
 
+### 5.5. Benchmarking, Analytics, and Effectiveness Metrics (Product-Level)
+
+Goal:
+
+- measure real improvement over time across orchestrator versions, prompt profiles, and LLM upgrades
+- support overnight-run scorecards (not just raw task counts)
+- compare throughput, quality, cost, and efficiency on the same project type
+
+Required tracking model:
+
+- every run gets a `run_id` (e.g. one overnight build run)
+- every event/report/task transition carries enough metadata to join back to:
+  - `project_root`
+  - `run_id`
+  - orchestrator version
+  - policy version
+  - prompt profile/version
+  - client/CLI type
+  - model/version
+  - agent instance (`instance_id`)
+
+Core metric families:
+
+1. Delivery / Throughput
+- tasks created / claimed / reported / validated / done
+- completion rate per run
+- time-to-claim, time-to-report, time-to-validate
+- work-in-progress age distribution
+- parallelism level (avg/max concurrent active tasks)
+- run completion time to first playable build / first green build
+
+2. Quality / Reliability
+- validation pass rate on first submission
+- bug count by severity
+- bug reopen rate
+- blocker count and blocker resolution time
+- lease expiry rate
+- `dispatch.noop` rate
+- timeout rate (CLI, manager, worker)
+- stale reassignment count
+- rollback/retry counts per task
+
+3. Review Effectiveness
+- review cycles per task
+- average fixes after review
+- code review reject/rework rate by agent/model
+- time from report submission to validation decision
+- defects found post-validation (escaped defects)
+
+4. Code Output Metrics
+- commits per task / per run / per agent
+- files changed per task
+- lines added / deleted / net (by commit and per validated task)
+- test files vs production files touched ratio
+- documentation-to-code change ratio (useful for coordination-heavy runs)
+
+5. Cost / Resource Metrics
+- token usage (if available from CLI/provider)
+- API cost / run (if available)
+- wall-clock runtime per agent instance
+- idle time vs active time
+- restart count / crash count per instance
+
+6. Energy / Efficiency Metrics (direct or proxy)
+- direct energy (preferred): watt-hours from OS/hardware telemetry if available
+- proxy energy (minimum viable): CPU time + wall time + process uptime + machine power profile estimate
+- metrics:
+  - commits per Wh
+  - validated tasks per Wh
+  - LOC changed per Wh
+  - bugs fixed per Wh
+  - first-pass validation rate per Wh
+
+Notes on energy metrics:
+
+- exact power draw is hardware/platform-dependent and often unavailable from CLIs
+- roadmap should support both:
+  - **measured mode** (real telemetry)
+  - **estimated mode** (resource proxies + configured power coefficients)
+- always label metric provenance (`measured`, `estimated`, `unknown`)
+
+Required artifacts per overnight run:
+
+- run manifest (`run_id`, start/end, project, versions, participating models)
+- task outcome ledger
+- bug/blocker ledger
+- agent-instance timeline
+- summary scorecard (human-readable)
+- machine-readable metrics export (JSON/CSV)
+
+Comparison views to support:
+
+- same project / different orchestrator versions
+- same project / different model versions
+- same project / different prompt profiles
+- same project / different team composition (e.g. 2x CC vs CC+Gemini)
+- pre/post reliability feature (e.g. before vs after leases)
+
+Acceptance criteria for this analytics track:
+
+- one overnight run produces a reproducible scorecard and machine-readable metrics export
+- metrics can be filtered by `run_id`, project, agent, and model version
+- comparisons clearly distinguish throughput gains from quality regressions
+- dashboard/status surfaces show metric provenance (measured vs estimated)
+
 ### 6. Supervisor Layer (Beyond tmux MVP)
 
 `tmux` remains useful for operator visibility, but production reliability should come from a supervisor.
