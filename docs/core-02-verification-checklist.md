@@ -1,72 +1,94 @@
 # CORE-02 Operator Verification Checklist
 
-Post-restart verification for AUTO-M1-CORE-02 (instance-aware status
-section for multi-session visibility).
+Verification for AUTO-M1-CORE-02 (instance-aware status section for
+multi-session visibility).
 
-## What CORE-02 delivers
+## Pre-check: confirm CORE-01
 
-Each running agent instance gets a unique entry in `orchestrator_list_agents`
-with its own `instance_id`, heartbeat timestamp, and current task.
+Before verifying CORE-02, confirm that CORE-01 instance_id support is working:
 
-## Verification steps
+```
+orchestrator_status()
+```
 
-### Step 1: Check agent list includes instance IDs
+- [ ] Status output includes `instance_id` in agent metadata
+- [ ] No errors related to missing instance fields
+
+## Step 1: Call orchestrator_list_agents
 
 ```
 orchestrator_list_agents(active_only=false)
 ```
 
-**Expected fields per entry:**
+- [ ] Response returns a list of agent entries
+- [ ] Each entry has an `instance_id` field (non-null, non-empty)
+- [ ] Each entry includes all expected fields (see table below)
 
-| Field | Example | Check |
-|-------|---------|-------|
-| `agent_name` | `claude_code` | Present |
-| `instance_id` | `claude_code#worker-01` | Non-empty, matches format `{agent}#{suffix}` |
-| `status` | `active` | One of: `active`, `idle`, `stale`, `disconnected` |
-| `last_seen` | `2026-02-26T00:10:00Z` | Recent (within 60s) |
+### Expected fields per entry
 
-- [ ] All running agents appear in the list
-- [ ] Each agent has a unique `instance_id`
-- [ ] No duplicate `instance_id` values
+| Field | Type | Example | Check |
+|-------|------|---------|-------|
+| `agent_name` | string | `claude_code` | Present, matches known agent |
+| `instance_id` | string | `claude_code#worker-01` | Non-empty |
+| `role` | string | `team_member` | One of: `leader`, `team_member` |
+| `status` | string | `active` | One of: `active`, `idle`, `stale`, `disconnected` |
+| `last_seen` | ISO 8601 | `2026-02-26T00:10:00Z` | Recent timestamp |
 
-### Step 2: Verify multiple instances distinguishable
+## Step 2: Verify instance_id format
 
-If running multiple Claude Code sessions:
+- [ ] Each `instance_id` follows the format `{agent_name}#{suffix}`
+- [ ] The `{agent_name}` prefix matches the `agent_name` field
+- [ ] The `#{suffix}` portion is non-empty (e.g., `worker-01`, `leader`, `default`)
+- [ ] No duplicate `instance_id` values across all entries
+
+Examples of valid formats:
+- `claude_code#worker-01`
+- `claude_code#worker-02`
+- `gemini#worker-01`
+- `codex#leader`
+
+## Step 3: Start two workers, verify separate entries
+
+Start two Claude Code worker sessions and verify both appear:
 
 ```
+# After both workers connect:
 orchestrator_list_agents(active_only=true)
 ```
 
-- [ ] Two separate entries for `claude_code` (e.g., `#worker-01` and `#worker-02`)
+- [ ] Two separate entries for `claude_code` appear
+- [ ] Each has a distinct `instance_id` (e.g., `#worker-01` and `#worker-02`)
 - [ ] Each has its own `last_seen` timestamp
-- [ ] Each shows its own `current_task_id` (or null)
+- [ ] Each shows its own `current_task_id` (or null if idle)
+- [ ] No duplicate entries
 
-### Step 3: Verify stale detection is per-instance
+## Step 4: Stop one worker, verify stale/disconnected
 
-Kill one instance and wait for stale threshold:
-
-- [ ] Killed instance shows `stale` or `disconnected`
-- [ ] Other instances of same agent remain `active`
-- [ ] Stale instance does not affect other instances' status
-
-### Step 4: Check instance records
+Stop one of the two workers and wait for the stale threshold:
 
 ```
-orchestrator_list_agent_instances(active_only=false)
+# After stopping one worker, wait ~60s, then:
+orchestrator_list_agents(active_only=false)
 ```
 
-- [ ] Returns structured records with `agent_name`, `instance_id`, `metadata`
-- [ ] Multiple instances of same agent appear as separate records
-- [ ] `last_seen` timestamps are per-instance
+- [ ] Stopped worker shows `stale` or `disconnected` status
+- [ ] Running worker remains `active`
+- [ ] Stopped worker's `last_seen` is old (no longer updating)
+- [ ] Running worker's `last_seen` is recent
+- [ ] No cross-contamination (stopping one does not affect the other)
 
-## Backward compatibility check
+## Pass/fail criteria
 
-- [ ] Agents without explicit `instance_id` get fallback format (`{agent}#default`)
-- [ ] Existing single-session workflows still work (no regression)
-- [ ] `connect_to_leader` without `instance_id` succeeds
+| Criterion | Pass | Fail |
+|-----------|------|------|
+| All agents have `instance_id` | Field present and non-empty | Field missing or empty |
+| Format is `{agent}#{suffix}` | Matches pattern | Wrong format or missing separator |
+| Two workers distinguishable | Separate entries with unique IDs | Single entry or duplicate IDs |
+| Stale detection per-instance | Only stopped worker shows stale | Both show stale, or neither does |
+| Backward compatibility | Agents without explicit ID get `{agent}#default` | Error or missing entry |
 
 ## References
 
-- [instance-aware-status-fields.md](instance-aware-status-fields.md) — Field definitions
-- [roadmap.md](roadmap.md) — Phase B instance-aware presence
-- [restart-milestone-checklist.md](restart-milestone-checklist.md) — Post-restart validation
+- [instance-aware-status-fields.md](instance-aware-status-fields.md) -- Field definitions and status values
+- [restart-milestone-checklist.md](restart-milestone-checklist.md) -- Post-restart validation context
+- [roadmap.md](roadmap.md) -- Phase B instance-aware presence
