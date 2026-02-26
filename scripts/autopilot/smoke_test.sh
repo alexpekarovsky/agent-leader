@@ -26,6 +26,7 @@
 #  19. Dispatch telemetry schema validation
 #  20. Lease operator expectations doc validation
 #  21. Supervisor start/status/stop lifecycle smoke
+#  22. Supervisor command examples validation
 #
 # Exit code 0 = all passed, non-zero = failure count.
 
@@ -1655,6 +1656,134 @@ if [[ "$captured" -eq 6 ]]; then
   report "lifecycle: all 6 outputs captured" "true"
 else
   report "lifecycle: all 6 outputs captured" "false" "only $captured captured"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 22: Supervisor command examples validation
+# ---------------------------------------------------------------------------
+echo
+echo "--- Test 22: supervisor command examples ---"
+
+# Validate supervisor command examples in docs are consistent with actual script
+
+sv_script="$ROOT_DIR/scripts/autopilot/supervisor.sh"
+sv_spec="$ROOT_DIR/docs/supervisor-cli-spec.md"
+sv_profiles="$ROOT_DIR/docs/supervisor-startup-profiles.md"
+sv_process="$ROOT_DIR/docs/supervisor-process-model.md"
+
+# Check all three docs exist
+for doc_file in "$sv_spec" "$sv_profiles" "$sv_process"; do
+  doc_name="$(basename "$doc_file")"
+  if [[ -f "$doc_file" ]]; then
+    report "doc exists: $doc_name" "true"
+  else
+    report "doc exists: $doc_name" "false"
+  fi
+done
+
+# Validate all 5 commands referenced in docs match script
+cmd_check=$(python3 - "$sv_script" "$sv_spec" <<'PYCHECK'
+import re, sys
+from pathlib import Path
+
+script = Path(sys.argv[1]).read_text(encoding="utf-8")
+spec = Path(sys.argv[2]).read_text(encoding="utf-8")
+
+# Commands the script supports (from main case "$ACTION" block)
+# Look for the pattern: action)  do_action ;; at the end of the file
+script_cmds = set(re.findall(r'^\s+(\w+)\)\s+do_\w+', script, re.MULTILINE))
+script_cmds.discard("*")
+
+# Commands documented in spec
+spec_cmds = set()
+for cmd in ["start", "stop", "status", "restart", "clean"]:
+    if cmd in spec:
+        spec_cmds.add(cmd)
+
+missing_from_spec = script_cmds - spec_cmds
+missing_from_script = spec_cmds - script_cmds
+
+if missing_from_spec:
+    print(f"UNDOCUMENTED:{','.join(sorted(missing_from_spec))}")
+elif missing_from_script:
+    print(f"PHANTOM:{','.join(sorted(missing_from_script))}")
+else:
+    print(f"OK:{len(spec_cmds)}")
+PYCHECK
+)
+if [[ "$cmd_check" == OK:* ]]; then
+  report "all script commands documented in spec" "true"
+else
+  report "all script commands documented in spec" "false" "$cmd_check"
+fi
+
+# Validate flags referenced in profiles match script
+flag_check=$(python3 - "$sv_script" "$sv_profiles" <<'PYCHECK'
+import re, sys
+from pathlib import Path
+
+script = Path(sys.argv[1]).read_text(encoding="utf-8")
+profiles = Path(sys.argv[2]).read_text(encoding="utf-8")
+
+# Flags the script accepts (from case statement in while loop)
+script_flags = set(re.findall(r'(--[\w-]+)\)', script))
+
+# Flags used in profile examples (only in code blocks or command lines)
+# Filter out markdown table separators (strings of only dashes)
+profile_flags = set(f for f in re.findall(r'(--[a-zA-Z][\w-]*)', profiles))
+
+# Check that profile flags are valid script flags
+invalid = profile_flags - script_flags
+# Filter out flags from non-supervisor commands (loop scripts referenced in profiles)
+loop_flags = {"--cli", "--agent", "--once", "--interval", "--max-logs", "--cli-timeout"}
+invalid = invalid - loop_flags
+
+if invalid:
+    print(f"INVALID:{','.join(sorted(invalid))}")
+else:
+    print(f"OK:{len(profile_flags)}")
+PYCHECK
+)
+if [[ "$flag_check" == OK:* ]]; then
+  report "profile flags are valid script flags" "true"
+else
+  report "profile flags are valid script flags" "false" "$flag_check"
+fi
+
+# Validate project-root path assumptions in key docs
+for doc_file in "$sv_profiles" "$sv_spec"; do
+  doc_name="$(basename "$doc_file")"
+  if grep -q 'project-root' "$doc_file"; then
+    report "$doc_name references --project-root" "true"
+  else
+    report "$doc_name references --project-root" "false"
+  fi
+done
+
+# Validate process names in docs match script PROCS array
+proc_check=$(python3 - "$sv_script" "$sv_spec" <<'PYCHECK'
+import re, sys
+from pathlib import Path
+
+script = Path(sys.argv[1]).read_text(encoding="utf-8")
+spec = Path(sys.argv[2]).read_text(encoding="utf-8")
+
+# Process names from script PROCS array
+procs_match = re.search(r'PROCS=\(([^)]+)\)', script)
+script_procs = set(procs_match.group(1).split()) if procs_match else set()
+
+# Check all process names appear in spec
+missing = [p for p in script_procs if p not in spec]
+if missing:
+    print(f"MISSING:{','.join(sorted(missing))}")
+else:
+    print(f"OK:{len(script_procs)}")
+PYCHECK
+)
+if [[ "$proc_check" == OK:* ]]; then
+  report "all process names documented in spec" "true"
+else
+  report "all process names documented in spec" "false" "$proc_check"
 fi
 
 # ---------------------------------------------------------------------------
