@@ -15,6 +15,114 @@ This plan targets:
 
 This plan does not assume a single CLI vendor. It treats Codex, Claude Code, and Gemini as interchangeable worker adapters with different strengths.
 
+## Addendum: Unsupervised V1 and High-Throughput Scale (toward 1M LOC/day)
+
+This addendum captures the requirements and staged architecture for a first trustworthy unsupervised version and the later path to very high-volume generation/transformation workloads.
+
+### Why This Addendum Exists
+
+Recent execution validated that the system can move a large queue quickly, but also exposed gaps that block trustworthy unsupervised operation:
+
+- mixed-project task contamination in one orchestrator state
+- duplicate/superseded task residue requiring manual cleanup
+- stale installed MCP runtime serving older server code than repo source
+- same-family worker collisions (`claude_code` multi-session) requiring manual operating rules
+
+These are manageable with supervision, but must be solved before "run unattended" is considered reliable.
+
+### Unsupervised V1: Required Capabilities (Minimum Safe Set)
+
+1. Project-state isolation enforcement
+- hard project-root partitioning for task/blocker/bug state
+- prevent assignment/reassignment across project roots
+- emit explicit `scope_mismatch` diagnostics when violated
+
+2. Instance-level claiming / ownership
+- claims and leases tied to `owner_instance_id`, not just `agent_name`
+- multiple same-family workers (`claude_code#worker-01`, `claude_code#worker-02`) can run safely
+
+3. Superseded / archived task semantics
+- add first-class task statuses (or equivalent terminal states) for:
+  - `superseded` (replaced by later/narrower task)
+  - `archived` / `out_of_scope`
+- avoid overloading `done` for queue cleanup and metric integrity
+
+4. Unsupervised stop / escalation policy
+- explicit stop conditions and budgets
+- fatal policy breach / repeated failure thresholds
+- auto pause on integrity mismatch, deploy mismatch, or scope mismatch
+
+5. Runtime deploy/version consistency checks
+- status must expose server runtime version/build/source hash
+- detect and warn when installed runtime differs from repo source/version expectation
+- operator-facing restart/redeploy guidance in status output
+
+6. Automatic stale-blocker cleanup policy
+- classify and auto-resolve stale watchdog/meta blockers by type and age
+- preserve audit trail while preventing blocker pile-up
+
+### Beyond Unsupervised V1: Scale Architecture (Toward 1M LOC/day)
+
+Raw LOC is not the primary quality metric, but high-throughput generated/transformed code becomes plausible only with a different unit of work.
+
+Required additions:
+
+1. Batch / shard orchestration
+- parent task decomposes into child shard tasks
+- shard dimensions: module/package/service/schema-domain/file-set
+- parent completion depends on child validation gates
+
+2. Codegen/transformation pipeline track
+- schema/template/spec-driven generators for code, tests, docs, fixtures
+- generator versioning and provenance labels
+- reproducible outputs from structured inputs
+
+3. Compile/test gates per shard
+- compile/lint/test/contract gates at shard level
+- merge gate for parent task
+- quarantine/retry policy for flaky shards
+
+4. Throughput metrics focused on accepted output
+- track `validated/generated LOC`, not just raw changed LOC
+- quality + reliability metrics alongside volume
+
+### Staged Path (Execution Plan)
+
+Stage 1. Unsupervised V1 stability
+- project isolation
+- instance-level leases/claim ownership
+- superseded/archived statuses
+- stop/escalation policy
+- runtime deploy consistency checks
+
+Stage 2. Swarm + shard orchestration
+- parent/child task model
+- instance-safe same-family worker pools
+- shard retries and reconciliation
+
+Stage 3. Codegen pipelines
+- structured inputs (schemas/templates/specs)
+- deterministic generators and provenance
+
+Stage 4. Shard validation gates
+- compile/lint/test/contract per shard
+- parent merge gates and failure isolation
+
+Stage 5. Scale worker count
+- instance pool sizing by capability
+- retry/backoff/lease tuning
+
+Stage 6. Optimize for volume
+- batching, caching, merge automation, throughput tuning
+
+### Acceptance Criteria for "First Unsupervised Version"
+
+- system can run a project unattended without cross-project queue contamination
+- same-family multi-worker operation does not require manual claimant discipline
+- stale blockers do not accumulate indefinitely
+- status reports runtime/version consistency and integrity state
+- queue cleanup can be performed without marking non-completed work as `done`
+
 ## Current Baseline (What We Have)
 
 Building blocks already in place:
