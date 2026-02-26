@@ -23,6 +23,7 @@
 #  16. Submit report response doc validation
 #  17. Log retention tuning doc validation
 #  18. Limitations matrix roadmap references
+#  19. Dispatch telemetry schema validation
 #
 # Exit code 0 = all passed, non-zero = failure count.
 
@@ -1380,6 +1381,100 @@ if [[ "$table_rows" -ge 10 ]]; then
   report "matrix uses table format ($table_rows rows)" "true"
 else
   report "matrix uses table format" "false" "only $table_rows table rows"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 19: Dispatch telemetry schema validation
+# ---------------------------------------------------------------------------
+echo
+echo "--- Test 19: dispatch telemetry schema ---"
+
+dispatch_doc="$ROOT_DIR/docs/dispatch-telemetry-schema.md"
+
+if [[ -f "$dispatch_doc" ]]; then
+  report "dispatch-telemetry-schema.md exists" "true"
+else
+  report "dispatch-telemetry-schema.md exists" "false" "file not found"
+fi
+
+# Validate all three core event types documented
+for etype in dispatch.command dispatch.ack dispatch.noop; do
+  if grep -q "$etype" "$dispatch_doc"; then
+    report "doc defines $etype event type" "true"
+  else
+    report "doc defines $etype event type" "false" "not found"
+  fi
+done
+
+# Validate correlation_id is documented as required
+corr_refs=$(grep -c 'correlation_id' "$dispatch_doc" || true)
+if [[ "$corr_refs" -ge 5 ]]; then
+  report "doc covers correlation_id semantics ($corr_refs refs)" "true"
+else
+  report "doc covers correlation_id semantics" "false" "only $corr_refs refs"
+fi
+
+# Validate JSON payload examples are parseable
+dispatch_json_check=$(python3 - "$dispatch_doc" <<'PYCHECK'
+import json, re, sys
+from pathlib import Path
+content = Path(sys.argv[1]).read_text(encoding="utf-8")
+blocks = re.findall(r'```json\n(.*?)```', content, re.DOTALL)
+errors = []
+for i, block in enumerate(blocks):
+    try:
+        obj = json.loads(block)
+        # Each dispatch event should have a type or event_type field
+        if "type" not in obj and "event_type" not in obj:
+            errors.append(f"block {i+1}: missing type/event_type field")
+    except json.JSONDecodeError as e:
+        errors.append(f"block {i+1}: {e}")
+if errors:
+    print(f"ERRORS:{'; '.join(errors)}")
+else:
+    print(f"OK:{len(blocks)}")
+PYCHECK
+)
+if [[ "$dispatch_json_check" == OK:* ]]; then
+  count="${dispatch_json_check#OK:}"
+  report "dispatch JSON examples are valid ($count blocks)" "true"
+else
+  report "dispatch JSON examples are valid" "false" "$dispatch_json_check"
+fi
+
+# Validate required payload key names present across event schemas
+key_check=$(python3 - "$dispatch_doc" <<'PYCHECK'
+import sys
+from pathlib import Path
+content = Path(sys.argv[1]).read_text(encoding="utf-8")
+required_keys = ["correlation_id", "source", "target", "action", "timeout_seconds", "status", "reason", "elapsed_seconds"]
+missing = [k for k in required_keys if k not in content]
+if missing:
+    print(f"MISSING:{','.join(missing)}")
+else:
+    print(f"OK:{len(required_keys)}")
+PYCHECK
+)
+if [[ "$key_check" == OK:* ]]; then
+  report "all required payload keys documented" "true"
+else
+  report "all required payload keys documented" "false" "$key_check"
+fi
+
+# Validate flow diagram references the three dispatch types
+if grep -q 'dispatch.command' "$dispatch_doc" && \
+   grep -q 'dispatch.ack' "$dispatch_doc" && \
+   grep -q 'dispatch.noop' "$dispatch_doc"; then
+  report "doc has expected flow diagrams" "true"
+else
+  report "doc has expected flow diagrams" "false"
+fi
+
+# Validate roadmap reference
+if grep -q 'roadmap.md' "$dispatch_doc" || grep -q 'Phase D' "$dispatch_doc"; then
+  report "doc references Phase D / roadmap" "true"
+else
+  report "doc references Phase D / roadmap" "false"
 fi
 
 # ---------------------------------------------------------------------------
