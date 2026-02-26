@@ -198,6 +198,8 @@ class Orchestrator:
                 "description": description,
                 "workstream": workstream,
                 "owner": resolved_owner,
+                "project_root": str(self.root),
+                "project_name": self.root.name,
                 "status": "assigned",
                 "acceptance_criteria": acceptance_criteria,
                 "created_at": self._now(),
@@ -310,6 +312,7 @@ class Orchestrator:
             if override_task_id:
                 forced = next((t for t in tasks if t.get("id") == override_task_id and t.get("owner") == owner), None)
                 if forced and forced.get("status") in {"assigned", "bug_open"}:
+                    self._assert_task_same_project(forced, operation="claim_override")
                     forced["status"] = "in_progress"
                     forced["updated_at"] = self._now()
                     forced["claimed_at"] = forced["updated_at"]
@@ -349,6 +352,9 @@ class Orchestrator:
                     continue
                 if task.get("status") not in {"assigned", "bug_open"}:
                     continue
+                if not self._task_is_same_project(task):
+                    # Legacy mixed-project residue must not be claimed in this project runtime.
+                    continue
 
                 task["status"] = "in_progress"
                 task["updated_at"] = self._now()
@@ -372,6 +378,7 @@ class Orchestrator:
             task = next((t for t in tasks if t.get("id") == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
+            self._assert_task_same_project(task, operation="set_claim_override")
             if task.get("owner") != agent:
                 raise ValueError(f"Task owner '{task.get('owner')}' does not match target agent '{agent}'")
 
@@ -489,6 +496,7 @@ class Orchestrator:
             task = next((t for t in tasks if t["id"] == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
+            self._assert_task_same_project(task, operation="set_task_status")
             owner = str(task.get("owner", ""))
             if source not in {owner, manager}:
                 raise ValueError(
@@ -524,6 +532,7 @@ class Orchestrator:
             task = next((item for item in tasks if item["id"] == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
+            self._assert_task_same_project(task, operation="ingest_report")
             if task.get("owner") != report["agent"]:
                 raise ValueError(
                     f"Report agent '{report['agent']}' does not match task owner '{task.get('owner')}'"
@@ -555,6 +564,7 @@ class Orchestrator:
             task = next((item for item in tasks if item.get("id") == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
+            self._assert_task_same_project(task, operation="renew_task_lease")
             if str(task.get("owner", "")) != agent:
                 raise ValueError(f"lease_owner_mismatch: task_owner={task.get('owner')} agent={agent}")
             lease = task.get("lease")
@@ -964,6 +974,7 @@ class Orchestrator:
             task = next((t for t in tasks if t["id"] == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
+            self._assert_task_same_project(task, operation="validate_task")
 
             if passed:
                 task["status"] = "done"
@@ -1016,6 +1027,7 @@ class Orchestrator:
             task = next((item for item in tasks if item["id"] == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
+            self._assert_task_same_project(task, operation="raise_blocker")
             if task.get("owner") != agent:
                 raise ValueError(f"Blocker agent '{agent}' does not match task owner '{task.get('owner')}'")
 
@@ -1950,6 +1962,33 @@ class Orchestrator:
             return path == self.root or self.root in path.parents
         except Exception:
             return False
+
+    def _task_is_same_project(self, task: Dict[str, Any]) -> bool:
+        if not isinstance(task, dict):
+            return False
+        project_root_raw = str(task.get("project_root", "")).strip()
+        project_name_raw = str(task.get("project_name", "")).strip()
+        if not project_root_raw and not project_name_raw:
+            # Legacy tasks predate explicit task-level project tags.
+            return True
+        if project_root_raw:
+            resolved = self._safe_resolve(project_root_raw)
+            if resolved is None or resolved != self.root:
+                return False
+        if project_name_raw and project_name_raw != self.root.name:
+            return False
+        return True
+
+    def _assert_task_same_project(self, task: Dict[str, Any], operation: str) -> None:
+        if self._task_is_same_project(task):
+            return
+        raise ValueError(
+            "task_wrong_project: "
+            f"task_id={task.get('id', '')} operation={operation} "
+            f"task_project_root={task.get('project_root', '<missing>')} "
+            f"task_project_name={task.get('project_name', '<missing>')} "
+            f"current_project_root={self.root} current_project_name={self.root.name}"
+        )
 
     def _emit_stale_notice_if_due(
         self,

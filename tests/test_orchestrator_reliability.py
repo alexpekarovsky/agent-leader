@@ -237,6 +237,97 @@ class TaskStatusGuardTests(unittest.TestCase):
                 orch.set_task_status(task_id=task["id"], status="blocked", source="gemini")
 
 
+class TaskProjectIsolationTests(unittest.TestCase):
+    def _make_orch(self, root: Path) -> Orchestrator:
+        policy = _make_policy(root / "policy.json")
+        orch = Orchestrator(root=root, policy=policy)
+        orch.bootstrap()
+        return orch
+
+    def _connect_worker(self, orch: Orchestrator, root: Path, agent: str = "claude_code") -> None:
+        orch.connect_to_leader(
+            agent=agent,
+            metadata=_team_metadata(
+                root=root,
+                client=f"{agent}-cli",
+                model=f"{agent}-model",
+                role="team_member",
+                sid=f"{agent}-sid",
+                cid=f"{agent}-cid",
+            ),
+            source=agent,
+        )
+
+    def test_create_task_tags_project_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = self._make_orch(root)
+            task = orch.create_task(
+                title="Tagged task",
+                workstream="backend",
+                acceptance_criteria=["tag project"],
+                owner="claude_code",
+            )
+            self.assertEqual(str(root.resolve()), task.get("project_root"))
+            self.assertEqual(root.resolve().name, task.get("project_name"))
+
+    def test_claim_skips_cross_project_task_and_claims_same_project_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = self._make_orch(root)
+            self._connect_worker(orch, root, "claude_code")
+            bad = orch.create_task(
+                title="Mismatched task",
+                workstream="backend",
+                acceptance_criteria=["skip me"],
+                owner="claude_code",
+            )
+            good = orch.create_task(
+                title="Good task",
+                workstream="backend",
+                acceptance_criteria=["claim me"],
+                owner="claude_code",
+            )
+
+            tasks = orch._read_json(orch.tasks_path)
+            for item in tasks:
+                if item.get("id") == bad["id"]:
+                    item["project_root"] = str((root.parent / "other-project").resolve())
+                    item["project_name"] = "other-project"
+                    break
+            orch._write_tasks_json(tasks)
+
+            claimed = orch.claim_next_task(owner="claude_code")
+            self.assertIsNotNone(claimed)
+            assert claimed is not None
+            self.assertEqual(good["id"], claimed["id"])
+
+            latest = {t["id"]: t for t in orch.list_tasks()}
+            self.assertEqual("assigned", latest[bad["id"]]["status"])
+            self.assertEqual("in_progress", latest[good["id"]]["status"])
+
+    def test_manager_status_update_rejects_cross_project_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = self._make_orch(root)
+            task = orch.create_task(
+                title="Cross project reject",
+                workstream="default",
+                acceptance_criteria=["manager reject"],
+                owner="codex",
+            )
+            tasks = orch._read_json(orch.tasks_path)
+            for item in tasks:
+                if item.get("id") == task["id"]:
+                    item["project_root"] = str((root.parent / "foreign").resolve())
+                    item["project_name"] = "foreign"
+                    break
+            orch._write_tasks_json(tasks)
+
+            with self.assertRaises(ValueError):
+                orch.set_task_status(task_id=task["id"], status="done", source="codex")
+
+
 class ConnectBehaviorTests(unittest.TestCase):
     def test_manager_connect_does_not_auto_claim(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
