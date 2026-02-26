@@ -287,12 +287,13 @@ class Orchestrator:
             tasks = [task for task in tasks if task.get("status") == status]
         return tasks
 
-    def claim_next_task(self, owner: str) -> Optional[Dict[str, Any]]:
+    def claim_next_task(self, owner: str, instance_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         self._assert_agent_operational(owner)
         # Treat a claim attempt as proof-of-life from the team_member.
         with self._state_lock():
             self._refresh_agent_presence_unlocked(owner)
-            lease_owner_instance = self._current_agent_instance_id_unlocked(owner)
+            explicit_instance_id = str(instance_id or "").strip()
+            lease_owner_instance = explicit_instance_id or self._current_agent_instance_id_unlocked(owner)
             tasks = self._read_json(self.tasks_path)
             overrides = self._read_json(self.claim_overrides_path)
             if not isinstance(overrides, dict):
@@ -491,6 +492,9 @@ class Orchestrator:
         # can enforce commit + test evidence and emit consistent report events.
         if normalized in {"done", "reported"} and source != self.manager_agent():
             raise ValueError("Use orchestrator_submit_report for completion/report transitions")
+        # superseded/archived are manager-only lifecycle transitions.
+        if normalized in {"superseded", "archived"} and source != self.manager_agent():
+            raise ValueError("superseded/archived transitions require manager authority")
         with self._state_lock():
             tasks = self._read_json(self.tasks_path)
             task = next((t for t in tasks if t["id"] == task_id), None)
@@ -509,6 +513,8 @@ class Orchestrator:
                 task["blocked_at"] = task["updated_at"]
             elif normalized == "in_progress":
                 task["claimed_at"] = task["updated_at"]
+            elif normalized in {"superseded", "archived"}:
+                task[f"{normalized}_at"] = task["updated_at"]
             self._write_tasks_json(tasks)
         self.bus.emit(
             "task.status_changed",
@@ -558,7 +564,7 @@ class Orchestrator:
         )
         return report
 
-    def renew_task_lease(self, task_id: str, agent: str, lease_id: str) -> Dict[str, Any]:
+    def renew_task_lease(self, task_id: str, agent: str, lease_id: str, instance_id: Optional[str] = None) -> Dict[str, Any]:
         self._assert_agent_operational(agent)
         lease_id_norm = str(lease_id).strip()
         if not lease_id_norm:
@@ -578,7 +584,8 @@ class Orchestrator:
             if str(lease.get("lease_id", "")).strip() != lease_id_norm:
                 raise ValueError("lease_id_mismatch")
             owner_instance_id = str(lease.get("owner_instance_id", "")).strip()
-            current_instance_id = self._current_agent_instance_id_unlocked(agent)
+            explicit_instance_id = str(instance_id or "").strip()
+            current_instance_id = explicit_instance_id or self._current_agent_instance_id_unlocked(agent)
             if owner_instance_id and current_instance_id and owner_instance_id != current_instance_id:
                 raise ValueError(
                     f"lease_instance_mismatch: lease_owner_instance={owner_instance_id} current_instance={current_instance_id}"
@@ -595,10 +602,15 @@ class Orchestrator:
             self._write_tasks_json(tasks)
         self.bus.emit(
             "task.lease_renewed",
-            {"task_id": task_id, "agent": agent, "lease_id": lease_id_norm},
+            {"task_id": task_id, "agent": agent, "lease_id": lease_id_norm, "instance_id": str(instance_id or "").strip() or None},
             source=agent,
         )
-        return {"task_id": task_id, "agent": agent, "lease": dict(lease)}
+        return {
+            "task_id": task_id,
+            "agent": agent,
+            "instance_id": str(instance_id or "").strip() or None,
+            "lease": dict(lease),
+        }
 
     def enqueue_report_retry(self, report: Dict[str, Any], error: str) -> Dict[str, Any]:
         now = self._now()
@@ -1140,6 +1152,156 @@ class Orchestrator:
         )
         return blocker
 
+    # ------------------------------------------------------------------
+    # Unsupervised stop / escalation policy
+    # ------------------------------------------------------------------
+
+    def evaluate_stop_policy(self) -> Dict[str, Any]:
+        """Evaluate unsupervised run stop/escalation triggers.
+
+        Reads thresholds from ``policy.triggers`` and compares against
+        live state.  Returns a dict with ``stop_required``, a list of
+        fired ``triggers``, and per-trigger detail so the caller can
+        decide whether to halt the unsupervised run.
+
+        If the policy is disabled (``unsupervised_stop_enabled`` is
+        falsy) the method returns ``stop_required=False`` with an empty
+        trigger list — fully backward compatible.
+        """
+        triggers_cfg = self.policy.triggers
+
+        # Guard: if the stop policy is not enabled, return clean.
+        if not triggers_cfg.get("unsupervised_stop_enabled", False):
+            return {
+                "stop_required": False,
+                "policy_enabled": False,
+                "triggers": [],
+                "reason_codes": [],
+            }
+
+        tasks = self._read_json(self.tasks_path)
+        open_bugs = self.list_bugs(status="open")
+        open_blockers = self.list_blockers(status="open")
+
+        fired: List[Dict[str, Any]] = []
+
+        # --- Trigger 1: open bug count exceeds threshold ---------------
+        max_bugs = int(triggers_cfg.get("stop_max_open_bugs", 0))
+        if max_bugs > 0 and len(open_bugs) >= max_bugs:
+            fired.append({
+                "code": "bug_threshold_exceeded",
+                "severity": "critical",
+                "detail": f"open_bugs={len(open_bugs)} >= threshold={max_bugs}",
+                "current": len(open_bugs),
+                "threshold": max_bugs,
+            })
+
+        # --- Trigger 2: open blocker count exceeds threshold -----------
+        max_blockers = int(triggers_cfg.get("stop_max_open_blockers", 0))
+        if max_blockers > 0 and len(open_blockers) >= max_blockers:
+            fired.append({
+                "code": "blocker_growth_exceeded",
+                "severity": "critical",
+                "detail": f"open_blockers={len(open_blockers)} >= threshold={max_blockers}",
+                "current": len(open_blockers),
+                "threshold": max_blockers,
+            })
+
+        # --- Trigger 3: repeated validation failures per task ----------
+        max_failures = int(triggers_cfg.get("stop_max_validation_failures_per_task", 0))
+        if max_failures > 0:
+            for task in tasks:
+                fail_count = self._count_validation_failures(task)
+                if fail_count >= max_failures:
+                    fired.append({
+                        "code": "repeated_validation_failure",
+                        "severity": "critical",
+                        "detail": (
+                            f"task={task['id']} validation_failures={fail_count} "
+                            f">= threshold={max_failures}"
+                        ),
+                        "task_id": task["id"],
+                        "current": fail_count,
+                        "threshold": max_failures,
+                    })
+
+        # --- Trigger 4: integrity mismatch (task count regression) -----
+        if triggers_cfg.get("stop_on_integrity_mismatch", False):
+            integrity = self._check_integrity_simple(tasks)
+            if not integrity["ok"]:
+                fired.append({
+                    "code": "integrity_mismatch",
+                    "severity": "critical",
+                    "detail": "; ".join(integrity.get("warnings", ["integrity check failed"])),
+                })
+
+        # --- Trigger 5: deploy / source mismatch -----------------------
+        # This trigger is evaluated by the MCP layer since it requires
+        # server-level state (_runtime_source_consistency).  The engine
+        # exposes a hook so the MCP layer can inject the result.
+
+        stop_required = len(fired) > 0
+        reason_codes = [t["code"] for t in fired]
+
+        result: Dict[str, Any] = {
+            "stop_required": stop_required,
+            "policy_enabled": True,
+            "triggers": fired,
+            "reason_codes": reason_codes,
+        }
+
+        if stop_required:
+            self.bus.emit(
+                "stop_policy.triggered",
+                {
+                    "reason_codes": reason_codes,
+                    "trigger_count": len(fired),
+                    "triggers": fired,
+                },
+                source="orchestrator",
+            )
+            self.bus.append_audit({
+                "category": "stop_policy",
+                "action": "stop_triggered",
+                "reason_codes": reason_codes,
+                "trigger_count": len(fired),
+            })
+
+        return result
+
+    def _count_validation_failures(self, task: Dict[str, Any]) -> int:
+        """Count how many open bugs reference this task (proxy for validation failures)."""
+        task_id = task.get("id", "")
+        bugs = self._read_json_list(self.bugs_path)
+        return sum(
+            1 for bug in bugs
+            if bug.get("source_task") == task_id and bug.get("status") == "open"
+        )
+
+    def _check_integrity_simple(self, tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Lightweight integrity check: detect task count regression via audit."""
+        current_count = len(tasks)
+        max_seen = current_count
+        warnings: List[str] = []
+
+        for row in self.bus.read_audit(limit=200, tool_name="orchestrator_status", status="ok"):
+            result = row.get("result", {})
+            if not isinstance(result, dict):
+                continue
+            try:
+                hist_count = int(result.get("task_count", 0))
+            except Exception:
+                continue
+            if hist_count > max_seen:
+                max_seen = hist_count
+
+        if current_count < max_seen:
+            warnings.append(
+                f"task_count_regression: current={current_count} < historical_max={max_seen}"
+            )
+
+        return {"ok": len(warnings) == 0, "warnings": warnings}
+
     def publish_event(
         self,
         event_type: str,
@@ -1315,7 +1477,11 @@ class Orchestrator:
         # Team members auto-claim on connect; manager/leader should never auto-claim implementation work.
         role = str((metadata or {}).get("role", details.get("role", "team_member"))).strip().lower()
         is_manager_connect = agent == manager or role == "manager"
-        auto_claimed = self.claim_next_task(owner=agent) if connected and not is_manager_connect else None
+        auto_claimed = (
+            self.claim_next_task(owner=agent, instance_id=str(details.get("instance_id", "")).strip() or None)
+            if connected and not is_manager_connect
+            else None
+        )
 
         return {
             "connected": connected,
@@ -1406,6 +1572,16 @@ class Orchestrator:
                     1
                     for task in tasks
                     if task.get("owner") == item.get("agent") and task.get("status") == "done"
+                ),
+                "superseded": sum(
+                    1
+                    for task in tasks
+                    if task.get("owner") == item.get("agent") and task.get("status") == "superseded"
+                ),
+                "archived": sum(
+                    1
+                    for task in tasks
+                    if task.get("owner") == item.get("agent") and task.get("status") == "archived"
                 ),
             }
             results.append(item)

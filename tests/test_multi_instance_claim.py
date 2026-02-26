@@ -286,5 +286,58 @@ class LeaseRenewalRequiresMatchingInstanceTests(unittest.TestCase):
             self.assertEqual("claude_code", persisted["lease"]["owner"])
 
 
+class ExplicitInstanceIdClaimAndRenewTests(unittest.TestCase):
+    """Explicit instance_id APIs avoid singleton-agent races for same-agent sessions."""
+
+    def test_claim_uses_explicit_instance_when_other_instance_is_latest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = _make_orch(root)
+
+            _register_instance(orch, root, "claude_code", "sess-instance-1")
+            _register_instance(orch, root, "claude_code", "sess-instance-2")
+            orch.create_task(
+                title="Explicit instance claim",
+                workstream="backend",
+                owner="claude_code",
+                acceptance_criteria=["done"],
+            )
+
+            claimed = orch.claim_next_task("claude_code", instance_id="sess-instance-1")
+
+            self.assertIsNotNone(claimed)
+            self.assertEqual("sess-instance-1", claimed["lease"]["owner_instance_id"])
+
+    def test_renew_uses_explicit_instance_when_other_instance_is_latest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = _make_orch(root)
+
+            _register_instance(orch, root, "claude_code", "sess-instance-1")
+            orch.create_task(
+                title="Explicit instance renew",
+                workstream="backend",
+                owner="claude_code",
+                acceptance_criteria=["done"],
+            )
+            claimed = orch.claim_next_task("claude_code", instance_id="sess-instance-1")
+            lease_id = claimed["lease"]["lease_id"]
+
+            # Another session becomes the latest singleton record for this agent family.
+            _register_instance(orch, root, "claude_code", "sess-instance-2")
+
+            with self.assertRaises(ValueError):
+                orch.renew_task_lease(claimed["id"], "claude_code", lease_id)
+
+            renewed = orch.renew_task_lease(
+                claimed["id"],
+                "claude_code",
+                lease_id,
+                instance_id="sess-instance-1",
+            )
+            self.assertEqual("sess-instance-1", renewed["instance_id"])
+            self.assertEqual(lease_id, renewed["lease"]["lease_id"])
+
+
 if __name__ == "__main__":
     unittest.main()

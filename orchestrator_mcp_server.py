@@ -529,6 +529,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                 "type": "object",
                 "properties": {
                     "agent": {"type": "string", "description": "codex|claude_code|gemini"},
+                    "instance_id": {"type": "string", "description": "Optional explicit worker instance id for same-agent multi-session claims."},
                 },
                 "required": ["agent"],
             },
@@ -542,6 +543,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                     "task_id": {"type": "string"},
                     "agent": {"type": "string"},
                     "lease_id": {"type": "string"},
+                    "instance_id": {"type": "string", "description": "Optional explicit worker instance id for same-agent multi-session lease renewal."},
                 },
                 "required": ["task_id", "agent", "lease_id"],
             },
@@ -1016,6 +1018,21 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
         payload={"contracts": contracts},
     )
 
+    # Evaluate unsupervised stop/escalation policy.
+    stop_policy = ORCH.evaluate_stop_policy()
+    # Inject deploy-mismatch trigger from MCP-layer runtime checks.
+    if stop_policy.get("policy_enabled") and ORCH.policy.triggers.get("stop_on_deploy_mismatch", False):
+        rsc = _runtime_source_consistency()
+        if not rsc["ok"]:
+            deploy_trigger = {
+                "code": "deploy_mismatch",
+                "severity": "critical",
+                "detail": "; ".join(rsc.get("warnings", ["runtime source mismatch"])),
+            }
+            stop_policy["triggers"].append(deploy_trigger)
+            stop_policy["reason_codes"].append("deploy_mismatch")
+            stop_policy["stop_required"] = True
+
     return {
         "processed_reports": processed,
         "report_retry_queue": retry_queue,
@@ -1027,6 +1044,7 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
         "remaining_by_owner": by_owner,
         "pending_total": sum(bucket["pending"] for bucket in by_owner.values()),
         "open_blockers": open_blockers,
+        "stop_policy": stop_policy,
     }
 
 
@@ -1220,6 +1238,8 @@ def _status_metrics(tasks: List[Dict[str, Any]], bugs_open: List[Dict[str, Any]]
     reported_tasks = [t for t in tasks if t.get("status") == "reported"]
     in_progress_tasks = [t for t in tasks if t.get("status") == "in_progress"]
     blocked_tasks = [t for t in tasks if t.get("status") == "blocked"]
+    superseded_tasks = [t for t in tasks if t.get("status") == "superseded"]
+    archived_tasks = [t for t in tasks if t.get("status") == "archived"]
 
     time_to_claim = [v for v in (_seconds_between(t.get("assigned_at") or t.get("created_at"), t.get("claimed_at")) for t in tasks) if v is not None]
     time_to_report = [v for v in (_seconds_between(t.get("claimed_at"), t.get("reported_at")) for t in tasks) if v is not None]
@@ -1244,6 +1264,8 @@ def _status_metrics(tasks: List[Dict[str, Any]], bugs_open: List[Dict[str, Any]]
             "tasks_reported": len(reported_tasks),
             "tasks_in_progress": len(in_progress_tasks),
             "tasks_blocked": len(blocked_tasks),
+            "tasks_superseded": len(superseded_tasks),
+            "tasks_archived": len(archived_tasks),
             "completion_rate_percent": _percent(len(done_tasks), len(tasks)),
         },
         "timings_seconds": {
@@ -1471,6 +1493,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                     "running": bool(_AUTO_LOOP_THREAD and _AUTO_LOOP_THREAD.is_alive()),
                     "interval_seconds": max(5, min(int(os.getenv("ORCHESTRATOR_AUTO_MANAGER_CYCLE_SECONDS", "15")), 300)),
                 },
+                "stop_policy": ORCH.evaluate_stop_policy(),
             }
             if STATUS_VERBOSE_PATHS:
                 payload["root"] = str(ROOT_DIR)
@@ -1619,7 +1642,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             return _ok_and_audit(request_id, name, args, tasks)
 
         if name == "orchestrator_claim_next_task":
-            task = ORCH.claim_next_task(owner=args["agent"])
+            task = ORCH.claim_next_task(owner=args["agent"], instance_id=args.get("instance_id"))
             if task:
                 return _ok_and_audit(request_id, name, args, task)
             return _ok(
@@ -1640,6 +1663,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 task_id=args["task_id"],
                 agent=args["agent"],
                 lease_id=args["lease_id"],
+                instance_id=args.get("instance_id"),
             )
             return _ok_and_audit(request_id, name, args, result)
 
