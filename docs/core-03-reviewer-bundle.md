@@ -63,16 +63,47 @@ All 7 fields must be present in the claim response:
 
 ---
 
+## Reviewer Instructions
+
+**Before reviewing**: Verify the bundle status is READY, all evidence slots are filled,
+and the commit under test matches what is deployed in the test environment.
+
+**Review order**: Work through Sections 2-4 sequentially. Section 5 is your scorecard.
+Mark each criterion as you go. If any rejection criterion (Section 5) is triggered,
+stop and return the bundle with REQUEST CHANGES.
+
+**Session tagging**: All evidence should reference the same session. Look for consistent
+`session_id` and `connection_id` values across claim response, audit log, and event bus.
+Project tag: `[claude-multi-ai][AUTO-M1-CORE-03]`.
+
+---
+
 ## Section 2: Evidence Collection
 
-Paste raw evidence for each artifact below. These slots map directly to the artifact inventory above.
+Paste raw evidence for each artifact below. These slots map directly to the artifact inventory above. Replace the example entries with actual output from your test session.
 
 ### C03-01: Claim Response
 
 Command: `orchestrator_claim_next_task(agent="claude_code")`
 
 ```json
-PASTE_CLAIM_RESPONSE_HERE
+// EXAMPLE — replace with actual output
+{
+  "id": "TASK-a1b2c3d4",
+  "title": "Example task for lease verification",
+  "workstream": "backend",
+  "owner": "claude_code",
+  "status": "in_progress",
+  "lease": {
+    "lease_id": "LEASE-e5f6a7b8",
+    "task_id": "TASK-a1b2c3d4",
+    "owner_instance_id": "claude_code#sess-cc-001",
+    "claimed_at": "2026-02-26T10:00:00+00:00",
+    "expires_at": "2026-02-26T10:10:00+00:00",
+    "renewed_at": null,
+    "attempt_index": 1
+  }
+}
 ```
 
 ### C03-02: Task List with Lease
@@ -80,7 +111,24 @@ PASTE_CLAIM_RESPONSE_HERE
 Command: `orchestrator_list_tasks(status="in_progress")`
 
 ```json
-PASTE_TASK_WITH_LEASE_HERE
+// EXAMPLE — replace with actual output
+[
+  {
+    "id": "TASK-a1b2c3d4",
+    "title": "Example task for lease verification",
+    "status": "in_progress",
+    "owner": "claude_code",
+    "lease": {
+      "lease_id": "LEASE-e5f6a7b8",
+      "task_id": "TASK-a1b2c3d4",
+      "owner_instance_id": "claude_code#sess-cc-001",
+      "claimed_at": "2026-02-26T10:00:00+00:00",
+      "expires_at": "2026-02-26T10:10:00+00:00",
+      "renewed_at": null,
+      "attempt_index": 1
+    }
+  }
+]
 ```
 
 ### C03-03: Audit Log Entry
@@ -88,7 +136,19 @@ PASTE_TASK_WITH_LEASE_HERE
 Command: `orchestrator_list_audit_logs(tool="orchestrator_claim_next_task", limit=5)`
 
 ```json
-PASTE_AUDIT_ENTRY_HERE
+// EXAMPLE — replace with actual output
+{
+  "entry_id": "AUD-001",
+  "timestamp": "2026-02-26T10:00:00+00:00",
+  "tool": "orchestrator_claim_next_task",
+  "agent": "claude_code",
+  "event": "task.claimed",
+  "payload": {
+    "task_id": "TASK-a1b2c3d4",
+    "owner": "claude_code",
+    "lease_id": "LEASE-e5f6a7b8"
+  }
+}
 ```
 
 ### C03-04: Lease Field Verification
@@ -108,7 +168,17 @@ PASTE_AUDIT_ENTRY_HERE
 Tests from [lease-schema-test-plan.md](lease-schema-test-plan.md) covering CORE-03: T1, T2, T6, T7.
 
 ```
-PASTE_TEST_OUTPUT_HERE
+// EXAMPLE — replace with actual test output
+$ python3 -m unittest tests/test_lease_schema_test_plan.py -v
+test_T1_lease_issuance_on_claim ... ok
+test_T2_lease_renewal_extends_expiry ... ok
+test_T6_claim_without_instance_id_uses_fallback ... ok
+test_T7_concurrent_claim_creates_only_one_lease ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.032s
+
+OK
 ```
 
 | Test | Description | Pass/Fail |
@@ -183,9 +253,9 @@ Compares lease issuance evidence across Status API, audit log, and event bus to 
 
 | Evidence Point | Status API | Audit Log | Event Bus | Match? | Notes |
 |----------------|------------|-----------|-----------|--------|-------|
-| Lease issued | | | | | |
-| Lease renewed | | | | | |
-| Lease released | | | | | |
+| Lease issued | _fill: lease_id from list_tasks_ | _fill: task.claimed entry_ | _fill: task.claimed event_ | YES/NO | _compare lease_id, timestamps_ |
+| Lease renewed | _fill: renewed_at updated_ | _fill: task.lease_renewed entry_ | _fill: lease.renewed event_ | YES/NO | _verify expires_at extended_ |
+| Lease released | _fill: lease cleared post-report_ | _fill: task.reported entry_ | _fill: task.reported event_ | YES/NO | _verify no active lease_ |
 
 ### How to Fill Each Column
 
@@ -207,17 +277,20 @@ When sources disagree, use this priority:
 
 **Status API:**
 ```json
-PASTE_HERE
+// EXAMPLE — paste actual list_tasks output for mismatched row
+{"id": "TASK-a1b2c3d4", "lease": {"lease_id": "LEASE-e5f6a7b8", "claimed_at": "..."}}
 ```
 
 **Audit log:**
 ```json
-PASTE_HERE
+// EXAMPLE — paste actual audit entry for mismatched row
+{"entry_id": "AUD-001", "event": "task.claimed", "payload": {"lease_id": "LEASE-e5f6a7b8"}}
 ```
 
 **Event bus:**
 ```json
-PASTE_HERE
+// EXAMPLE — paste actual event for mismatched row
+{"event_id": "EVT-xyz", "type": "task.claimed", "payload": {"lease_id": "LEASE-e5f6a7b8"}}
 ```
 
 **Reconciliation verdict**: PASS / FAIL
