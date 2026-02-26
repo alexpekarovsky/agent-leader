@@ -182,6 +182,40 @@ These tasks can be completed before codex delivers the code, then validated agai
 
 ---
 
+## Unblock Path Examples: Happy Path + Fallback
+
+For each CORE task row, the reviewer should expect one of two outcomes. Use these to decide whether evidence is valid or the fallback path was correctly taken.
+
+### CORE-04 Path Examples
+
+| Row | Happy Path | Fallback Condition | Fallback Action |
+|-----|-----------|-------------------|-----------------|
+| C04-01: Watchdog expiry | Watchdog emits `lease_expired` with valid `task_id` and `elapsed_seconds` > TTL | Watchdog runs but no `lease_expired` event after 2x TTL | Check watchdog logs for errors; verify lease TTL config is loaded; raise blocker BLK-04-01 |
+| C04-02: Auto-requeue | Task moves from `in_progress` → `assigned` with `attempt_index` incremented | Task stays `in_progress` after watchdog expiry event | Verify `reassign_stale_tasks` is lease-aware; manually call `reassign_stale_tasks(stale_after_seconds=1)` and re-check |
+| C04-03: Max retries block | Task status becomes `blocked` when `attempt_index` > `max_lease_retries` | Task keeps re-assigning past max retries without blocking | Verify `max_lease_retries` config (default: 3); check engine logic for attempt_index threshold |
+| C04-04: Auto-blocker | `list_blockers` returns blocker with `source_task` matching expired task | No blocker raised after max retries exceeded | Manually verify `raise_blocker` is called from expiry path; check `test_blocker_lifecycle.py` passes |
+| C04-05: Lease clear on report | After `submit_report`, task record has `lease: null` | Lease fields persist after report | Verify `ingest_report` clears lease; file bug against engine if not |
+
+### CORE-05 Path Examples
+
+| Row | Happy Path | Fallback Condition | Fallback Action |
+|-----|-----------|-------------------|-----------------|
+| C05-01: dispatch.command | `poll_events` returns event with `correlation_id`, `task_id`, `target_agent` | Manager cycle completes but no `dispatch.command` event in bus | Verify manager emit call; check bus.emit is wired in dispatch path; use `publish_event` manually to validate bus pipeline |
+| C05-02: dispatch.ack | Worker emits ack with `correlation_id` matching command | Worker claims task but no ack event emitted | Verify worker claim path calls `bus.emit("dispatch.ack", ...)`; check correlation_id is passed through |
+| C05-03: worker.result | Completion emits result with `correlation_id` and outcome | Report submitted but no `worker.result` event | Verify `ingest_report` or worker loop emits result event; stub with manual `publish_event` if needed |
+| C05-04: Audit chain | Audit log contains command, ack, and result with matching correlation_id | Audit entries missing or out of order | Run `test_audit_log.py` to verify audit read/write; check `append_audit` is called for dispatch events |
+
+### CORE-06 Path Examples
+
+| Row | Happy Path | Fallback Condition | Fallback Action |
+|-----|-----------|-------------------|-----------------|
+| C06-01: dispatch.noop | Noop emitted with `reason` (`ack_timeout`/`no_available_worker`), `correlation_id`, `elapsed_seconds` | Dispatch times out but no noop event | Verify timeout detection loop exists; check noop emit path; use manual `publish_event("dispatch.noop", ...)` to validate pipeline |
+| C06-02: Noop chain | Correlation capture shows command → noop link with matching IDs | Noop event has different or missing correlation_id | Verify correlation_id is threaded from command to noop in timeout handler |
+| C06-03: Timeout matrix | At least 3 timeout scenarios observed (ack_timeout, no_available_worker, result_timeout) | Only 1-2 scenarios reproducible | Document which scenarios were observed; mark missing scenarios as "not yet observable" with justification |
+| C06-04: Edge cases | All 3 edge cases from [core-06-noop-edge-cases.md](core-06-noop-edge-cases.md) exercised | Edge case scenario not reproducible in test environment | Pre-fill expected outcomes in template; mark as "validated by design" with code review reference |
+
+---
+
 ## Cross-CORE Dependency Graph
 
 ```
