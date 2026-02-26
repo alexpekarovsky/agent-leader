@@ -141,4 +141,4 @@ After completion:
 
 - [docs/dual-cc-operation.md](dual-cc-operation.md) — Technical collision analysis and workflow options
 - [docs/swarm-mode.md](swarm-mode.md) — Phase B instance-aware identity resolution
-- [docs/task-queue-hygiene.md](task-queue-hygiene.md) — Claim override and task cancellation procedures
+- docs/task-queue-hygiene.md — Claim override and task cancellation procedures

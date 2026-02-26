@@ -40,3 +40,8 @@ secrets.json
 bus/
 state/
 decisions/
+saves/
+.autopilot-logs/
+.venv/
+.pytest_cache/
+agatha-quest/

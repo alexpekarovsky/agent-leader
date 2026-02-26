@@ -38,7 +38,7 @@
 
 | Panel | What Is Missing | Roadmap Phase | Reference |
 |-------|----------------|---------------|-----------|
-| Event Timeline | Queryable event stream per task with correlation threading | Phase D (v0.3.0) | [dashboard-data-contract-gaps.md](dashboard-data-contract-gaps.md) Gap #11 |
+| Event Timeline | Queryable event stream per task with correlation threading | Phase D (v0.3.0) | dashboard-data-contract-gaps.md Gap #11 |
 | Event Timeline | Dispatch no-op rate tracking | Phase D (v0.3.0) | Gap #13 |
 | Historical Trends | Periodic status snapshot capture to JSONL | Phase D+ (v0.3+) | Gap #1 (time-series throughput) |
 | Historical Trends | P50/P95/P99 task duration percentiles | Phase D+ (v0.3+) | Gap #7 |
@@ -60,11 +60,11 @@
 
 ## References
 
-- [dashboard-provenance-labels.md](dashboard-provenance-labels.md) -- source
+- dashboard-provenance-labels.md -- source
   labels shown on each panel
-- [data-source-trust-matrix.md](data-source-trust-matrix.md) -- authority and
+- data-source-trust-matrix.md -- authority and
   conflict resolution per source
-- [dashboard-data-contract-gaps.md](dashboard-data-contract-gaps.md) -- full
+- dashboard-data-contract-gaps.md -- full
   gap tracker with roadmap phases
 - [operator-alert-taxonomy.md](operator-alert-taxonomy.md) -- alert
   classification feeding the Alert Panel

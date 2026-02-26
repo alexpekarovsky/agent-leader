@@ -135,4 +135,4 @@ No action needed. The loop handles it automatically.
 
 - [docs/log-file-taxonomy.md](log-file-taxonomy.md) — Timeout marker format and location
 - [docs/troubleshooting-autopilot.md](troubleshooting-autopilot.md) — Timeout troubleshooting rows
-- [docs/incident-triage-order.md](incident-triage-order.md) — Timeout as a failure class
+- docs/incident-triage-order.md — Timeout as a failure class

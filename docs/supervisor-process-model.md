@@ -157,7 +157,7 @@ See [roadmap.md](roadmap.md) Phase F for details.
 ## References
 
 - [supervisor-cli-spec.md](supervisor-cli-spec.md) — Command and flag reference
-- [supervisor-pidfile-format.md](supervisor-pidfile-format.md) — PID file format and stale handling
+- supervisor-pidfile-format.md — PID file format and stale handling
 - [supervisor-startup-profiles.md](supervisor-startup-profiles.md) — Startup configurations
 - [tmux-vs-supervisor.md](tmux-vs-supervisor.md) — Feature comparison
 - [roadmap.md](roadmap.md) — Phase F supervisor runtime

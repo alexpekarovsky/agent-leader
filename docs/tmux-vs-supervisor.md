@@ -151,6 +151,6 @@ No state migration is needed — both runtimes use the same `state/` directory a
 ## References
 
 - [docs/supervisor-cli-spec.md](supervisor-cli-spec.md) — Supervisor command interface
-- [docs/supervisor-test-plan.md](supervisor-test-plan.md) — Supervisor test scenarios
+- docs/supervisor-test-plan.md — Supervisor test scenarios
 - [docs/headless-mvp-architecture.md](headless-mvp-architecture.md) — Component overview
 - [docs/roadmap.md](roadmap.md) — Future architecture phases

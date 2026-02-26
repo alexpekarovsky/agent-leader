@@ -218,7 +218,7 @@ orchestrator_status()
 ## References
 
 - [supervisor-cli-spec.md](supervisor-cli-spec.md) — Command reference (AUTO-M1-OPS-01)
-- [supervisor-pidfile-format.md](supervisor-pidfile-format.md) — PID file conventions
+- supervisor-pidfile-format.md — PID file conventions
 - [supervisor-process-model.md](supervisor-process-model.md) — Process lifecycle and failure modes
 - [troubleshooting-autopilot.md](troubleshooting-autopilot.md) — General autopilot troubleshooting
-- [incident-triage-order.md](incident-triage-order.md) — Ordered triage steps
+- incident-triage-order.md — Ordered triage steps

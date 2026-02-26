@@ -122,4 +122,4 @@ Each instance gets its own heartbeat slot, claim scope, and status entry. This e
 - [docs/swarm-mode.md](swarm-mode.md) — Full swarm mode prerequisites
 - [docs/roadmap.md](roadmap.md) — Phase B instance-aware presence details
 - [docs/headless-mvp-architecture.md](headless-mvp-architecture.md) — MVP limitations table
-- [docs/task-queue-hygiene.md](task-queue-hygiene.md) — Claim override and task cancellation procedures
+- docs/task-queue-hygiene.md — Claim override and task cancellation procedures

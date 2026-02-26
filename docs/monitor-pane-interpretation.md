@@ -155,6 +155,6 @@ If a loop's log files stop appearing (no new timestamps in `.autopilot-logs/`):
 ## References
 
 - [supervisor-cli-spec.md](supervisor-cli-spec.md) — Supervisor commands and status values
-- [supervisor-smoke-test-checklist.md](supervisor-smoke-test-checklist.md) — Manual verification steps
-- [supervisor-restart-backoff-tuning.md](supervisor-restart-backoff-tuning.md) — Timeout tuning profiles
+- supervisor-smoke-test-checklist.md — Manual verification steps
+- supervisor-restart-backoff-tuning.md — Timeout tuning profiles
 - [operator-runbook.md](operator-runbook.md) — Operational procedures

@@ -176,6 +176,6 @@ Note: Individual process failures during `start` do not cause a non-zero exit co
 
 ## References
 
-- [docs/supervisor-test-plan.md](supervisor-test-plan.md) — Manual test scenarios and failure injection
+- docs/supervisor-test-plan.md — Manual test scenarios and failure injection
 - [docs/headless-mvp-architecture.md](headless-mvp-architecture.md) — Component overview
 - [docs/operator-runbook.md](operator-runbook.md) — Operational procedures

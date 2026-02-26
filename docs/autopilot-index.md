@@ -17,14 +17,14 @@ Operator landing page for the headless multi-agent autopilot system. Start with 
 | [operator-runbook.md](operator-runbook.md) | Launch, restart, inspect logs, recover stale tasks, shut down |
 | [troubleshooting-autopilot.md](troubleshooting-autopilot.md) | Symptom/cause/action tables for common issues |
 | [log-file-taxonomy.md](log-file-taxonomy.md) | Log filename patterns, JSONL diagnostics, and review order |
-| [task-queue-hygiene.md](task-queue-hygiene.md) | Cancel mistaken tasks, bulk cleanup, deduplication |
+| task-queue-hygiene.md | Cancel mistaken tasks, bulk cleanup, deduplication |
 
 ## Supervisor
 
 | Doc | Purpose |
 |-----|---------|
 | [supervisor-cli-spec.md](supervisor-cli-spec.md) | Command interface: start, stop, status, restart, clean |
-| [supervisor-test-plan.md](supervisor-test-plan.md) | Manual test scenarios and failure injection checklist |
+| supervisor-test-plan.md | Manual test scenarios and failure injection checklist |
 | [tmux-pane-cheatsheet.md](tmux-pane-cheatsheet.md) | tmux pane layout and keyboard shortcuts |
 
 ## Multi-Session and Scaling

@@ -135,4 +135,4 @@ Manager                     Worker                  Watchdog
 ## References
 
 - [roadmap.md](roadmap.md) — Phase D deterministic dispatch
-- [watchdog-jsonl-schema.md](watchdog-jsonl-schema.md) — Watchdog event format
+- watchdog-jsonl-schema.md — Watchdog event format

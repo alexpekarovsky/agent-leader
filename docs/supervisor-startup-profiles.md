@@ -143,7 +143,7 @@ After a crash or unexpected shutdown.
 orchestrator_list_tasks(status="in_progress")
 ```
 
-See [post-restart-verification.md](post-restart-verification.md) for the full verification flowchart.
+See post-restart-verification.md for the full verification flowchart.
 
 ## Profile Comparison
 
@@ -160,5 +160,5 @@ See [post-restart-verification.md](post-restart-verification.md) for the full ve
 
 - [supervisor-cli-spec.md](supervisor-cli-spec.md) — Full command and flag reference
 - [tmux-vs-supervisor.md](tmux-vs-supervisor.md) — When to use supervisor vs tmux
-- [post-restart-verification.md](post-restart-verification.md) — Post-restart validation steps
+- post-restart-verification.md — Post-restart validation steps
 - [timeout-semantics.md](timeout-semantics.md) — Timeout tuning guidelines

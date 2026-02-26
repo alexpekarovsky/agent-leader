@@ -1,12 +1,12 @@
 # Three-Worker FAQ
 
-FAQ addendum for operating with 3 workers: three Claude Code sessions (CC1/CC2/CC3) or two Claude Code sessions plus Gemini (CC1/CC2/Gemini). Extends [dual-cc-conventions.md](dual-cc-conventions.md) and [multi-cc-conventions.md](multi-cc-conventions.md).
+FAQ addendum for operating with 3 workers: three Claude Code sessions (CC1/CC2/CC3) or two Claude Code sessions plus Gemini (CC1/CC2/Gemini). Extends [dual-cc-conventions.md](dual-cc-conventions.md) and multi-cc-conventions.md.
 
 ---
 
 **Q1: Can 3 Claude Code sessions share the `claude_code` identity?**
 
-Yes. All three sessions register as `claude_code` with the orchestrator. The orchestrator treats them as one logical agent for task ownership and routing purposes. To distinguish them operationally, use the CC1/CC2/CC3 labels defined in [multi-cc-conventions.md](multi-cc-conventions.md). Tag all report notes with `[CC1]`, `[CC2]`, or `[CC3]` so the manager and reviewers can trace which session did the work.
+Yes. All three sessions register as `claude_code` with the orchestrator. The orchestrator treats them as one logical agent for task ownership and routing purposes. To distinguish them operationally, use the CC1/CC2/CC3 labels defined in multi-cc-conventions.md. Tag all report notes with `[CC1]`, `[CC2]`, or `[CC3]` so the manager and reviewers can trace which session did the work.
 
 This is an interim workaround. When `instance_id` ships in Phase B (see Q7), each session will have a unique identifier.
 
@@ -61,7 +61,7 @@ The orchestrator detects staleness at the agent level, not the session level. If
 3. One of the remaining healthy CC sessions will claim it on next cycle
 4. Restart the failed session and reconnect
 
-See [instance-aware-status-fields.md](instance-aware-status-fields.md) for how instance-level staleness will work after Phase B.
+See instance-aware-status-fields.md for how instance-level staleness will work after Phase B.
 
 ---
 
@@ -89,12 +89,12 @@ With `instance_id`, each session gets a unique identifier (e.g., `claude_code#wo
 | Task ownership | `claude_code` (ambiguous) | `claude_code#worker-02` (precise) |
 | Dashboard display | One row per agent | One row per instance |
 
-The CC1/CC2/CC3 label convention becomes unnecessary -- instance_id replaces it with a system-level distinction. See [instance-aware-status-fields.md](instance-aware-status-fields.md) for the planned field schema.
+The CC1/CC2/CC3 label convention becomes unnecessary -- instance_id replaces it with a system-level distinction. See instance-aware-status-fields.md for the planned field schema.
 
 ---
 
 ## Related Docs
 
 - [dual-cc-conventions.md](dual-cc-conventions.md) -- Session labeling and report note prefixes for 2 CC sessions
-- [multi-cc-conventions.md](multi-cc-conventions.md) -- Extended conventions for 2-3 CC sessions, queue hygiene
-- [instance-aware-status-fields.md](instance-aware-status-fields.md) -- Planned instance-level status fields for Phase B
+- multi-cc-conventions.md -- Extended conventions for 2-3 CC sessions, queue hygiene
+- instance-aware-status-fields.md -- Planned instance-level status fields for Phase B
