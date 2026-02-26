@@ -6,6 +6,7 @@ Expose configurable multi-agent orchestration tools via MCP JSON-RPC.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -29,8 +30,11 @@ sys.stderr = os.fdopen(sys.stderr.fileno(), "w", 1)
 
 __version__ = "0.1.0"
 SCRIPT_DIR = Path(__file__).resolve().parent
-ROOT_DIR = Path(os.getenv("ORCHESTRATOR_ROOT", str(SCRIPT_DIR))).resolve()
+STARTUP_CWD = Path.cwd().resolve()
+ORCHESTRATOR_ROOT_RAW = os.getenv("ORCHESTRATOR_ROOT", "").strip()
+ROOT_DIR = Path(ORCHESTRATOR_ROOT_RAW or str(SCRIPT_DIR)).resolve()
 EXPECTED_ROOT_RAW = os.getenv("ORCHESTRATOR_EXPECTED_ROOT", "").strip()
+ENFORCE_SHARED_BINDING = os.getenv("ORCHESTRATOR_ENFORCE_SHARED_BINDING", "1").strip().lower() not in {"0", "false", "no"}
 POLICY_PATH = Path(
     os.getenv("ORCHESTRATOR_POLICY", str(ROOT_DIR / "config" / "policy.codex-manager.json"))
 ).resolve()
@@ -38,11 +42,26 @@ STATUS_VERBOSE_PATHS = os.getenv("ORCHESTRATOR_STATUS_VERBOSE_PATHS", "").strip(
 RUN_ID = os.getenv("ORCHESTRATOR_RUN_ID", "").strip()
 PROMPT_PROFILE_VERSION = os.getenv("ORCHESTRATOR_PROMPT_PROFILE_VERSION", "").strip()
 
+
+def _is_shared_agent_leader_install(path: Path) -> bool:
+    p = str(path)
+    return "/.local/share/agent-leader/current" in p
+
 if EXPECTED_ROOT_RAW:
     expected_root = Path(EXPECTED_ROOT_RAW).resolve()
     if ROOT_DIR != expected_root:
         raise RuntimeError(
             f"ORCHESTRATOR_ROOT mismatch: got '{ROOT_DIR}', expected '{expected_root}'"
+        )
+
+if ENFORCE_SHARED_BINDING and _is_shared_agent_leader_install(SCRIPT_DIR):
+    if not ORCHESTRATOR_ROOT_RAW:
+        raise RuntimeError(
+            "Shared agent-leader install requires explicit ORCHESTRATOR_ROOT to prevent cross-project binding leaks"
+        )
+    if not EXPECTED_ROOT_RAW:
+        raise RuntimeError(
+            "Shared agent-leader install requires ORCHESTRATOR_EXPECTED_ROOT (must match ORCHESTRATOR_ROOT)"
         )
 
 try:
@@ -56,6 +75,102 @@ _AUTO_LOOP_STOP = threading.Event()
 _AUTO_LOOP_THREAD: Optional[threading.Thread] = None
 STATUS_SNAPSHOTS_PATH = ROOT_DIR / "state" / "status_snapshots.jsonl"
 STATUS_SNAPSHOTS_LOCK = ROOT_DIR / "state" / ".status_snapshots.lock"
+
+# ── Runtime / source consistency ────────────────────────────────────
+_SOURCE_FILES = [
+    SCRIPT_DIR / "orchestrator_mcp_server.py",
+    SCRIPT_DIR / "orchestrator" / "engine.py",
+    SCRIPT_DIR / "orchestrator" / "policy.py",
+    SCRIPT_DIR / "orchestrator" / "bus.py",
+]
+
+
+def _compute_source_hash(paths: List[Path]) -> str:
+    """SHA-256 over the concatenated contents of *paths* that exist."""
+    h = hashlib.sha256()
+    for p in sorted(paths):
+        try:
+            h.update(p.read_bytes())
+        except Exception:
+            pass
+    return h.hexdigest()
+
+
+def _git_head_short(repo: Path) -> Optional[str]:
+    """Return the short git HEAD commit hash, or None."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, cwd=str(repo), timeout=5,
+        )
+        if out.returncode == 0:
+            return out.stdout.strip() or None
+    except Exception:
+        pass
+    return None
+
+
+_STARTUP_SOURCE_HASH: str = _compute_source_hash(_SOURCE_FILES)
+_STARTUP_GIT_COMMIT: Optional[str] = _git_head_short(SCRIPT_DIR)
+_SERVER_BINDING = {
+    "pid": os.getpid(),
+    "startup_cwd": str(STARTUP_CWD),
+    "root_dir": str(ROOT_DIR),
+    "script_dir": str(SCRIPT_DIR),
+    "shared_install": _is_shared_agent_leader_install(SCRIPT_DIR),
+    "orchestrator_root_env_set": bool(ORCHESTRATOR_ROOT_RAW),
+    "expected_root_env_set": bool(EXPECTED_ROOT_RAW),
+    "strict_shared_binding": bool(ENFORCE_SHARED_BINDING),
+}
+
+
+def _runtime_source_consistency() -> Dict[str, Any]:
+    """Compare startup source identity with current on-disk state."""
+    current_hash = _compute_source_hash(_SOURCE_FILES)
+    current_commit = _git_head_short(SCRIPT_DIR)
+    source_changed = current_hash != _STARTUP_SOURCE_HASH
+    commit_changed = (
+        _STARTUP_GIT_COMMIT is not None
+        and current_commit is not None
+        and current_commit != _STARTUP_GIT_COMMIT
+    )
+    mismatch = source_changed or commit_changed
+    warnings: List[str] = []
+    if source_changed:
+        warnings.append("source_hash_mismatch: runtime server may be stale")
+    if commit_changed:
+        warnings.append(
+            f"git_commit_mismatch: startup={_STARTUP_GIT_COMMIT} current={current_commit}"
+        )
+    return {
+        "ok": not mismatch,
+        "mismatch_detected": mismatch,
+        "startup_source_hash": _STARTUP_SOURCE_HASH,
+        "current_source_hash": current_hash,
+        "startup_git_commit": _STARTUP_GIT_COMMIT,
+        "current_git_commit": current_commit,
+        "source_files_checked": [p.name for p in sorted(_SOURCE_FILES)],
+        "warnings": warnings,
+    }
+
+
+def _server_binding_health() -> Dict[str, Any]:
+    warnings: List[str] = []
+    startup_cwd_matches_root = STARTUP_CWD == ROOT_DIR
+    if not startup_cwd_matches_root:
+        warnings.append(
+            f"startup_cwd_root_mismatch: cwd={STARTUP_CWD} root={ROOT_DIR}"
+        )
+    if _SERVER_BINDING["shared_install"] and not _SERVER_BINDING["orchestrator_root_env_set"]:
+        warnings.append("shared_install_without_orchestrator_root_env")
+    if _SERVER_BINDING["shared_install"] and not _SERVER_BINDING["expected_root_env_set"]:
+        warnings.append("shared_install_without_expected_root_env")
+    return {
+        **_SERVER_BINDING,
+        "startup_cwd_matches_root": startup_cwd_matches_root,
+        "ok": len(warnings) == 0,
+        "warnings": warnings,
+    }
 
 
 def send_response(response: Dict[str, Any]) -> None:
@@ -1293,6 +1408,14 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 current_task_count=len(tasks),
                 current_done_count=int(by_status.get("done", 0)),
             )
+            rsc = _runtime_source_consistency()
+            binding = _server_binding_health()
+            if not rsc["ok"]:
+                integrity["warnings"] = integrity.get("warnings", []) + rsc["warnings"]
+                integrity["ok"] = False
+            if not binding["ok"]:
+                integrity["warnings"] = integrity.get("warnings", []) + binding["warnings"]
+                integrity["ok"] = False
             payload: Dict[str, Any] = {
                 "server": "agent-leader-orchestrator",
                 "version": __version__,
@@ -1328,10 +1451,12 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "live_status_text": live_status.get("report_text", ""),
                 "live_status": live_status.get("report", {}),
                 "integrity": integrity,
+                "runtime_source_consistency": rsc,
+                "server_binding": binding,
                 "stats_provenance": {
                     "dashboard_percent": "live_status_report_estimate",
                     "task_summary": integrity.get("provenance", {}).get("task_counts"),
-                    "integrity_state": "ok" if integrity.get("ok") else "degraded",
+                    "integrity_state": "ok" if (integrity.get("ok") and rsc["ok"]) else "degraded",
                 },
                 "recommended_status_cadence_seconds": live_status.get("recommended_cadence_seconds", 600),
                 "run_context": {
