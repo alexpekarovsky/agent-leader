@@ -2030,6 +2030,141 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Test 25: new test file validation (reassign, list_bugs, lifecycle, cursor)
+# ---------------------------------------------------------------------------
+echo "--- Test 25: new test file validation ---"
+
+# test_reassign_stale_tasks.py
+reassign_test="$ROOT_DIR/tests/test_reassign_stale_tasks.py"
+if [[ -f "$reassign_test" ]]; then
+  report "test_reassign_stale_tasks.py exists" "true"
+else
+  report "test_reassign_stale_tasks.py exists" "false"
+fi
+
+if grep -q "ReassignStaleBasicTests" "$reassign_test" 2>/dev/null; then
+  report "reassign tests have basic test class" "true"
+else
+  report "reassign tests have basic test class" "false"
+fi
+
+if grep -q "include_blocked" "$reassign_test" 2>/dev/null; then
+  report "reassign tests cover include_blocked" "true"
+else
+  report "reassign tests cover include_blocked" "false"
+fi
+
+if grep -q "reassigned_from" "$reassign_test" 2>/dev/null; then
+  report "reassign tests verify metadata fields" "true"
+else
+  report "reassign tests verify metadata fields" "false"
+fi
+
+# test_list_bugs_and_owner_tasks.py
+bugs_test="$ROOT_DIR/tests/test_list_bugs_and_owner_tasks.py"
+if [[ -f "$bugs_test" ]]; then
+  report "test_list_bugs_and_owner_tasks.py exists" "true"
+else
+  report "test_list_bugs_and_owner_tasks.py exists" "false"
+fi
+
+if grep -q "ListBugsTests" "$bugs_test" 2>/dev/null; then
+  report "list_bugs tests have bug test class" "true"
+else
+  report "list_bugs tests have bug test class" "false"
+fi
+
+if grep -q "ListTasksForOwnerTests" "$bugs_test" 2>/dev/null; then
+  report "list_bugs tests have owner tasks class" "true"
+else
+  report "list_bugs tests have owner tasks class" "false"
+fi
+
+if grep -q "combined_status_and_owner_filter" "$bugs_test" 2>/dev/null; then
+  report "list_bugs tests cover combined filters" "true"
+else
+  report "list_bugs tests cover combined filters" "false"
+fi
+
+# test_task_lifecycle_integration.py
+lifecycle_test="$ROOT_DIR/tests/test_task_lifecycle_integration.py"
+if [[ -f "$lifecycle_test" ]]; then
+  report "test_task_lifecycle_integration.py exists" "true"
+else
+  report "test_task_lifecycle_integration.py exists" "false"
+fi
+
+if grep -q "test_happy_path_lifecycle" "$lifecycle_test" 2>/dev/null; then
+  report "lifecycle tests have happy path" "true"
+else
+  report "lifecycle tests have happy path" "false"
+fi
+
+if grep -q "test_failed_validation_opens_bug" "$lifecycle_test" 2>/dev/null; then
+  report "lifecycle tests cover failed validation" "true"
+else
+  report "lifecycle tests cover failed validation" "false"
+fi
+
+if grep -q "test_blocked_then_resolved" "$lifecycle_test" 2>/dev/null; then
+  report "lifecycle tests cover blocker resolution" "true"
+else
+  report "lifecycle tests cover blocker resolution" "false"
+fi
+
+# test_get_agent_cursor.py
+cursor_test="$ROOT_DIR/tests/test_get_agent_cursor.py"
+if [[ -f "$cursor_test" ]]; then
+  report "test_get_agent_cursor.py exists" "true"
+else
+  report "test_get_agent_cursor.py exists" "false"
+fi
+
+if grep -q "test_cursor_advances_after_poll" "$cursor_test" 2>/dev/null; then
+  report "cursor tests cover poll advancement" "true"
+else
+  report "cursor tests cover poll advancement" "false"
+fi
+
+if grep -q "independent_cursors" "$cursor_test" 2>/dev/null; then
+  report "cursor tests cover agent independence" "true"
+else
+  report "cursor tests cover agent independence" "false"
+fi
+
+# core-03-reviewer-bundle.md
+bundle="$ROOT_DIR/docs/core-03-reviewer-bundle.md"
+if [[ -f "$bundle" ]]; then
+  report "core-03-reviewer-bundle.md exists" "true"
+else
+  report "core-03-reviewer-bundle.md exists" "false"
+fi
+
+if grep -q "Artifact Inventory" "$bundle" 2>/dev/null; then
+  report "reviewer bundle has artifact inventory" "true"
+else
+  report "reviewer bundle has artifact inventory" "false"
+fi
+
+if grep -q "Witness Observations" "$bundle" 2>/dev/null; then
+  report "reviewer bundle has witness observations" "true"
+else
+  report "reviewer bundle has witness observations" "false"
+fi
+
+if grep -q "Cross-Source Reconciliation" "$bundle" 2>/dev/null; then
+  report "reviewer bundle has reconciliation section" "true"
+else
+  report "reviewer bundle has reconciliation section" "false"
+fi
+
+if grep -q "Reviewer Checklist" "$bundle" 2>/dev/null; then
+  report "reviewer bundle has reviewer checklist" "true"
+else
+  report "reviewer bundle has reviewer checklist" "false"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo
