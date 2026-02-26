@@ -278,6 +278,79 @@ _Record any unexpected behavior, edge cases, or warnings observed during the rev
 
 ---
 
+## Appendix A: Example Acceptance Packet Layout
+
+Example of a completed CORE-03 acceptance packet directory structure using `[claude-multi-ai][AUTO-M1-CORE]` conventions:
+
+```
+evidence/
+  core-03/
+    claim-response.json          # C03-01: Raw claim_next_task response
+    task-lease.json              # C03-02: list_tasks showing lease fields
+    audit-claim.json             # C03-03: Audit log task.claimed entry
+    field-check.md               # C03-04: Filled lease field verification
+    test-results.txt             # C03-05: pytest output for T1,T2,T6,T7
+```
+
+### Example C03-01: Claim Response (filled)
+
+```json
+{
+  "id": "TASK-abc12345",
+  "title": "[claude-multi-ai][AUTO-M1-CORE] Implement lease schema",
+  "status": "in_progress",
+  "owner": "claude_code",
+  "lease": {
+    "lease_id": "lease-7f3a9e2b",
+    "task_id": "TASK-abc12345",
+    "owner_instance_id": "claude_code#worker-01",
+    "claimed_at": "2026-02-26T08:00:00+00:00",
+    "expires_at": "2026-02-26T08:10:00+00:00",
+    "renewed_at": null,
+    "attempt_index": 1
+  }
+}
+```
+
+### Example C03-04: Lease Field Verification (filled)
+
+| Field | Expected | Observed | Match? |
+|-------|----------|----------|--------|
+| `lease_id` | Non-empty string | `lease-7f3a9e2b` | YES |
+| `task_id` | Matches claimed task | `TASK-abc12345` | YES |
+| `owner_instance_id` | Matches claimer | `claude_code#worker-01` | YES |
+| `claimed_at` | Valid ISO 8601 | `2026-02-26T08:00:00+00:00` | YES |
+| `expires_at` | `claimed_at + 600s` | `2026-02-26T08:10:00+00:00` | YES |
+| `renewed_at` | null (first claim) | `null` | YES |
+| `attempt_index` | 1 | `1` | YES |
+
+### Example Reviewer Verdict (filled)
+
+| Criterion | Pass/Fail |
+|-----------|-----------|
+| All 5 artifacts present and valid | PASS |
+| Lease field values internally consistent | PASS |
+| Test results show 0 failures for T1, T2, T6, T7 | PASS |
+| Witness observations complete (4/4) | PASS |
+| Cross-source reconciliation clean | PASS |
+| **CORE-03 overall** | **PASS** |
+
+---
+
+## Appendix B: Tagging Conventions
+
+All CORE-03 artifacts follow `[claude-multi-ai][AUTO-M1-CORE]` conventions:
+
+| Convention | Format | Example |
+|------------|--------|---------|
+| Task title prefix | `[claude-multi-ai][AUTO-M1-CORE-03]` | `[claude-multi-ai][AUTO-M1-CORE-03] Implement lease schema` |
+| Bundle ID | `AUTO-M1-CORE-03-BUNDLE-YYYYMMDD` | `AUTO-M1-CORE-03-BUNDLE-20260226` |
+| Evidence directory | `evidence/core-03/` | `evidence/core-03/claim-response.json` |
+| Commit message tag | `[AUTO-M1-CORE-03]` | `feat: [AUTO-M1-CORE-03] add lease schema to claim` |
+| Audit log filter | `tool=orchestrator_claim_next_task` | Filters claim-related audit entries |
+
+---
+
 ## References
 
 - [lease-schema-test-plan.md](lease-schema-test-plan.md) — Test case definitions (T1-T8)
