@@ -110,6 +110,53 @@ all above + live session        ───>  C06-05 witness log
 
 ---
 
+## Unblock Recommendations
+
+Practical steps when codex outputs are delayed or missing. Each recommendation allows parallel progress without waiting for the full codex deliverable.
+
+### CORE-04 Unblock Recommendations
+
+| Blocker | Likely Cause | Unblock Action | Owner |
+|---------|-------------|----------------|-------|
+| No `lease_expired` watchdog event | Watchdog not wired to lease TTL check | Write integration test with mocked expiry time; stub lease TTL to 1s in test config | claude_code |
+| Requeue not happening on expiry | `requeue_stale_in_progress_tasks` not lease-aware | Add lease-aware requeue path in engine; test with `stale_after_seconds=1` | codex |
+| Max retries config missing | `max_lease_retries` not yet in policy schema | Use hardcoded default (3) in engine; add policy key later | codex |
+| Auto-blocker not raised | `raise_blocker` not called from expiry path | Test blocker lifecycle independently (already covered in `test_blocker_lifecycle.py`) | claude_code |
+| Lease not cleared on report | `ingest_report` doesn't touch lease fields | Write test asserting lease fields absent after report; flag to codex | claude_code |
+
+### CORE-05 Unblock Recommendations
+
+| Blocker | Likely Cause | Unblock Action | Owner |
+|---------|-------------|----------------|-------|
+| No `dispatch.command` event | Manager dispatch loop not wired to emit | Define event schema in test; emit manually in integration test to validate pipeline | claude_code |
+| No `dispatch.ack` event | Worker claim path doesn't emit ack | Write test asserting `correlation_id` threading from command to ack | claude_code |
+| No `worker.result` event | Report path doesn't emit result event | Write test asserting full chain; stub with `publish_event` in interim | claude_code |
+| Correlation ID not threaded | No UUID generation at dispatch point | Define `correlation_id` field in event schema doc; flag to codex as prerequisite | claude_code |
+| Audit log gaps | `_audit_tool_call` not called for dispatch events | Verify audit entries exist in `test_audit_log_read.py`; extend if needed | claude_code |
+
+### CORE-06 Unblock Recommendations
+
+| Blocker | Likely Cause | Unblock Action | Owner |
+|---------|-------------|----------------|-------|
+| No `dispatch.noop` event | Noop path not implemented | Write event schema test assuming noop event structure; flag to codex | claude_code |
+| Reason enum not defined | No standard values for noop reasons | Propose enum: `no_available_worker`, `timeout`, `empty_queue`; document in schema doc | claude_code |
+| Timeout config missing | `dispatch_timeout_seconds` not in policy | Use default (30s) in test; add to policy schema doc | claude_code |
+| Edge cases not observable | Need live noop events to fill matrix | Pre-fill edge case template with expected scenarios; validate when events land | claude_code |
+
+### Proactive Pre-Work (do now, validate later)
+
+These tasks can be completed before codex delivers the code, then validated against real outputs:
+
+| # | Task | File | Depends on codex? |
+|---|------|------|--------------------|
+| 1 | Write dispatch event schema test (command + ack + result) | `tests/test_dispatch_events.py` | No — test structure only |
+| 2 | Write noop event schema test | `tests/test_noop_diagnostic.py` | No — test structure only |
+| 3 | Pre-fill CORE-05 schema validation table (C05-05) | `evidence/core-05/schema-check.md` | No — template only |
+| 4 | Pre-fill CORE-06 timeout matrix (C06-03) | `evidence/core-06/timeout-matrix.md` | No — template only |
+| 5 | Pre-fill CORE-06 edge case results (C06-04) | `evidence/core-06/edge-cases.md` | No — template only |
+
+---
+
 ## Cross-CORE Dependency Graph
 
 ```
