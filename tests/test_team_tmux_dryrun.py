@@ -251,6 +251,29 @@ class TeamTmuxDryRunSpacesTests(unittest.TestCase):
             # Log dir should appear in header
             self.assertIn(str(spaced_log), proc.stdout)
 
+    def test_custom_log_dir_with_spaces_propagates_to_loop_commands(self) -> None:
+        """Custom spaced log-dir should appear safely in manager/worker/watchdog lines."""
+        with tempfile.TemporaryDirectory() as tmp:
+            spaced_proj = Path(tmp) / "proj root"
+            spaced_proj.mkdir()
+            spaced_log = Path(tmp) / "logs with spaces"
+            spaced_log.mkdir()
+            proc = _dry_run(project_root=str(spaced_proj), log_dir=str(spaced_log))
+            self.assertEqual(0, proc.returncode)
+            lines = proc.stdout.splitlines()
+            loop_lines = [
+                l for l in lines
+                if "_loop" in l and "tmux" in l and "monitor_loop" not in l
+            ]
+            self.assertEqual(4, len(loop_lines), f"expected 4 loop commands, got {len(loop_lines)}")
+            for ll in loop_lines:
+                self.assertTrue(
+                    str(spaced_log) in ll
+                    or str(spaced_log).replace(" ", "\\ ") in ll
+                    or "logs\\ with\\ spaces" in ll,
+                    f"spaced log-dir not found in: {ll}",
+                )
+
     def test_spaces_do_not_break_tmux_command_count(self) -> None:
         """Should still emit 5 tmux commands even with spaced paths."""
         with tempfile.TemporaryDirectory() as tmp:

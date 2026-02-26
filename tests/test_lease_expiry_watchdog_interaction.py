@@ -269,6 +269,34 @@ class WatchdogDoesNotMutateStateTests(unittest.TestCase):
                 self.assertEqual("list", entry["expected_type"])
                 self.assertEqual("dict", entry["previous_type"])
 
+    def test_watchdog_once_missing_state_files_graceful(self) -> None:
+        """Missing state files should not crash watchdog --once and output stays parseable."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log_dir = root / "watchdog-logs"
+            log_dir.mkdir(exist_ok=True)
+            script = Path(__file__).resolve().parent.parent / "scripts" / "autopilot" / "watchdog_loop.sh"
+            if not script.exists():
+                self.skipTest("watchdog_loop.sh not found")
+
+            proc = subprocess.run(
+                ["bash", str(script), "--project-root", str(root), "--log-dir", str(log_dir), "--once"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            self.assertEqual(0, proc.returncode, proc.stderr)
+
+            jsonl_files = list(log_dir.glob("watchdog-*.jsonl"))
+            if not jsonl_files:
+                return
+            content = jsonl_files[0].read_text(encoding="utf-8")
+            for line in content.splitlines():
+                if line.strip():
+                    parsed = json.loads(line)
+                    self.assertIn("kind", parsed)
+
 
 # ---------------------------------------------------------------------------
 # 2. Core engine recovery events and status changes
