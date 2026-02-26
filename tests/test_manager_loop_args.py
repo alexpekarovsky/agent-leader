@@ -27,6 +27,7 @@ class ManagerLoopArgTests(unittest.TestCase):
             timeout=_TIMEOUT,
         )
         self.assertNotEqual(0, proc.returncode)
+        self.assertEqual(1, proc.returncode)
 
     def test_unknown_arg_stderr_contains_error_text(self) -> None:
         proc = subprocess.run(

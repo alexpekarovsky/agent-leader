@@ -5,7 +5,9 @@ exit code and expected error text on stderr.
 """
 from __future__ import annotations
 
+import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -18,48 +20,71 @@ _TIMEOUT = 5
 class WorkerLoopArgTests(unittest.TestCase):
     """Bounded tests for CLI argument validation."""
 
-    def test_unknown_arg_exits_nonzero(self) -> None:
-        proc = subprocess.run(
-            ["bash", WORKER_LOOP, "--bogus-flag"],
+    def _run_worker(
+        self, args: list[str], *, env: dict[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        merged_env = os.environ.copy()
+        if env:
+            merged_env.update(env)
+        return subprocess.run(
+            ["bash", WORKER_LOOP, *args],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             timeout=_TIMEOUT,
+            env=merged_env,
         )
+
+    def test_unknown_arg_exits_nonzero(self) -> None:
+        proc = self._run_worker(["--bogus-flag"])
         self.assertNotEqual(0, proc.returncode)
+        self.assertEqual(1, proc.returncode)
 
     def test_unknown_arg_stderr_contains_error_text(self) -> None:
-        proc = subprocess.run(
-            ["bash", WORKER_LOOP, "--bogus-flag"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=_TIMEOUT,
-        )
+        proc = self._run_worker(["--bogus-flag"])
         self.assertIn("Unknown arg", proc.stderr)
         self.assertIn("--bogus-flag", proc.stderr)
 
     def test_unknown_arg_stderr_contains_error_level(self) -> None:
-        proc = subprocess.run(
-            ["bash", WORKER_LOOP, "--not-a-real-option"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=_TIMEOUT,
-        )
+        proc = self._run_worker(["--not-a-real-option"])
         self.assertIn("[ERROR]", proc.stderr)
 
     def test_multiple_unknown_args_rejects_first(self) -> None:
         """Script should fail on the first unrecognized arg."""
-        proc = subprocess.run(
-            ["bash", WORKER_LOOP, "--aaa", "--bbb"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=_TIMEOUT,
-        )
+        proc = self._run_worker(["--aaa", "--bbb"])
         self.assertNotEqual(0, proc.returncode)
         self.assertIn("--aaa", proc.stderr)
+
+    def test_missing_required_args_exits_nonzero_with_message(self) -> None:
+        proc = self._run_worker(["--cli", "codex"])
+        self.assertNotEqual(0, proc.returncode)
+        self.assertIn("--cli and --agent are required", proc.stderr)
+
+    def test_unsupported_cli_exits_nonzero_with_error_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            fake_cli = bin_dir / "fakecli"
+            fake_cli.write_text("#!/usr/bin/env bash\nexit 0\n")
+            fake_cli.chmod(0o755)
+
+            proc = self._run_worker(
+                [
+                    "--cli",
+                    "fakecli",
+                    "--agent",
+                    "claude_code",
+                    "--once",
+                    "--project-root",
+                    tmp,
+                    "--log-dir",
+                    str(Path(tmp) / "logs"),
+                ],
+                env={"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"},
+            )
+            self.assertNotEqual(0, proc.returncode)
+            self.assertIn("Unsupported CLI: fakecli", proc.stderr)
+            self.assertIn("worker cycle failed", proc.stderr)
 
 
 if __name__ == "__main__":

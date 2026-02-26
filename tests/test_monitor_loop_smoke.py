@@ -43,6 +43,39 @@ def _run_monitor(
 class MonitorLoopSmokeTests(unittest.TestCase):
     """Bounded smoke tests — no live codex MCP dependency."""
 
+    @staticmethod
+    def _decode_stream(data: object) -> str:
+        if data is None:
+            return ""
+        if isinstance(data, bytes):
+            return data.decode("utf-8", errors="replace")
+        return str(data)
+
+    def _run_and_capture_with_env(
+        self,
+        project_root: str,
+        *,
+        interval: str = _INTERVAL,
+        extra_env: dict[str, str] | None = None,
+    ) -> tuple[str, str]:
+        """Run monitor_loop and return (stdout, stderr), tolerating timeout."""
+        env = os.environ.copy()
+        env["TERM"] = "dumb"
+        if extra_env:
+            env.update(extra_env)
+        try:
+            proc = subprocess.run(
+                ["bash", MONITOR_LOOP, project_root, interval],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=_TIMEOUT,
+                env=env,
+            )
+            return proc.stdout, proc.stderr
+        except subprocess.TimeoutExpired as exc:
+            return self._decode_stream(exc.stdout), self._decode_stream(exc.stderr)
+
     def _run_and_capture(
         self, project_root: str, interval: str = _INTERVAL
     ) -> str:
@@ -84,6 +117,35 @@ class MonitorLoopSmokeTests(unittest.TestCase):
             output = self._run_and_capture(tmp)
             self.assertIn("manager-codex", output)
             self.assertIn("worker-claude", output)
+
+    def test_missing_logs_directory_does_not_emit_ls_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            stdout, stderr = self._run_and_capture_with_env(tmp)
+            self.assertIn(f"project={tmp}", stdout)
+            self.assertNotIn("No such file", stdout)
+            self.assertNotIn("No such file", stderr)
+
+    def test_codex_list_output_is_capped_to_five_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            fake_codex = bin_dir / "codex"
+            fake_codex.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"${1:-}\" = \"mcp\" ] && [ \"${2:-}\" = \"list\" ]; then\n"
+                "  printf 'line1\\nline2\\nline3\\nline4\\nline5\\nline6\\nline7\\n'\n"
+                "fi\n"
+            )
+            fake_codex.chmod(0o755)
+
+            stdout, _ = self._run_and_capture_with_env(
+                tmp,
+                extra_env={"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"},
+            )
+            for line in ("line1", "line2", "line3", "line4", "line5"):
+                self.assertIn(line, stdout)
+            self.assertNotIn("line6", stdout)
+            self.assertNotIn("line7", stdout)
 
     def test_bounded_runtime(self) -> None:
         """Verify the loop is killed within the timeout window."""
