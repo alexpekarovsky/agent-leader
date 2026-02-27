@@ -316,11 +316,13 @@ class LeaseResponseCompatibilityTests(unittest.TestCase):
             self.assertEqual(claimed["lease"]["lease_id"], deserialized["lease"]["lease_id"])
 
     def test_no_task_returns_none(self) -> None:
-        """When no tasks available, claim returns None (not error)."""
+        """When no tasks available, claim returns None or throttled dict (not error)."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             orch = _make_orch(root)
             _connect(orch, root, "claude_code")
+            # Clear anti-spam cooldown set by connect_to_leader's auto-claim attempt.
+            orch._claim_cooldowns.clear()
 
             result = orch.claim_next_task("claude_code")
             self.assertIsNone(result)

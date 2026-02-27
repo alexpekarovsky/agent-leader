@@ -12,7 +12,6 @@ import os
 import subprocess
 import sys
 import threading
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -26,8 +25,15 @@ try:
 except Exception:  # pragma: no cover
     fcntl = None
 
-sys.stdout = os.fdopen(sys.stdout.fileno(), "w", 1)
-sys.stderr = os.fdopen(sys.stderr.fileno(), "w", 1)
+# Force line-buffered stdout/stderr for MCP JSON-RPC transport.
+# Skip when running under a test harness (pytest captures stdout via wrapper
+# objects whose fileno() may be invalid or shared).
+if not hasattr(sys, "_called_from_test") and os.environ.get("PYTEST_CURRENT_TEST") is None:
+    try:
+        sys.stdout = os.fdopen(sys.stdout.fileno(), "w", 1)
+        sys.stderr = os.fdopen(sys.stderr.fileno(), "w", 1)
+    except (OSError, AttributeError):
+        pass
 
 __version__ = "0.1.0"
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -1767,9 +1773,25 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             return _ok_and_audit(request_id, name, args, tasks)
 
         if name == "orchestrator_claim_next_task":
-            task = ORCH.claim_next_task(owner=args["agent"], instance_id=args.get("instance_id"))
-            if task:
-                return _ok_and_audit(request_id, name, args, task)
+            result = ORCH.claim_next_task(owner=args["agent"], instance_id=args.get("instance_id"))
+            if result and isinstance(result, dict) and result.get("throttled"):
+                # Anti-spam cooldown: rapid empty claims are suppressed.
+                backoff = result.get("backoff_seconds", 5)
+                return _ok(
+                    request_id,
+                    {
+                        "task": None,
+                        "throttled": True,
+                        "message": result.get("message", "claim_cooldown"),
+                        "retry_hint": {
+                            "strategy": "backoff",
+                            "backoff_seconds": backoff,
+                            "cooldown_seconds": result.get("cooldown_seconds", 5),
+                        },
+                    },
+                )
+            if result:
+                return _ok_and_audit(request_id, name, args, result)
             return _ok(
                 request_id,
                 {
