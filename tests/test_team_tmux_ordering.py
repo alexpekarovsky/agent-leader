@@ -1,9 +1,9 @@
 """Tests for team_tmux.sh --dry-run command ordering consistency.
 
 AL-CORE-20 (TASK-6fab5022): Validates that dry-run output prints tmux
-commands in the expected order: new-session (manager), split-window
-(claude), split-window (gemini), split-window (watchdog), new-window
-(monitor), select-layout.
+commands in the expected order for the current topology:
+new-session (manager), new-window (workers), split-window x3
+(gemini/wingman/watchdog), new-window (monitor), select-layout.
 """
 from __future__ import annotations
 
@@ -61,9 +61,9 @@ class TeamTmuxCommandOrderingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cmds = self._get_tmux_commands(tmp)
             split_indices = [i for i, c in enumerate(cmds) if "split-window" in c]
-            new_window_indices = [i for i, c in enumerate(cmds) if "new-window" in c]
-            self.assertEqual(1, len(new_window_indices))
-            self.assertGreater(new_window_indices[0], max(split_indices))
+            monitor_window_indices = [i for i, c in enumerate(cmds) if "new-window" in c and " -n monitor " in c]
+            self.assertEqual(1, len(monitor_window_indices))
+            self.assertGreater(monitor_window_indices[0], max(split_indices))
 
     def test_select_layout_comes_last(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -73,10 +73,10 @@ class TeamTmuxCommandOrderingTests(unittest.TestCase):
             self.assertEqual(len(cmds) - 1, layout_indices[0])
 
     def test_total_tmux_command_count(self) -> None:
-        """Should have exactly 6 tmux commands: new-session + 3 splits + new-window + select-layout."""
+        """Should have 7 tmux commands in default topology."""
         with tempfile.TemporaryDirectory() as tmp:
             cmds = self._get_tmux_commands(tmp)
-            self.assertEqual(6, len(cmds))
+            self.assertEqual(7, len(cmds))
 
     def test_manager_in_first_split_context(self) -> None:
         """First split-window should reference manager pane context."""

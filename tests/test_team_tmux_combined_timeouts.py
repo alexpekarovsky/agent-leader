@@ -89,7 +89,7 @@ class TeamTmuxCombinedTimeoutsTests(unittest.TestCase):
             proc = _dry_run(worker_cli_timeout=777, log_dir=tmp)
             lines = proc.stdout.splitlines()
             worker_lines = [l for l in lines if "worker_loop" in l]
-            self.assertEqual(2, len(worker_lines))
+            self.assertEqual(3, len(worker_lines))
             for wl in worker_lines:
                 self.assertIn("--cli-timeout '777'", wl)
 

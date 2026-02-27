@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SUPERVISOR = str(REPO_ROOT / "scripts" / "autopilot" / "supervisor.sh")
 
 _TIMEOUT = 30
-_PROCS = ("manager", "claude", "gemini", "watchdog")
+_PROCS = ("manager", "wingman", "claude", "gemini", "codex_worker", "watchdog")
 
 
 def _make_stub_cli(stub_dir: Path, name: str) -> None:
@@ -74,7 +74,8 @@ class SupervisorStatusFormatTests(unittest.TestCase):
         proc = _run("status", self.pid_dir, self.log_dir, self.env)
         for name in _PROCS:
             # Match: name  stopped  pid=-  restarts=N
-            pattern = rf"{name}\s+stopped\s+pid=-"
+            expected_status = "disabled" if name == "codex_worker" else "stopped"
+            pattern = rf"{name}\s+{expected_status}\s+pid=-"
             self.assertRegex(proc.stdout, pattern, f"expected stopped format for {name}")
 
     def test_running_status_has_numeric_pid(self) -> None:

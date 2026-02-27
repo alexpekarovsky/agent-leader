@@ -49,7 +49,7 @@ class RunCliPromptTimeoutNormalizationTests(unittest.TestCase):
             env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
             start = time.time()
             proc = subprocess.run(
-                ["bash", "-lc", cmd],
+                ["bash", "-c", cmd],
                 cwd=REPO_ROOT,
                 env=env,
                 stdout=subprocess.PIPE,

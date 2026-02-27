@@ -58,7 +58,7 @@ class TeamTmuxIntervalPropagationTests(unittest.TestCase):
             self.assertEqual(0, proc.returncode)
             lines = proc.stdout.splitlines()
             worker_lines = [l for l in lines if "worker_loop" in l]
-            self.assertEqual(2, len(worker_lines), f"expected 2 worker lines, got {len(worker_lines)}")
+            self.assertEqual(3, len(worker_lines), f"expected 3 worker lines, got {len(worker_lines)}")
             for wl in worker_lines:
                 self.assertIn("--interval '60'", wl)
 

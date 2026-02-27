@@ -83,8 +83,8 @@ class TeamTmuxDryRunTests(unittest.TestCase):
             proc = _dry_run(worker_cli_timeout=99, log_dir=tmp)
             lines = proc.stdout.splitlines()
             worker_lines = [l for l in lines if "worker_loop" in l]
-            # Should have 2 worker lines (claude + gemini)
-            self.assertEqual(2, len(worker_lines), f"expected 2 worker lines, got {len(worker_lines)}")
+            # Default topology has 3 worker lines (claude + gemini + wingman).
+            self.assertEqual(3, len(worker_lines), f"expected 3 worker lines, got {len(worker_lines)}")
             for wl in worker_lines:
                 self.assertIn("--cli-timeout '99'", wl)
 
@@ -195,12 +195,12 @@ class TeamTmuxDryRunTests(unittest.TestCase):
             proc = _dry_run(log_dir=tmp)
             lines = proc.stdout.splitlines()
             # manager, claude worker, gemini worker, watchdog use --log-dir;
-            # monitor_loop does not, so exclude it.
+            # wingman + watchdog + manager/workers use --log-dir; monitor_loop does not.
             loop_lines = [
                 l for l in lines
                 if "_loop" in l and "tmux" in l and "monitor_loop" not in l
             ]
-            self.assertEqual(4, len(loop_lines), f"expected 4 loop commands, got {len(loop_lines)}")
+            self.assertEqual(5, len(loop_lines), f"expected 5 loop commands, got {len(loop_lines)}")
             for ll in loop_lines:
                 self.assertIn(tmp, ll, f"log dir not in command: {ll}")
 
@@ -265,7 +265,7 @@ class TeamTmuxDryRunSpacesTests(unittest.TestCase):
                 l for l in lines
                 if "_loop" in l and "tmux" in l and "monitor_loop" not in l
             ]
-            self.assertEqual(4, len(loop_lines), f"expected 4 loop commands, got {len(loop_lines)}")
+            self.assertEqual(5, len(loop_lines), f"expected 5 loop commands, got {len(loop_lines)}")
             for ll in loop_lines:
                 self.assertTrue(
                     str(spaced_log) in ll
@@ -275,15 +275,15 @@ class TeamTmuxDryRunSpacesTests(unittest.TestCase):
                 )
 
     def test_spaces_do_not_break_tmux_command_count(self) -> None:
-        """Should still emit 5 tmux commands even with spaced paths."""
+        """Should still emit 7 tmux commands even with spaced paths."""
         with tempfile.TemporaryDirectory() as tmp:
             spaced = Path(tmp) / "has spaces here"
             spaced.mkdir()
             proc = _dry_run(project_root=str(spaced), log_dir=tmp)
             lines = proc.stdout.splitlines()
             tmux_lines = [l for l in lines if l.strip().startswith("tmux ")]
-            # new-session, split-window x2, split-window, new-window, select-layout = 6
-            self.assertEqual(6, len(tmux_lines), f"expected 6 tmux commands, got {tmux_lines}")
+            # new-session, new-window(workers), split-window x3, new-window(monitor), select-layout = 7
+            self.assertEqual(7, len(tmux_lines), f"expected 7 tmux commands, got {tmux_lines}")
 
     def test_monitor_command_intact_with_spaced_project_root(self) -> None:
         """Monitor command should contain the project root even with spaces."""
