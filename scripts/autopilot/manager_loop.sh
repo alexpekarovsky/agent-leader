@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT_DIR/scripts/autopilot/common.sh"
 
 CLI="codex"
+LEADER_AGENT="codex"
 PROJECT_ROOT="$ROOT_DIR"
 INTERVAL=20
 ONCE=false
@@ -15,6 +16,7 @@ CLI_TIMEOUT=300
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --cli) CLI="$2"; shift 2 ;;
+    --leader-agent) LEADER_AGENT="$2"; shift 2 ;;
     --project-root) PROJECT_ROOT="$2"; shift 2 ;;
     --interval) INTERVAL="$2"; shift 2 ;;
     --log-dir) LOG_DIR="$2"; shift 2 ;;
@@ -41,8 +43,8 @@ You are the manager/leader in an autonomous loop.
 
 Execute exactly one manager cycle in this project and exit when done.
 Required actions, in order:
-1. Call orchestrator_set_role(agent=\"codex\", role=\"leader\", source=\"codex\").
-2. Call orchestrator_heartbeat(agent=\"codex\") with full identity metadata for this project and server version.
+1. Call orchestrator_set_role(agent=\"${LEADER_AGENT}\", role=\"leader\", source=\"${LEADER_AGENT}\").
+2. Call orchestrator_heartbeat(agent=\"${LEADER_AGENT}\") with full identity metadata for this project and server version.
 3. Call orchestrator_bootstrap if state is not initialized.
 4. Call orchestrator_manager_cycle(strict=true).
 5. Call orchestrator_list_blockers(status=\"open\") and summarize blockers.
@@ -58,7 +60,7 @@ Rules:
 - Keep this to one cycle and stop.
 EOF
 
-  log INFO "manager cycle=$cycle cli=$CLI project=$PROJECT_ROOT"
+  log INFO "manager cycle=$cycle cli=$CLI leader_agent=$LEADER_AGENT project=$PROJECT_ROOT"
   if run_cli_prompt "$CLI" "$PROJECT_ROOT" "$prompt_file" "$out_file" "$CLI_TIMEOUT"; then
     log INFO "manager cycle complete; log=$out_file"
   else

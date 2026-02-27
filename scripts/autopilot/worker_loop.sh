@@ -6,6 +6,7 @@ source "$ROOT_DIR/scripts/autopilot/common.sh"
 
 CLI=""
 AGENT=""
+LANE="default"
 PROJECT_ROOT="$ROOT_DIR"
 INTERVAL=25
 ONCE=false
@@ -17,6 +18,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --cli) CLI="$2"; shift 2 ;;
     --agent) AGENT="$2"; shift 2 ;;
+    --lane) LANE="$2"; shift 2 ;;
     --project-root) PROJECT_ROOT="$2"; shift 2 ;;
     --interval) INTERVAL="$2"; shift 2 ;;
     --log-dir) LOG_DIR="$2"; shift 2 ;;
@@ -32,6 +34,11 @@ if [[ -z "$CLI" || -z "$AGENT" ]]; then
   exit 1
 fi
 
+if [[ "$LANE" != "default" && "$LANE" != "wingman" ]]; then
+  log ERROR "--lane must be one of: default, wingman"
+  exit 1
+fi
+
 require_cmd "$CLI"
 mkdir_logs "$LOG_DIR"
 
@@ -42,9 +49,23 @@ while true; do
   ts="$(date '+%Y%m%d-%H%M%S')"
   prompt_file="$(mktemp)"
   out_file="$LOG_DIR/worker-${AGENT}-${CLI}-${ts}.log"
+  lane_rules=""
+  if [[ "$LANE" == "wingman" ]]; then
+    lane_rules="$(cat <<'RULES'
+   - QA lane guard: if task is not QA-scoped, do not execute it.
+     Consider task non-QA when workstream != "qa" and title/description do not clearly mention qa/regression/test.
+   - For non-QA task in this lane:
+     * call orchestrator_update_task_status(task_id=..., status="assigned", note="Wingman QA lane: task is not QA-scoped; returned to queue for reassignment")
+     * call orchestrator_publish_event(source="__AGENT__", type="manager.sync", payload={"task_id":"...","reason":"wingman_non_qa_task_requeued"})
+     * print "rerouted_non_qa" and exit
+RULES
+)"
+    lane_rules="${lane_rules/__AGENT__/$AGENT}"
+  fi
   cat >"$prompt_file" <<EOF
 Project: $(basename "$PROJECT_ROOT")
 You are worker agent ${AGENT} running an autonomous work loop.
+Lane: ${LANE}
 
 Execute exactly one worker cycle and exit when done:
 1. Call orchestrator_connect_to_leader for agent="${AGENT}" with full identity metadata if needed.
@@ -52,6 +73,7 @@ Execute exactly one worker cycle and exit when done:
 3. Call orchestrator_claim_next_task(agent="${AGENT}").
 4. If no task is claimable, print \"idle\" and exit.
 5. If a task is claimed:
+${lane_rules}
    - implement only that task in this project
    - run relevant tests/build checks
    - call orchestrator_submit_report with commit SHA and test results
