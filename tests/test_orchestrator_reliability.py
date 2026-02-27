@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from orchestrator.bus import EventBus
@@ -488,6 +489,71 @@ class ConnectBehaviorTests(unittest.TestCase):
 
             self.assertFalse(result.get("connected"))
             self.assertEqual("manager_role_mismatch", result.get("reason"))
+            self.assertIn("cannot attach as wingman/team_member to itself", str(result.get("reason_message")))
+
+    def test_manager_connect_without_explicit_role_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+
+            result = orch.connect_to_leader(
+                agent="codex",
+                metadata={
+                    "client": "codex-cli",
+                    "model": "gpt-5",
+                    "cwd": str(root),
+                    "project_root": str(root),
+                    "permissions_mode": "default",
+                    "sandbox_mode": "workspace-write",
+                    "session_id": "manager-default-role",
+                    "connection_id": "manager-default-role-conn",
+                    "server_version": "0.1.0",
+                    "verification_source": "test",
+                },
+                source="codex",
+            )
+
+            self.assertTrue(result.get("connected"))
+            self.assertTrue(result.get("verified"))
+            self.assertEqual("verified_identity", result.get("reason"))
+            self.assertEqual("Agent identity verified for this project.", result.get("reason_message"))
+
+    def test_leader_handoff_allows_previous_leader_to_attach_as_wingman(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = _make_policy(root / "policy.json")
+            orch = Orchestrator(root=root, policy=policy)
+            orch.bootstrap()
+
+            # Switch leadership away from codex.
+            orch.set_role(agent="claude_code", role="leader", source="codex")
+
+            # Previous leader (codex) should now attach as team member/wingman.
+            result = orch.connect_to_leader(
+                agent="codex",
+                metadata={
+                    "role": "team_member",
+                    "role_intent": "wingman",
+                    "client": "codex-cli",
+                    "model": "gpt-5",
+                    "cwd": str(root),
+                    "project_root": str(root),
+                    "permissions_mode": "default",
+                    "sandbox_mode": "workspace-write",
+                    "session_id": "wingman-after-handoff",
+                    "connection_id": "wingman-after-handoff-conn",
+                    "server_version": "0.1.0",
+                    "verification_source": "test",
+                },
+                source="codex",
+            )
+
+            self.assertTrue(result.get("connected"))
+            self.assertTrue(result.get("verified"))
+            self.assertEqual("claude_code", result.get("manager"))
+            self.assertEqual("verified_identity", result.get("reason"))
 
     def test_connect_rejects_cwd_outside_project_even_if_project_root_claims_match(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -553,6 +619,53 @@ class ConnectBehaviorTests(unittest.TestCase):
             self.assertFalse(result.get("connected"))
             self.assertFalse(result.get("verified"))
             self.assertIn("missing_identity_fields", str(result.get("reason")))
+
+    def test_connect_reasserts_full_metadata_after_register_race(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with tempfile.TemporaryDirectory() as outside:
+                root = Path(tmp)
+                policy = _make_policy(root / "policy.json")
+                orch = Orchestrator(root=root, policy=policy)
+                orch.bootstrap()
+
+                original_register = orch.register_agent
+
+                def raced_register(agent: str, metadata: dict | None = None):
+                    entry = original_register(agent, metadata)
+                    # Simulate a concurrent stale overwrite from another same-agent
+                    # session between register and heartbeat.
+                    agents = orch._read_json(orch.agents_path)
+                    stale = dict(agents.get(agent, {}))
+                    stale_meta = dict(stale.get("metadata", {}))
+                    stale_meta["cwd"] = outside
+                    stale_meta["project_root"] = outside
+                    stale["metadata"] = stale_meta
+                    agents[agent] = stale
+                    orch._write_json(orch.agents_path, agents)
+                    return entry
+
+                with mock.patch.object(orch, "register_agent", side_effect=raced_register):
+                    result = orch.connect_to_leader(
+                        agent="gemini",
+                        metadata={
+                            "role": "team_member",
+                            "client": "gemini-cli",
+                            "model": "gemini-cli",
+                            "cwd": str(root),
+                            "project_root": str(root),
+                            "permissions_mode": "default",
+                            "sandbox_mode": "workspace-write",
+                            "session_id": "race-safe-session",
+                            "connection_id": "race-safe-conn",
+                            "server_version": "0.1.0",
+                            "verification_source": "test",
+                        },
+                        source="gemini",
+                    )
+
+                self.assertTrue(result.get("connected"))
+                self.assertTrue(result.get("identity", {}).get("same_project"))
+                self.assertEqual("verified_identity", result.get("reason"))
 
     def test_cross_project_agent_cannot_claim_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -41,11 +41,34 @@ POLICY_PATH = Path(
 STATUS_VERBOSE_PATHS = os.getenv("ORCHESTRATOR_STATUS_VERBOSE_PATHS", "").strip().lower() in {"1", "true", "yes"}
 RUN_ID = os.getenv("ORCHESTRATOR_RUN_ID", "").strip()
 PROMPT_PROFILE_VERSION = os.getenv("ORCHESTRATOR_PROMPT_PROFILE_VERSION", "").strip()
+ALLOW_SHARED_MCP_JSON_PATH = os.getenv("ORCHESTRATOR_ALLOW_SHARED_MCP_JSON_PATH", "").strip().lower() in {"1", "true", "yes"}
 
 
 def _is_shared_agent_leader_install(path: Path) -> bool:
     p = str(path)
     return "/.local/share/agent-leader/current" in p
+
+
+def _project_mcp_server_uses_shared_path(root_dir: Path) -> bool:
+    mcp_path = root_dir / ".mcp.json"
+    if not mcp_path.exists():
+        return False
+    try:
+        payload = json.loads(mcp_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    servers = payload.get("mcpServers")
+    if not isinstance(servers, dict):
+        return False
+    server = servers.get("agent-leader-orchestrator")
+    if not isinstance(server, dict):
+        return False
+    command = str(server.get("command", "") or "")
+    args = server.get("args", [])
+    if not isinstance(args, list):
+        args = []
+    cmdline = " ".join([command] + [str(item) for item in args])
+    return "/.local/share/agent-leader/current/" in cmdline
 
 
 # ── Binding validation (deferred errors instead of hard crash) ──────
@@ -71,6 +94,18 @@ if not _BINDING_ERROR and ENFORCE_SHARED_BINDING and _is_shared_agent_leader_ins
             "(must match ORCHESTRATOR_ROOT). "
             "Set ORCHESTRATOR_EXPECTED_ROOT in your MCP server config env."
         )
+
+if (
+    not _BINDING_ERROR
+    and not ALLOW_SHARED_MCP_JSON_PATH
+    and ROOT_DIR == SCRIPT_DIR
+    and _project_mcp_server_uses_shared_path(ROOT_DIR)
+):
+    _BINDING_ERROR = (
+        "Project .mcp.json points agent-leader-orchestrator to shared install path "
+        "'/.local/share/agent-leader/current'. In project-local mode, update .mcp.json "
+        "to launch this repo's orchestrator_mcp_server.py and policy."
+    )
 
 if _BINDING_ERROR:
     # Log to stderr but do NOT crash — run in degraded mode so the client

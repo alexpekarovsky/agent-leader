@@ -1469,7 +1469,15 @@ class Orchestrator:
             current = self.get_roles()
             current_leader = str(current["leader"])
             if source != current_leader:
-                raise ValueError(f"leader_mismatch: source={source}, current_leader={current_leader}")
+                default_manager = str(self.policy.manager()).strip()
+                recovery_allowed = (
+                    bool(default_manager)
+                    and source == default_manager
+                    and current_leader != default_manager
+                    and not self._leader_is_operational_for_project_locked(current_leader)
+                )
+                if not recovery_allowed:
+                    raise ValueError(f"leader_mismatch: source={source}, current_leader={current_leader}")
             leader = current["leader"]
             team_members = set(current["team_members"])
             target = agent.strip()
@@ -1541,13 +1549,24 @@ class Orchestrator:
         source: Optional[str] = None,
     ) -> Dict[str, Any]:
         manager = self.manager_agent()
-        details = dict(metadata or {})
+        metadata_payload = metadata if isinstance(metadata, dict) else {}
+        explicit_role_provided = "role" in metadata_payload and bool(str(metadata_payload.get("role", "")).strip())
+
+        details = dict(metadata_payload)
         details.setdefault("role", "team_member")
         details["status"] = status
+        requested_role = str(details.get("role", "team_member")).strip().lower()
+        if agent == manager and requested_role != "manager" and not explicit_role_provided:
+            # Default manager self-connects should not require callers to pass role=manager.
+            requested_role = "manager"
+            details["role"] = "manager"
         details = self._normalize_agent_metadata(agent=agent, metadata=details)
 
         self.register_agent(agent=agent, metadata=details)
-        entry = self.heartbeat(agent=agent, metadata={"status": status})
+        # Re-assert full identity metadata on heartbeat so same-agent concurrent
+        # sessions cannot leave stale project/identity fields in the singleton
+        # agents record between register and connect verification.
+        entry = self.heartbeat(agent=agent, metadata=details)
         effective_source = source if isinstance(source, str) and source.strip() else agent
 
         identity = self._identity_snapshot(entry=entry, stale_after_seconds=self._heartbeat_timeout_seconds())
@@ -1559,7 +1578,6 @@ class Orchestrator:
         if effective_source != agent:
             verification["verified"] = False
             verification["reason"] = "source_agent_mismatch"
-        requested_role = str(details.get("role", "team_member")).strip().lower()
         if agent == manager and requested_role != "manager":
             verification["verified"] = False
             verification["reason"] = "manager_role_mismatch"
@@ -1585,12 +1603,19 @@ class Orchestrator:
             )
 
         # Team members auto-claim on connect; manager/leader should never auto-claim implementation work.
-        role = str((metadata or {}).get("role", details.get("role", "team_member"))).strip().lower()
-        is_manager_connect = agent == manager or role == "manager"
+        is_manager_connect = agent == manager or requested_role == "manager"
         auto_claimed = (
             self.claim_next_task(owner=agent, instance_id=str(details.get("instance_id", "")).strip() or None)
             if connected and not is_manager_connect
             else None
+        )
+        reason = verification.get("reason")
+        reason_message = self._connect_to_leader_reason_message(
+            reason=str(reason) if reason is not None else "",
+            agent=agent,
+            manager=manager,
+            requested_role=requested_role,
+            source=effective_source,
         )
 
         return {
@@ -1600,13 +1625,46 @@ class Orchestrator:
             "entry": entry,
             "identity": identity,
             "verified": verification.get("verified"),
-            "reason": verification.get("reason"),
+            "reason": reason,
+            "reason_message": reason_message,
             "auto_claimed_task": auto_claimed,
             "next": [
                 f"orchestrator_poll_events(agent={agent}, timeout_ms=120000)",
                 f"orchestrator_claim_next_task(agent={agent})",
             ],
         }
+
+    @staticmethod
+    def _connect_to_leader_reason_message(
+        reason: str,
+        agent: str,
+        manager: str,
+        requested_role: str,
+        source: str,
+    ) -> str:
+        if reason == "verified_identity":
+            return "Agent identity verified for this project."
+        if reason == "manager_role_mismatch" and agent == manager:
+            return (
+                f"Agent '{agent}' is currently leader and cannot attach as wingman/team_member to itself. "
+                f"Switch leader to another active agent, then retry connect_to_leader for '{agent}'."
+            )
+        if reason == "source_agent_mismatch":
+            return f"Source '{source}' does not match connecting agent '{agent}'."
+        if reason == "non_manager_declared_manager_role":
+            return (
+                f"Agent '{agent}' declared manager role while current leader is '{manager}'. "
+                "Use team_member/wingman role for non-leader connects."
+            )
+        if reason.startswith("missing_identity_fields"):
+            return "Identity metadata is incomplete; provide required identity fields."
+        if reason == "project_mismatch":
+            return "Agent identity does not match this project root/cwd."
+        if reason == "stale_heartbeat":
+            return "Agent heartbeat is stale; refresh with register/heartbeat and retry."
+        if reason == "not_registered":
+            return "Agent is not registered; call register_agent then retry connect_to_leader."
+        return "Connection not verified."
 
     def list_agents(
         self,
@@ -2446,6 +2504,19 @@ class Orchestrator:
             ]
             identity_complete = all(str(metadata.get(key, "")).strip() for key in required)
             return bool(identity_complete) and bool(identity.get("same_project"))
+
+    def _leader_is_operational_for_project_locked(self, leader: str) -> bool:
+        if not isinstance(leader, str) or not leader.strip():
+            return False
+        agents = self._read_json(self.agents_path)
+        if not isinstance(agents, dict):
+            return False
+        entry = agents.get(leader)
+        if not isinstance(entry, dict):
+            return False
+        stale_after = self._heartbeat_timeout_seconds()
+        identity = self._identity_snapshot(entry=entry, stale_after_seconds=stale_after)
+        return bool(identity.get("verified")) and bool(identity.get("same_project"))
 
     def _assert_agent_operational(self, agent: str) -> None:
         if not self._agent_is_operational(agent):
