@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from orchestrator.doctor import build_doctor_payload
 from orchestrator.engine import Orchestrator
 from orchestrator.policy import Policy
 
@@ -374,6 +375,16 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
             "name": "orchestrator_status",
             "description": "Show redacted status plus ready-to-paste live status report. When user asks for status updates, return live_status_text verbatim. Set ORCHESTRATOR_STATUS_VERBOSE_PATHS=1 for full paths.",
             "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "orchestrator_doctor",
+            "description": "Run actionable diagnostics for root/policy/auth/connectivity checks, including binding and identity verification hints.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "stale_after_seconds": {"type": "integer", "default": 600},
+                },
+            },
         },
         {
             "name": "orchestrator_get_roles",
@@ -1476,6 +1487,33 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
     try:
         if name == "orchestrator_guide":
             return _ok_and_audit(request_id, name, args, _guide_payload())
+
+        if name == "orchestrator_doctor":
+            stale_after = int(args.get("stale_after_seconds", 600))
+            roles: Dict[str, Any] = {"leader": None, "team_members": []}
+            manager: Optional[str] = None
+            agents: List[Dict[str, Any]] = []
+            discovered: Dict[str, Any] = {"registered_count": 0, "inferred_only_count": 0, "agents": []}
+            if ORCH is not None:
+                roles = ORCH.get_roles()
+                manager = roles.get("leader")
+                agents = ORCH.list_agents(active_only=False, stale_after_seconds=stale_after)
+                discovered = ORCH.discover_agents(active_only=False, stale_after_seconds=stale_after)
+            payload = build_doctor_payload(
+                root_dir=ROOT_DIR,
+                policy_path=POLICY_PATH,
+                policy_name=POLICY.name if POLICY is not None else POLICY_PATH.name,
+                policy_loaded=POLICY is not None,
+                binding_error=_BINDING_ERROR,
+                server_binding=_server_binding_health(),
+                runtime_source_consistency=_runtime_source_consistency(),
+                manager=manager,
+                roles=roles,
+                agents=agents,
+                discovered=discovered,
+                orch_available=ORCH is not None,
+            )
+            return _ok_and_audit(request_id, name, args, payload)
 
         # ── Degraded-mode guard: reject tool calls when binding failed ──
         if _BINDING_ERROR and ORCH is None:
