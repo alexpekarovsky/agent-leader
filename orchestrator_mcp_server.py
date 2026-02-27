@@ -47,29 +47,48 @@ def _is_shared_agent_leader_install(path: Path) -> bool:
     p = str(path)
     return "/.local/share/agent-leader/current" in p
 
+
+# ── Binding validation (deferred errors instead of hard crash) ──────
+_BINDING_ERROR: Optional[str] = None
+
 if EXPECTED_ROOT_RAW:
     expected_root = Path(EXPECTED_ROOT_RAW).resolve()
     if ROOT_DIR != expected_root:
-        raise RuntimeError(
+        _BINDING_ERROR = (
             f"ORCHESTRATOR_ROOT mismatch: got '{ROOT_DIR}', expected '{expected_root}'"
         )
 
-if ENFORCE_SHARED_BINDING and _is_shared_agent_leader_install(SCRIPT_DIR):
+if not _BINDING_ERROR and ENFORCE_SHARED_BINDING and _is_shared_agent_leader_install(SCRIPT_DIR):
     if not ORCHESTRATOR_ROOT_RAW:
-        raise RuntimeError(
-            "Shared agent-leader install requires explicit ORCHESTRATOR_ROOT to prevent cross-project binding leaks"
+        _BINDING_ERROR = (
+            "Shared agent-leader install requires explicit ORCHESTRATOR_ROOT "
+            "to prevent cross-project binding leaks. "
+            "Set ORCHESTRATOR_ROOT in your MCP server config env."
         )
-    if not EXPECTED_ROOT_RAW:
-        raise RuntimeError(
-            "Shared agent-leader install requires ORCHESTRATOR_EXPECTED_ROOT (must match ORCHESTRATOR_ROOT)"
+    elif not EXPECTED_ROOT_RAW:
+        _BINDING_ERROR = (
+            "Shared agent-leader install requires ORCHESTRATOR_EXPECTED_ROOT "
+            "(must match ORCHESTRATOR_ROOT). "
+            "Set ORCHESTRATOR_EXPECTED_ROOT in your MCP server config env."
         )
 
+if _BINDING_ERROR:
+    # Log to stderr but do NOT crash — run in degraded mode so the client
+    # gets a proper JSON-RPC error instead of "Transport closed".
+    print(f"agent-leader-orchestrator: BINDING ERROR (degraded mode): {_BINDING_ERROR}", file=sys.stderr)
+
 try:
-    POLICY = Policy.load(POLICY_PATH)
-    ORCH = Orchestrator(root=ROOT_DIR, policy=POLICY)
+    if _BINDING_ERROR:
+        POLICY = None  # type: ignore[assignment]
+        ORCH = None  # type: ignore[assignment]
+    else:
+        POLICY = Policy.load(POLICY_PATH)
+        ORCH = Orchestrator(root=ROOT_DIR, policy=POLICY)
 except Exception as exc:
     print(f"Failed to initialize orchestrator: {exc}", file=sys.stderr)
-    raise
+    _BINDING_ERROR = f"Orchestrator init failed: {exc}"
+    POLICY = None  # type: ignore[assignment]
+    ORCH = None  # type: ignore[assignment]
 
 _AUTO_LOOP_STOP = threading.Event()
 _AUTO_LOOP_THREAD: Optional[threading.Thread] = None
@@ -1423,6 +1442,32 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
         if name == "orchestrator_guide":
             return _ok_and_audit(request_id, name, args, _guide_payload())
 
+        # ── Degraded-mode guard: reject tool calls when binding failed ──
+        if _BINDING_ERROR and ORCH is None:
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps({
+                                "error": "orchestrator_binding_error",
+                                "message": _BINDING_ERROR,
+                                "hint": (
+                                    "The MCP server started in degraded mode because of a "
+                                    "configuration issue. Ensure ORCHESTRATOR_ROOT, "
+                                    "ORCHESTRATOR_EXPECTED_ROOT, and ORCHESTRATOR_POLICY "
+                                    "are set correctly in your MCP server config. "
+                                    "See scripts/install_agent_leader_mcp.sh --help."
+                                ),
+                            }),
+                        }
+                    ],
+                    "isError": True,
+                },
+            }
+
         if name == "orchestrator_status":
             tasks = ORCH.list_tasks()
             bugs = ORCH.list_bugs()
@@ -1856,7 +1901,8 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def main() -> None:
-    _start_auto_manager_loop()
+    if ORCH is not None:
+        _start_auto_manager_loop()
     while True:
         try:
             line = sys.stdin.readline()
