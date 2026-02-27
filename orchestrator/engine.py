@@ -1215,6 +1215,8 @@ class Orchestrator:
             task = next((item for item in tasks if item["id"] == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
+            if task.get("owner") != agent:
+                raise ValueError(f"Blocker agent '{agent}' does not match task owner '{task.get('owner')}'")
             agent_scope = self._agent_project_scope_unlocked(agent)
             self._assert_task_project_scope(
                 task=task,
@@ -1222,8 +1224,6 @@ class Orchestrator:
                 project_root=agent_scope.get("project_root"),
                 project_name=str(agent_scope.get("project_name", "")),
             )
-            if task.get("owner") != agent:
-                raise ValueError(f"Blocker agent '{agent}' does not match task owner '{task.get('owner')}'")
 
             task["status"] = "blocked"
             task["updated_at"] = self._now()
@@ -1778,6 +1778,11 @@ class Orchestrator:
         manager = str(roles.get("leader", self.policy.manager()))
         leader_instance_id = str(roles.get("leader_instance_id", "")).strip() or f"{manager}#default"
         manager_same_instance = agent == manager and agent_instance_id == leader_instance_id
+        manager_default_placeholder = leader_instance_id == f"{manager}#default"
+        if agent == manager and manager_default_placeholder and requested_role != "manager":
+            # Before manager instance is pinned, treat same-agent non-manager connects
+            # as leader self-connect attempts and block them.
+            manager_same_instance = True
         if manager_same_instance and requested_role != "manager" and not explicit_role_provided:
             # Default manager self-connects should not require callers to pass role=manager.
             requested_role = "manager"
@@ -1808,7 +1813,7 @@ class Orchestrator:
         connected = bool(verification.get("verified")) and (
             bool(verification.get("same_project")) or self._allow_cross_project_agents()
         )
-        if connected and requested_role == "manager" and manager_same_instance:
+        if connected and requested_role == "manager" and agent == manager:
             with self._state_lock():
                 current_roles = self.get_roles()
                 current_roles["leader_instance_id"] = agent_instance_id
