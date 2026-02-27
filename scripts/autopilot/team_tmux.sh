@@ -15,6 +15,10 @@ LEADER_AGENT="codex"
 LEADER_CLI=""
 WINGMAN_AGENT="ccm"
 WINGMAN_CLI="claude"
+CLAUDE_PROJECT_ROOT=""
+GEMINI_PROJECT_ROOT=""
+CODEX_PROJECT_ROOT=""
+WINGMAN_PROJECT_ROOT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -28,6 +32,10 @@ while [[ $# -gt 0 ]]; do
     --leader-cli) LEADER_CLI="$2"; shift 2 ;;
     --wingman-agent) WINGMAN_AGENT="$2"; shift 2 ;;
     --wingman-cli) WINGMAN_CLI="$2"; shift 2 ;;
+    --claude-project-root) CLAUDE_PROJECT_ROOT="$2"; shift 2 ;;
+    --gemini-project-root) GEMINI_PROJECT_ROOT="$2"; shift 2 ;;
+    --codex-project-root) CODEX_PROJECT_ROOT="$2"; shift 2 ;;
+    --wingman-project-root) WINGMAN_PROJECT_ROOT="$2"; shift 2 ;;
     --log-dir) LOG_DIR="$2"; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
@@ -48,6 +56,14 @@ fi
 ROOT_Q="$(printf '%q' "$ROOT_DIR")"
 PROJECT_Q="$(printf '%q' "$PROJECT_ROOT")"
 LOG_Q="$(printf '%q' "$LOG_DIR")"
+[[ -z "$CLAUDE_PROJECT_ROOT" ]] && CLAUDE_PROJECT_ROOT="$PROJECT_ROOT"
+[[ -z "$GEMINI_PROJECT_ROOT" ]] && GEMINI_PROJECT_ROOT="$PROJECT_ROOT"
+[[ -z "$CODEX_PROJECT_ROOT" ]] && CODEX_PROJECT_ROOT="$PROJECT_ROOT"
+[[ -z "$WINGMAN_PROJECT_ROOT" ]] && WINGMAN_PROJECT_ROOT="$PROJECT_ROOT"
+CLAUDE_PROJECT_Q="$(printf '%q' "$CLAUDE_PROJECT_ROOT")"
+GEMINI_PROJECT_Q="$(printf '%q' "$GEMINI_PROJECT_ROOT")"
+CODEX_PROJECT_Q="$(printf '%q' "$CODEX_PROJECT_ROOT")"
+WINGMAN_PROJECT_Q="$(printf '%q' "$WINGMAN_PROJECT_ROOT")"
 
 if [[ -z "$LEADER_CLI" ]]; then
   case "$LEADER_AGENT" in
@@ -59,10 +75,10 @@ if [[ -z "$LEADER_CLI" ]]; then
 fi
 
 MANAGER_CMD="cd $ROOT_Q && ./scripts/autopilot/manager_loop.sh --cli $LEADER_CLI --leader-agent $LEADER_AGENT --project-root $PROJECT_Q --interval '$MANAGER_INTERVAL' --cli-timeout '$MANAGER_CLI_TIMEOUT' --log-dir $LOG_Q"
-CLAUDE_CMD="cd $ROOT_Q && ./scripts/autopilot/worker_loop.sh --cli claude --agent claude_code --project-root $PROJECT_Q --interval '$WORKER_INTERVAL' --cli-timeout '$WORKER_CLI_TIMEOUT' --log-dir $LOG_Q"
-GEMINI_CMD="cd $ROOT_Q && ./scripts/autopilot/worker_loop.sh --cli gemini --agent gemini --project-root $PROJECT_Q --interval '$WORKER_INTERVAL' --cli-timeout '$WORKER_CLI_TIMEOUT' --log-dir $LOG_Q"
-CODEX_WORKER_CMD="cd $ROOT_Q && ./scripts/autopilot/worker_loop.sh --cli codex --agent codex --project-root $PROJECT_Q --interval '$WORKER_INTERVAL' --cli-timeout '$WORKER_CLI_TIMEOUT' --log-dir $LOG_Q"
-WINGMAN_CMD="cd $ROOT_Q && ./scripts/autopilot/worker_loop.sh --cli $WINGMAN_CLI --agent $WINGMAN_AGENT --lane wingman --project-root $PROJECT_Q --interval '$WORKER_INTERVAL' --cli-timeout '$WORKER_CLI_TIMEOUT' --log-dir $LOG_Q"
+CLAUDE_CMD="cd $ROOT_Q && ./scripts/autopilot/worker_loop.sh --cli claude --agent claude_code --project-root $CLAUDE_PROJECT_Q --interval '$WORKER_INTERVAL' --cli-timeout '$WORKER_CLI_TIMEOUT' --log-dir $LOG_Q"
+GEMINI_CMD="cd $ROOT_Q && ./scripts/autopilot/worker_loop.sh --cli gemini --agent gemini --project-root $GEMINI_PROJECT_Q --interval '$WORKER_INTERVAL' --cli-timeout '$WORKER_CLI_TIMEOUT' --log-dir $LOG_Q"
+CODEX_WORKER_CMD="cd $ROOT_Q && ./scripts/autopilot/worker_loop.sh --cli codex --agent codex --project-root $CODEX_PROJECT_Q --interval '$WORKER_INTERVAL' --cli-timeout '$WORKER_CLI_TIMEOUT' --log-dir $LOG_Q"
+WINGMAN_CMD="cd $ROOT_Q && ./scripts/autopilot/worker_loop.sh --cli $WINGMAN_CLI --agent $WINGMAN_AGENT --lane wingman --project-root $WINGMAN_PROJECT_Q --interval '$WORKER_INTERVAL' --cli-timeout '$WORKER_CLI_TIMEOUT' --log-dir $LOG_Q"
 WATCHDOG_CMD="cd $ROOT_Q && ./scripts/autopilot/watchdog_loop.sh --project-root $PROJECT_Q --interval 15 --log-dir $LOG_Q"
 MONITOR_CMD="cd $ROOT_Q && ./scripts/autopilot/monitor_loop.sh $PROJECT_Q 10"
 

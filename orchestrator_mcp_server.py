@@ -406,6 +406,8 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                     "agent": {"type": "string"},
                     "role": {"type": "string", "description": "leader|team_member"},
                     "source": {"type": "string"},
+                    "instance_id": {"type": "string", "description": "Optional instance_id to bind when assigning leader role."},
+                    "source_instance_id": {"type": "string", "description": "Optional source instance_id for leader-instance auth checks."},
                 },
                 "required": ["agent", "role", "source"],
             },
@@ -556,6 +558,12 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                         "items": {"type": "string"},
                     },
                     "owner": {"type": "string", "description": "Optional explicit owner override"},
+                    "risk": {"type": "string", "description": "Lean mode risk bucket: low|medium|high"},
+                    "test_plan": {"type": "string", "description": "Lean mode test plan: smoke|targeted|full"},
+                    "doc_impact": {"type": "string", "description": "Lean mode doc impact: none|readme|runbook|roadmap"},
+                    "project_root": {"type": "string", "description": "Optional project root override for multi-project manager mode."},
+                    "project_name": {"type": "string", "description": "Optional project name tag override."},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional content tags. project:* and workstream:* are auto-added."},
                 },
                 "required": ["title", "workstream"],
             },
@@ -578,6 +586,9 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                 "properties": {
                     "status": {"type": "string", "description": "Optional status filter (assigned|in_progress|reported|done|bug_open|blocked)."},
                     "owner": {"type": "string", "description": "Optional owner filter (codex|claude_code|gemini)."},
+                    "project_name": {"type": "string", "description": "Optional project_name filter."},
+                    "project_root": {"type": "string", "description": "Optional project_root filter."},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional tags filter (all tags must match)."},
                 },
             },
         },
@@ -1663,6 +1674,8 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 agent=args["agent"],
                 role=args["role"],
                 source=args["source"],
+                instance_id=args.get("instance_id"),
+                source_instance_id=args.get("source_instance_id"),
             )
             return _ok_and_audit(request_id, name, args, result)
 
@@ -1745,12 +1758,21 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 acceptance = ["Tests pass", "Acceptance criteria satisfied"]
             if isinstance(acceptance, str):
                 acceptance = [acceptance]
+            tags = args.get("tags")
+            if isinstance(tags, str):
+                tags = _parse_json_argument(tags, "array")
             task = ORCH.create_task(
                 title=args.get("title", ""),
                 workstream=args.get("workstream", "default"),
                 description=args.get("description", ""),
                 owner=args.get("owner"),
                 acceptance_criteria=acceptance,
+                risk=args.get("risk"),
+                test_plan=args.get("test_plan"),
+                doc_impact=args.get("doc_impact"),
+                project_root=args.get("project_root"),
+                project_name=args.get("project_name"),
+                tags=tags,
             )
             return _ok_and_audit(request_id, name, args, task)
 
@@ -1759,13 +1781,16 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             return _ok_and_audit(request_id, name, args, result)
 
         if name == "orchestrator_list_tasks":
-            status = args.get("status")
-            owner = args.get("owner")
-            tasks = ORCH.list_tasks()
-            if status:
-                tasks = [task for task in tasks if task.get("status") == status]
-            if owner:
-                tasks = [task for task in tasks if task.get("owner") == owner]
+            tags = args.get("tags")
+            if isinstance(tags, str):
+                tags = _parse_json_argument(tags, "array")
+            tasks = ORCH.list_tasks(
+                status=args.get("status"),
+                owner=args.get("owner"),
+                project_name=args.get("project_name"),
+                project_root=args.get("project_root"),
+                tags=tags,
+            )
             return _ok_and_audit(request_id, name, args, tasks)
 
         if name == "orchestrator_get_tasks_for_agent":

@@ -41,6 +41,9 @@ class Orchestrator:
     def __post_init__(self) -> None:
         self.root = self.root.resolve()
         self.bus = EventBus(self.root / "bus")
+        # In-memory per-agent cooldown tracker for empty claim_next_task calls.
+        # Maps agent name -> (monotonic_ts, tasks_file_mtime) at last empty claim.
+        self._claim_cooldowns: Dict[str, tuple] = {}
         self.state_dir = self.root / "state"
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.tasks_path = self.state_dir / "tasks.json"
@@ -99,7 +102,15 @@ class Orchestrator:
             self.report_retry_queue_path.write_text("[]\n", encoding="utf-8")
         if not self.roles_path.exists():
             self.roles_path.write_text(
-                json.dumps({"leader": self.policy.manager(), "team_members": []}, indent=2) + "\n",
+                json.dumps(
+                    {
+                        "leader": self.policy.manager(),
+                        "leader_instance_id": f"{self.policy.manager()}#default",
+                        "team_members": [],
+                    },
+                    indent=2,
+                )
+                + "\n",
                 encoding="utf-8",
             )
         self.bus.emit(
@@ -148,7 +159,7 @@ class Orchestrator:
                     item.get("agent") in requested
                     and item.get("status") == "active"
                     and bool(item.get("verified"))
-                    and bool(item.get("same_project"))
+                    and (bool(item.get("same_project")) or self._allow_cross_project_agents())
                 )
             }
             connected = sorted(active)
@@ -187,7 +198,25 @@ class Orchestrator:
         acceptance_criteria: List[str],
         description: str = "",
         owner: Optional[str] = None,
+        risk: Optional[str] = None,
+        test_plan: Optional[str] = None,
+        doc_impact: Optional[str] = None,
+        project_root: Optional[str] = None,
+        project_name: Optional[str] = None,
+        tags: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
+        delivery_profile = self._normalize_task_delivery_profile(
+            risk=risk,
+            test_plan=test_plan,
+            doc_impact=doc_impact,
+        )
+        normalized_root = str(project_root or str(self.root)).strip() or str(self.root)
+        normalized_name = str(project_name or Path(normalized_root).name or self.root.name).strip() or self.root.name
+        task_tags = self._normalize_task_tags(
+            tags=tags,
+            project_name=normalized_name,
+            workstream=workstream,
+        )
         with self._state_lock():
             tasks = self._read_json(self.tasks_path)
             task_id = f"TASK-{uuid.uuid4().hex[:8]}"
@@ -210,10 +239,12 @@ class Orchestrator:
                 "description": description,
                 "workstream": workstream,
                 "owner": resolved_owner,
-                "project_root": str(self.root),
-                "project_name": self.root.name,
+                "project_root": normalized_root,
+                "project_name": normalized_name,
+                "tags": task_tags,
                 "status": "assigned",
                 "acceptance_criteria": acceptance_criteria,
+                "delivery_profile": delivery_profile,
                 "created_at": self._now(),
                 "updated_at": self._now(),
                 "assigned_at": self._now(),
@@ -229,7 +260,11 @@ class Orchestrator:
                 "title": title,
                 "description": description,
                 "workstream": workstream,
+                "project_root": normalized_root,
+                "project_name": normalized_name,
+                "tags": task_tags,
                 "acceptance_criteria": acceptance_criteria,
+                "delivery_profile": delivery_profile,
                 "required_report": [
                     "task_id",
                     "agent",
@@ -247,6 +282,8 @@ class Orchestrator:
                 "task_id": task_id,
                 "owner": resolved_owner,
                 "workstream": workstream,
+                "project_name": normalized_name,
+                "tags": task_tags,
             },
             source=self.manager_agent(),
         )
@@ -290,8 +327,42 @@ class Orchestrator:
 
         return {"deduped_count": len(deduped), "deduped": deduped}
 
-    def list_tasks(self) -> List[Dict[str, Any]]:
-        return self._read_json(self.tasks_path)
+    def list_tasks(
+        self,
+        status: Optional[str] = None,
+        owner: Optional[str] = None,
+        project_name: Optional[str] = None,
+        project_root: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        tasks = self._read_json(self.tasks_path)
+        if not isinstance(tasks, list):
+            return []
+
+        normalized_tags = self._normalize_task_tags(tags=tags) if tags else []
+        normalized_project_name = str(project_name or "").strip()
+        normalized_project_root = self._safe_resolve(str(project_root).strip()) if project_root else None
+
+        filtered: List[Dict[str, Any]] = []
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            if status and task.get("status") != status:
+                continue
+            if owner and task.get("owner") != owner:
+                continue
+            if normalized_project_name and str(task.get("project_name", "")).strip() != normalized_project_name:
+                continue
+            if normalized_project_root is not None:
+                task_root = self._safe_resolve(str(task.get("project_root", "")).strip())
+                if task_root is None or task_root != normalized_project_root:
+                    continue
+            if normalized_tags:
+                task_tags = set(self._normalize_task_tags(tags=task.get("tags")))
+                if not set(normalized_tags).issubset(task_tags):
+                    continue
+            filtered.append(task)
+        return filtered
 
     def list_tasks_for_owner(self, owner: str, status: Optional[str] = None) -> List[Dict[str, Any]]:
         tasks = [task for task in self.list_tasks() if task.get("owner") == owner]
@@ -299,13 +370,46 @@ class Orchestrator:
             tasks = [task for task in tasks if task.get("status") == status]
         return tasks
 
+    def _claim_cooldown_seconds(self) -> float:
+        """Return the anti-spam cooldown window (seconds) for empty claim attempts."""
+        raw = self.policy.triggers.get("claim_cooldown_seconds", 5)
+        try:
+            return max(0.0, float(raw))
+        except Exception:
+            return 5.0
+
     def claim_next_task(self, owner: str, instance_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         self._assert_agent_operational(owner)
+
+        # --- Anti-spam cooldown for rapid empty claims ---
+        # Uses tasks file mtime to detect new work; only throttles when the
+        # tasks file is unchanged since the last empty claim.
+        cooldown = self._claim_cooldown_seconds()
+        if cooldown > 0:
+            last_info = self._claim_cooldowns.get(owner)
+            if last_info is not None:
+                last_ts, last_mtime = last_info
+                elapsed = time.monotonic() - last_ts
+                if elapsed < cooldown:
+                    try:
+                        current_mtime = self.tasks_path.stat().st_mtime
+                    except OSError:
+                        current_mtime = 0.0
+                    if current_mtime == last_mtime:
+                        remaining = cooldown - elapsed
+                        return {
+                            "throttled": True,
+                            "backoff_seconds": round(remaining, 2),
+                            "cooldown_seconds": cooldown,
+                            "message": "claim_cooldown: too many rapid empty claims",
+                        }
+
         # Treat a claim attempt as proof-of-life from the team_member.
         with self._state_lock():
             self._refresh_agent_presence_unlocked(owner)
             explicit_instance_id = str(instance_id or "").strip()
             lease_owner_instance = explicit_instance_id or self._current_agent_instance_id_unlocked(owner)
+            owner_scope = self._agent_project_scope_unlocked(owner)
             tasks = self._read_json(self.tasks_path)
             overrides = self._read_json(self.claim_overrides_path)
             if not isinstance(overrides, dict):
@@ -325,7 +429,12 @@ class Orchestrator:
             if override_task_id:
                 forced = next((t for t in tasks if t.get("id") == override_task_id and t.get("owner") == owner), None)
                 if forced and forced.get("status") in {"assigned", "bug_open"}:
-                    self._assert_task_same_project(forced, operation="claim_override")
+                    self._assert_task_project_scope(
+                        forced,
+                        operation="claim_override",
+                        project_root=owner_scope.get("project_root"),
+                        project_name=str(owner_scope.get("project_name", "")),
+                    )
                     forced["status"] = "in_progress"
                     forced["updated_at"] = self._now()
                     forced["claimed_at"] = forced["updated_at"]
@@ -355,6 +464,8 @@ class Orchestrator:
                             },
                             source=owner,
                         )
+                    # Successful claim: clear any cooldown for this agent.
+                    self._claim_cooldowns.pop(owner, None)
                     return forced
                 # Override no longer valid; clear it and continue normal claim order.
                 del overrides[owner]
@@ -365,7 +476,11 @@ class Orchestrator:
                     continue
                 if task.get("status") not in {"assigned", "bug_open"}:
                     continue
-                if not self._task_is_same_project(task):
+                if not self._task_matches_project_scope(
+                    task,
+                    project_root=owner_scope.get("project_root"),
+                    project_name=str(owner_scope.get("project_name", "")),
+                ):
                     # Legacy mixed-project residue must not be claimed in this project runtime.
                     continue
 
@@ -379,7 +494,17 @@ class Orchestrator:
                     {"task_id": task["id"], "owner": owner},
                     source=owner,
                 )
+                # Successful claim: clear any cooldown for this agent.
+                self._claim_cooldowns.pop(owner, None)
                 return task
+
+        # Empty claim: start cooldown window with current tasks file mtime.
+        if cooldown > 0:
+            try:
+                mtime = self.tasks_path.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            self._claim_cooldowns[owner] = (time.monotonic(), mtime)
         return None
 
     def set_claim_override(self, agent: str, task_id: str, source: str) -> Dict[str, Any]:
@@ -391,7 +516,6 @@ class Orchestrator:
             task = next((t for t in tasks if t.get("id") == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
-            self._assert_task_same_project(task, operation="set_claim_override")
             if task.get("owner") != agent:
                 raise ValueError(f"Task owner '{task.get('owner')}' does not match target agent '{agent}'")
 
@@ -512,11 +636,18 @@ class Orchestrator:
             task = next((t for t in tasks if t["id"] == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
-            self._assert_task_same_project(task, operation="set_task_status")
             owner = str(task.get("owner", ""))
             if source not in {owner, manager}:
                 raise ValueError(
                     f"unauthorized_status_update: source={source}, task_owner={owner}, current_leader={manager}"
+                )
+            if source == owner:
+                source_scope = self._agent_project_scope_unlocked(source)
+                self._assert_task_project_scope(
+                    task=task,
+                    operation="set_task_status",
+                    project_root=source_scope.get("project_root"),
+                    project_name=str(source_scope.get("project_name", "")),
                 )
 
             task["status"] = status
@@ -550,11 +681,20 @@ class Orchestrator:
             task = next((item for item in tasks if item["id"] == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
-            self._assert_task_same_project(task, operation="ingest_report")
+            agent_scope = self._agent_project_scope_unlocked(str(report["agent"]))
+            self._assert_task_project_scope(
+                task=task,
+                operation="ingest_report",
+                project_root=agent_scope.get("project_root"),
+                project_name=str(agent_scope.get("project_name", "")),
+            )
             if task.get("owner") != report["agent"]:
                 raise ValueError(
                     f"Report agent '{report['agent']}' does not match task owner '{task.get('owner')}'"
                 )
+            report["project_root"] = str(task.get("project_root", ""))
+            report["project_name"] = str(task.get("project_name", ""))
+            report["tags"] = self._normalize_task_tags(tags=task.get("tags"))
 
             self.bus.write_report(task_id=task_id, report=report)
 
@@ -587,7 +727,13 @@ class Orchestrator:
             task = next((item for item in tasks if item.get("id") == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
-            self._assert_task_same_project(task, operation="renew_task_lease")
+            agent_scope = self._agent_project_scope_unlocked(agent)
+            self._assert_task_project_scope(
+                task=task,
+                operation="renew_task_lease",
+                project_root=agent_scope.get("project_root"),
+                project_name=str(agent_scope.get("project_name", "")),
+            )
             if str(task.get("owner", "")) != agent:
                 raise ValueError(f"lease_owner_mismatch: task_owner={task.get('owner')} agent={agent}")
             lease = task.get("lease")
@@ -1003,7 +1149,6 @@ class Orchestrator:
             task = next((t for t in tasks if t["id"] == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
-            self._assert_task_same_project(task, operation="validate_task")
 
             if passed:
                 task["status"] = "done"
@@ -1070,7 +1215,13 @@ class Orchestrator:
             task = next((item for item in tasks if item["id"] == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
-            self._assert_task_same_project(task, operation="raise_blocker")
+            agent_scope = self._agent_project_scope_unlocked(agent)
+            self._assert_task_project_scope(
+                task=task,
+                operation="raise_blocker",
+                project_root=agent_scope.get("project_root"),
+                project_name=str(agent_scope.get("project_name", "")),
+            )
             if task.get("owner") != agent:
                 raise ValueError(f"Blocker agent '{agent}' does not match task owner '{task.get('owner')}'")
 
@@ -1083,6 +1234,9 @@ class Orchestrator:
             "id": blocker_id,
             "task_id": task_id,
             "agent": agent,
+            "project_root": task.get("project_root"),
+            "project_name": task.get("project_name"),
+            "tags": self._normalize_task_tags(tags=task.get("tags")),
             "question": question,
             "options": options or [],
             "severity": severity,
@@ -1425,12 +1579,7 @@ class Orchestrator:
         return self.bus.emit(event_type=event_type, payload=event_payload, source=source)
 
     def manager_agent(self) -> str:
-        roles = self._read_json(self.roles_path)
-        if isinstance(roles, dict):
-            leader = roles.get("leader")
-            if isinstance(leader, str) and leader.strip():
-                return leader
-        return self.policy.manager()
+        return str(self.get_roles().get("leader", self.policy.manager()))
 
     def get_roles(self) -> Dict[str, Any]:
         roles = self._read_json(self.roles_path)
@@ -1442,6 +1591,9 @@ class Orchestrator:
         members = roles.get("team_members")
         if not isinstance(members, list):
             members = []
+        leader_instance_id = roles.get("leader_instance_id")
+        if not isinstance(leader_instance_id, str) or not leader_instance_id.strip():
+            leader_instance_id = f"{leader}#default"
         normalized_members = sorted(
             {
                 item.strip()
@@ -1451,11 +1603,19 @@ class Orchestrator:
         )
         return {
             "leader": leader,
+            "leader_instance_id": leader_instance_id,
             "team_members": normalized_members,
             "default_leader": self.policy.manager(),
         }
 
-    def set_role(self, agent: str, role: str, source: str) -> Dict[str, Any]:
+    def set_role(
+        self,
+        agent: str,
+        role: str,
+        source: str,
+        instance_id: Optional[str] = None,
+        source_instance_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         if not isinstance(agent, str) or not agent.strip():
             raise ValueError("agent must be a non-empty string")
         normalized_role = role.strip().lower().replace(" ", "_").replace("-", "_")
@@ -1478,26 +1638,83 @@ class Orchestrator:
                 )
                 if not recovery_allowed:
                     raise ValueError(f"leader_mismatch: source={source}, current_leader={current_leader}")
+            expected_leader_instance = str(current.get("leader_instance_id", "")).strip()
+            provided_source_instance = str(source_instance_id or "").strip()
+            if (
+                source == current_leader
+                and expected_leader_instance
+                and provided_source_instance
+                and provided_source_instance != expected_leader_instance
+            ):
+                raise ValueError(
+                    "leader_instance_mismatch: "
+                    f"source_instance={provided_source_instance}, current_leader_instance={expected_leader_instance}"
+                )
             leader = current["leader"]
+            leader_instance = str(current.get("leader_instance_id", "")).strip() or f"{leader}#default"
             team_members = set(current["team_members"])
             target = agent.strip()
 
             if normalized_role == "leader":
                 leader = target
+                requested_instance = str(instance_id or "").strip()
+                if requested_instance:
+                    leader_instance = requested_instance
+                elif target == source and provided_source_instance:
+                    leader_instance = provided_source_instance
+                else:
+                    leader_instance = self._resolve_agent_instance_id_unlocked(target)
                 team_members.discard(target)
             else:
                 if target == leader:
                     raise ValueError("current leader cannot be assigned as team_member")
                 team_members.add(target)
 
-            updated = {"leader": leader, "team_members": sorted(team_members)}
+            updated = {
+                "leader": leader,
+                "leader_instance_id": leader_instance or f"{leader}#default",
+                "team_members": sorted(team_members),
+            }
             self._write_json(self.roles_path, updated)
         self.bus.emit(
             "role.updated",
-            {"agent": target, "role": normalized_role, "leader": leader, "team_members": sorted(team_members)},
+            {
+                "agent": target,
+                "role": normalized_role,
+                "leader": leader,
+                "leader_instance_id": leader_instance or f"{leader}#default",
+                "team_members": sorted(team_members),
+            },
             source=source,
         )
         return self.get_roles()
+
+    def _normalize_task_delivery_profile(
+        self,
+        risk: Optional[str],
+        test_plan: Optional[str],
+        doc_impact: Optional[str],
+    ) -> Dict[str, str]:
+        allowed_risk = {"low", "medium", "high"}
+        allowed_test_plan = {"smoke", "targeted", "full"}
+        allowed_doc_impact = {"none", "readme", "runbook", "roadmap"}
+
+        normalized_risk = str(risk or "medium").strip().lower()
+        normalized_test_plan = str(test_plan or "targeted").strip().lower()
+        normalized_doc_impact = str(doc_impact or "none").strip().lower()
+
+        if normalized_risk not in allowed_risk:
+            raise ValueError("risk must be one of: low, medium, high")
+        if normalized_test_plan not in allowed_test_plan:
+            raise ValueError("test_plan must be one of: smoke, targeted, full")
+        if normalized_doc_impact not in allowed_doc_impact:
+            raise ValueError("doc_impact must be one of: none, readme, runbook, roadmap")
+
+        return {
+            "risk": normalized_risk,
+            "test_plan": normalized_test_plan,
+            "doc_impact": normalized_doc_impact,
+        }
 
     def register_agent(self, agent: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         with self._state_lock():
@@ -1548,7 +1765,6 @@ class Orchestrator:
         announce: bool = True,
         source: Optional[str] = None,
     ) -> Dict[str, Any]:
-        manager = self.manager_agent()
         metadata_payload = metadata if isinstance(metadata, dict) else {}
         explicit_role_provided = "role" in metadata_payload and bool(str(metadata_payload.get("role", "")).strip())
 
@@ -1556,11 +1772,16 @@ class Orchestrator:
         details.setdefault("role", "team_member")
         details["status"] = status
         requested_role = str(details.get("role", "team_member")).strip().lower()
-        if agent == manager and requested_role != "manager" and not explicit_role_provided:
+        details = self._normalize_agent_metadata(agent=agent, metadata=details)
+        agent_instance_id = str(details.get("instance_id", "")).strip() or f"{agent}#default"
+        roles = self.get_roles()
+        manager = str(roles.get("leader", self.policy.manager()))
+        leader_instance_id = str(roles.get("leader_instance_id", "")).strip() or f"{manager}#default"
+        manager_same_instance = agent == manager and agent_instance_id == leader_instance_id
+        if manager_same_instance and requested_role != "manager" and not explicit_role_provided:
             # Default manager self-connects should not require callers to pass role=manager.
             requested_role = "manager"
             details["role"] = "manager"
-        details = self._normalize_agent_metadata(agent=agent, metadata=details)
 
         self.register_agent(agent=agent, metadata=details)
         # Re-assert full identity metadata on heartbeat so same-agent concurrent
@@ -1578,13 +1799,27 @@ class Orchestrator:
         if effective_source != agent:
             verification["verified"] = False
             verification["reason"] = "source_agent_mismatch"
-        if agent == manager and requested_role != "manager":
+        if manager_same_instance and requested_role != "manager":
             verification["verified"] = False
             verification["reason"] = "manager_role_mismatch"
         if agent != manager and requested_role == "manager":
             verification["verified"] = False
             verification["reason"] = "non_manager_declared_manager_role"
-        connected = bool(verification.get("verified")) and bool(verification.get("same_project"))
+        connected = bool(verification.get("verified")) and (
+            bool(verification.get("same_project")) or self._allow_cross_project_agents()
+        )
+        if connected and requested_role == "manager" and manager_same_instance:
+            with self._state_lock():
+                current_roles = self.get_roles()
+                current_roles["leader_instance_id"] = agent_instance_id
+                self._write_json(
+                    self.roles_path,
+                    {
+                        "leader": str(current_roles.get("leader", manager)),
+                        "leader_instance_id": agent_instance_id,
+                        "team_members": list(current_roles.get("team_members", [])),
+                    },
+                )
 
         event_payload = {
             "agent": agent,
@@ -1603,7 +1838,7 @@ class Orchestrator:
             )
 
         # Team members auto-claim on connect; manager/leader should never auto-claim implementation work.
-        is_manager_connect = agent == manager or requested_role == "manager"
+        is_manager_connect = manager_same_instance or requested_role == "manager"
         auto_claimed = (
             self.claim_next_task(owner=agent, instance_id=str(details.get("instance_id", "")).strip() or None)
             if connected and not is_manager_connect
@@ -1622,6 +1857,7 @@ class Orchestrator:
             "connected": connected,
             "agent": agent,
             "manager": manager,
+            "leader_instance_id": leader_instance_id,
             "entry": entry,
             "identity": identity,
             "verified": verification.get("verified"),
@@ -1644,6 +1880,8 @@ class Orchestrator:
     ) -> str:
         if reason == "verified_identity":
             return "Agent identity verified for this project."
+        if reason == "verified_identity_cross_project":
+            return "Agent identity verified for cross-project mode."
         if reason == "manager_role_mismatch" and agent == manager:
             return (
                 f"Agent '{agent}' is currently leader and cannot attach as wingman/team_member to itself. "
@@ -1665,6 +1903,29 @@ class Orchestrator:
         if reason == "not_registered":
             return "Agent is not registered; call register_agent then retry connect_to_leader."
         return "Connection not verified."
+
+    def _resolve_agent_instance_id_unlocked(self, agent: str) -> str:
+        current = self._current_agent_instance_id_unlocked(agent)
+        if current and current != f"{agent}#default":
+            return current
+        instances = self._read_json(self.agent_instances_path)
+        if isinstance(instances, dict):
+            latest: Optional[Dict[str, Any]] = None
+            for entry in instances.values():
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("agent", "")).strip() != agent:
+                    continue
+                if latest is None:
+                    latest = entry
+                    continue
+                if str(entry.get("last_seen", "")) > str(latest.get("last_seen", "")):
+                    latest = entry
+            if isinstance(latest, dict):
+                candidate = str(latest.get("instance_id", "")).strip()
+                if candidate:
+                    return candidate
+        return f"{agent}#default"
 
     def list_agents(
         self,
@@ -1699,7 +1960,7 @@ class Orchestrator:
 
             computed_status = "active" if age <= stale_after else "offline"
             identity = self._identity_snapshot(entry=item, stale_after_seconds=stale_after)
-            if not bool(identity.get("verified")) or not bool(identity.get("same_project")):
+            if not bool(identity.get("verified")):
                 computed_status = "offline"
             item["status"] = computed_status
             item["age_seconds"] = max(0, age)
@@ -1784,7 +2045,7 @@ class Orchestrator:
             identity = self._identity_snapshot(entry=entry, stale_after_seconds=stale_after)
             age = self._age_seconds(str(item.get("last_seen")), now=now) if item.get("last_seen") else None
             computed_status = "active" if age is not None and age <= stale_after else "offline"
-            if not bool(identity.get("same_project")):
+            if not bool(identity.get("verified")):
                 computed_status = "offline"
             item["status"] = computed_status
             item["age_seconds"] = age
@@ -2218,9 +2479,12 @@ class Orchestrator:
 
         verification = self._verification_for_entry(entry=entry, stale_after_seconds=stale_after_seconds)
         verification["same_project"] = same_project
-        if verification.get("verified") and not same_project:
+        allow_cross_project = self._allow_cross_project_agents()
+        if verification.get("verified") and not same_project and not allow_cross_project:
             verification["verified"] = False
             verification["reason"] = "project_mismatch"
+        elif verification.get("verified") and not same_project and allow_cross_project:
+            verification["reason"] = "verified_identity_cross_project"
 
         return {
             "agent_id": entry.get("agent"),
@@ -2366,7 +2630,63 @@ class Orchestrator:
         except Exception:
             return False
 
-    def _task_is_same_project(self, task: Dict[str, Any]) -> bool:
+    def _allow_cross_project_agents(self) -> bool:
+        return bool(self.policy.triggers.get("allow_cross_project_agents", False))
+
+    def _normalize_task_tags(
+        self,
+        tags: Optional[Any],
+        project_name: Optional[str] = None,
+        workstream: Optional[str] = None,
+    ) -> List[str]:
+        items: List[str] = []
+        if isinstance(tags, list):
+            for item in tags:
+                if isinstance(item, str):
+                    cleaned = item.strip().lower()
+                    if cleaned:
+                        items.append(cleaned)
+        elif isinstance(tags, str):
+            cleaned = tags.strip().lower()
+            if cleaned:
+                items.append(cleaned)
+
+        if project_name:
+            pn = str(project_name).strip().lower()
+            if pn:
+                items.append(f"project:{pn}")
+        if workstream:
+            ws = str(workstream).strip().lower()
+            if ws:
+                items.append(f"workstream:{ws}")
+
+        return sorted(set(items))
+
+    def _agent_project_scope_unlocked(self, agent: str) -> Dict[str, Any]:
+        root = self.root
+        name = self.root.name
+        agents = self._read_json(self.agents_path)
+        if isinstance(agents, dict):
+            entry = agents.get(agent, {})
+            metadata = entry.get("metadata", {}) if isinstance(entry, dict) else {}
+            if isinstance(metadata, dict):
+                project_root_raw = str(metadata.get("project_root", "")).strip()
+                cwd_raw = str(metadata.get("cwd", "")).strip()
+                project_name_raw = str(metadata.get("project_name", "")).strip()
+                resolved = self._safe_resolve(project_root_raw or cwd_raw)
+                if resolved is not None:
+                    root = resolved
+                    name = project_name_raw or resolved.name
+                elif project_name_raw:
+                    name = project_name_raw
+        return {"project_root": root, "project_name": name}
+
+    def _task_matches_project_scope(
+        self,
+        task: Dict[str, Any],
+        project_root: Optional[Path],
+        project_name: str,
+    ) -> bool:
         if not isinstance(task, dict):
             return False
         project_root_raw = str(task.get("project_root", "")).strip()
@@ -2376,21 +2696,38 @@ class Orchestrator:
             return True
         if project_root_raw:
             resolved = self._safe_resolve(project_root_raw)
-            if resolved is None or resolved != self.root:
+            if resolved is None or (project_root is not None and resolved != project_root):
                 return False
-        if project_name_raw and project_name_raw != self.root.name:
+        if project_name_raw and project_name and project_name_raw != project_name:
             return False
         return True
 
-    def _assert_task_same_project(self, task: Dict[str, Any], operation: str) -> None:
-        if self._task_is_same_project(task):
+    def _assert_task_project_scope(
+        self,
+        task: Dict[str, Any],
+        operation: str,
+        project_root: Optional[Path],
+        project_name: str,
+    ) -> None:
+        if self._task_matches_project_scope(task, project_root=project_root, project_name=project_name):
             return
         raise ValueError(
             "task_wrong_project: "
             f"task_id={task.get('id', '')} operation={operation} "
             f"task_project_root={task.get('project_root', '<missing>')} "
             f"task_project_name={task.get('project_name', '<missing>')} "
-            f"current_project_root={self.root} current_project_name={self.root.name}"
+            f"current_project_root={project_root} current_project_name={project_name}"
+        )
+
+    def _task_is_same_project(self, task: Dict[str, Any]) -> bool:
+        return self._task_matches_project_scope(task, project_root=self.root, project_name=self.root.name)
+
+    def _assert_task_same_project(self, task: Dict[str, Any], operation: str) -> None:
+        self._assert_task_project_scope(
+            task=task,
+            operation=operation,
+            project_root=self.root,
+            project_name=self.root.name,
         )
 
     def _emit_stale_notice_if_due(
@@ -2503,7 +2840,9 @@ class Orchestrator:
                 "verification_source",
             ]
             identity_complete = all(str(metadata.get(key, "")).strip() for key in required)
-            return bool(identity_complete) and bool(identity.get("same_project"))
+            return bool(identity_complete) and (
+                bool(identity.get("same_project")) or self._allow_cross_project_agents()
+            )
 
     def _leader_is_operational_for_project_locked(self, leader: str) -> bool:
         if not isinstance(leader, str) or not leader.strip():
@@ -2516,7 +2855,9 @@ class Orchestrator:
             return False
         stale_after = self._heartbeat_timeout_seconds()
         identity = self._identity_snapshot(entry=entry, stale_after_seconds=stale_after)
-        return bool(identity.get("verified")) and bool(identity.get("same_project"))
+        return bool(identity.get("verified")) and (
+            bool(identity.get("same_project")) or self._allow_cross_project_agents()
+        )
 
     def _assert_agent_operational(self, agent: str) -> None:
         if not self._agent_is_operational(agent):

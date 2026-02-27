@@ -21,6 +21,10 @@
 #   --leader-cli CLI          Leader CLI (default: derived from leader agent)
 #   --wingman-agent AGENT     Wingman agent id (default: ccm)
 #   --wingman-cli CLI         Wingman CLI (default: claude)
+#   --claude-project-root DIR Worker project root for claude_code (default: --project-root)
+#   --gemini-project-root DIR Worker project root for gemini (default: --project-root)
+#   --codex-project-root DIR  Worker project root for codex worker (default: --project-root)
+#   --wingman-project-root DIR Worker project root for wingman (default: --project-root)
 #   --max-restarts N          Max restarts before giving up on a process (default: 5)
 #   --backoff-base N          Base backoff seconds on restart (default: 10)
 #   --backoff-max N           Max backoff seconds (default: 120)
@@ -52,6 +56,10 @@ LEADER_AGENT="codex"
 LEADER_CLI=""
 WINGMAN_AGENT="ccm"
 WINGMAN_CLI="claude"
+CLAUDE_PROJECT_ROOT=""
+GEMINI_PROJECT_ROOT=""
+CODEX_PROJECT_ROOT=""
+WINGMAN_PROJECT_ROOT=""
 MAX_RESTARTS=5
 BACKOFF_BASE=10
 BACKOFF_MAX=120
@@ -69,6 +77,10 @@ while [[ $# -gt 0 ]]; do
     --leader-cli) LEADER_CLI="$2"; shift 2 ;;
     --wingman-agent) WINGMAN_AGENT="$2"; shift 2 ;;
     --wingman-cli) WINGMAN_CLI="$2"; shift 2 ;;
+    --claude-project-root) CLAUDE_PROJECT_ROOT="$2"; shift 2 ;;
+    --gemini-project-root) GEMINI_PROJECT_ROOT="$2"; shift 2 ;;
+    --codex-project-root) CODEX_PROJECT_ROOT="$2"; shift 2 ;;
+    --wingman-project-root) WINGMAN_PROJECT_ROOT="$2"; shift 2 ;;
     --max-restarts) MAX_RESTARTS="$2"; shift 2 ;;
     --backoff-base) BACKOFF_BASE="$2"; shift 2 ;;
     --backoff-max) BACKOFF_MAX="$2"; shift 2 ;;
@@ -78,6 +90,10 @@ done
 
 [[ -z "$LOG_DIR" ]] && LOG_DIR="$PROJECT_ROOT/.autopilot-logs"
 [[ -z "$PID_DIR" ]] && PID_DIR="$PROJECT_ROOT/.autopilot-pids"
+[[ -z "$CLAUDE_PROJECT_ROOT" ]] && CLAUDE_PROJECT_ROOT="$PROJECT_ROOT"
+[[ -z "$GEMINI_PROJECT_ROOT" ]] && GEMINI_PROJECT_ROOT="$PROJECT_ROOT"
+[[ -z "$CODEX_PROJECT_ROOT" ]] && CODEX_PROJECT_ROOT="$PROJECT_ROOT"
+[[ -z "$WINGMAN_PROJECT_ROOT" ]] && WINGMAN_PROJECT_ROOT="$PROJECT_ROOT"
 
 if [[ -z "$LEADER_CLI" ]]; then
   case "$LEADER_AGENT" in
@@ -107,16 +123,16 @@ proc_cmd() {
       echo "$ROOT_DIR/scripts/autopilot/manager_loop.sh --cli $LEADER_CLI --leader-agent $LEADER_AGENT --project-root $PROJECT_ROOT --interval $MANAGER_INTERVAL --cli-timeout $MANAGER_CLI_TIMEOUT --log-dir $LOG_DIR"
       ;;
     wingman)
-      echo "$ROOT_DIR/scripts/autopilot/worker_loop.sh --cli $WINGMAN_CLI --agent $WINGMAN_AGENT --lane wingman --project-root $PROJECT_ROOT --interval $WORKER_INTERVAL --cli-timeout $WORKER_CLI_TIMEOUT --log-dir $LOG_DIR"
+      echo "$ROOT_DIR/scripts/autopilot/worker_loop.sh --cli $WINGMAN_CLI --agent $WINGMAN_AGENT --lane wingman --project-root $WINGMAN_PROJECT_ROOT --interval $WORKER_INTERVAL --cli-timeout $WORKER_CLI_TIMEOUT --log-dir $LOG_DIR"
       ;;
     claude)
-      echo "$ROOT_DIR/scripts/autopilot/worker_loop.sh --cli claude --agent claude_code --project-root $PROJECT_ROOT --interval $WORKER_INTERVAL --cli-timeout $WORKER_CLI_TIMEOUT --log-dir $LOG_DIR"
+      echo "$ROOT_DIR/scripts/autopilot/worker_loop.sh --cli claude --agent claude_code --project-root $CLAUDE_PROJECT_ROOT --interval $WORKER_INTERVAL --cli-timeout $WORKER_CLI_TIMEOUT --log-dir $LOG_DIR"
       ;;
     gemini)
-      echo "$ROOT_DIR/scripts/autopilot/worker_loop.sh --cli gemini --agent gemini --project-root $PROJECT_ROOT --interval $WORKER_INTERVAL --cli-timeout $WORKER_CLI_TIMEOUT --log-dir $LOG_DIR"
+      echo "$ROOT_DIR/scripts/autopilot/worker_loop.sh --cli gemini --agent gemini --project-root $GEMINI_PROJECT_ROOT --interval $WORKER_INTERVAL --cli-timeout $WORKER_CLI_TIMEOUT --log-dir $LOG_DIR"
       ;;
     codex_worker)
-      echo "$ROOT_DIR/scripts/autopilot/worker_loop.sh --cli codex --agent codex --project-root $PROJECT_ROOT --interval $WORKER_INTERVAL --cli-timeout $WORKER_CLI_TIMEOUT --log-dir $LOG_DIR"
+      echo "$ROOT_DIR/scripts/autopilot/worker_loop.sh --cli codex --agent codex --project-root $CODEX_PROJECT_ROOT --interval $WORKER_INTERVAL --cli-timeout $WORKER_CLI_TIMEOUT --log-dir $LOG_DIR"
       ;;
     watchdog)
       echo "$ROOT_DIR/scripts/autopilot/watchdog_loop.sh --project-root $PROJECT_ROOT --interval 15 --log-dir $LOG_DIR"
