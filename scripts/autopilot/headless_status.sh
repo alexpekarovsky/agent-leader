@@ -123,6 +123,13 @@ proc = {
     "codex_worker": proc_status("codex_worker"),
     "watchdog": proc_status("watchdog"),
 }
+known = set(proc.keys())
+if pid_dir.exists():
+    for pf in pid_dir.glob("*.pid"):
+        name = pf.stem
+        if name not in known:
+            proc[name] = proc_status(name)
+            known.add(name)
 
 payload = {
     "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -163,7 +170,10 @@ print(f"  total={payload['task_total']} assigned={payload['assigned_count']} in_
 print(f"  blockers={payload['open_blockers']} bugs={payload['open_bugs']}")
 print()
 print("Processes")
-for k in ("manager", "wingman", "claude", "gemini", "codex_worker", "watchdog"):
+preferred = ("manager", "wingman", "claude", "gemini", "codex_worker", "watchdog")
+ordered = [name for name in preferred if name in payload["processes"]]
+ordered.extend(sorted([name for name in payload["processes"].keys() if name not in preferred]))
+for k in ordered:
     p = payload["processes"][k]
     print(f"  {k:8s} {p['status']:7s} pid={p['pid'] if p['pid'] is not None else '-'}")
 print()

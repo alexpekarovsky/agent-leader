@@ -81,6 +81,7 @@ class GetRolesTests(unittest.TestCase):
             orch = _make_orch(root)
             roles = orch.get_roles()
             self.assertEqual("codex", roles["leader"])
+            self.assertEqual("codex#default", roles["leader_instance_id"])
             self.assertEqual("codex", roles["default_leader"])
             self.assertIsInstance(roles["team_members"], list)
 
@@ -91,6 +92,7 @@ class GetRolesTests(unittest.TestCase):
             orch = _make_orch(root)
             roles = orch.get_roles()
             self.assertIn("leader", roles)
+            self.assertIn("leader_instance_id", roles)
             self.assertIn("team_members", roles)
             self.assertIn("default_leader", roles)
 
@@ -122,7 +124,19 @@ class GetRolesTests(unittest.TestCase):
             orch._write_json(orch.roles_path, {})
             roles = orch.get_roles()
             self.assertEqual("codex", roles["leader"])
+            self.assertEqual("codex#default", roles["leader_instance_id"])
             self.assertEqual([], roles["team_members"])
+
+    def test_roles_file_without_leader_instance_id_migrates_on_read(self) -> None:
+        """Backward compatibility: roles without leader_instance_id should derive leader#default."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = _make_orch(root)
+            orch._write_json(orch.roles_path, {"leader": "claude_code", "team_members": ["gemini"]})
+            roles = orch.get_roles()
+            self.assertEqual("claude_code", roles["leader"])
+            self.assertEqual("claude_code#default", roles["leader_instance_id"])
+            self.assertEqual(["gemini"], roles["team_members"])
 
 
 class SetRoleTests(unittest.TestCase):
@@ -143,6 +157,7 @@ class SetRoleTests(unittest.TestCase):
             orch = _make_orch(root)
             result = orch.set_role("claude_code", "leader", source="codex")
             self.assertEqual("claude_code", result["leader"])
+            self.assertEqual("claude_code#default", result["leader_instance_id"])
 
     def test_leader_removed_from_team_members(self) -> None:
         """Promoting a team member to leader should remove them from team_members."""
@@ -161,6 +176,35 @@ class SetRoleTests(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 orch.set_role("gemini", "team_member", source="claude_code")
             self.assertIn("leader_mismatch", str(ctx.exception))
+
+    def test_default_manager_can_recover_leadership_when_current_leader_not_operational(self) -> None:
+        """Default manager can reclaim leadership if the configured leader is stale/off-project."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = _make_orch(root)
+            # Move leadership away from codex first.
+            orch.set_role("claude_code", "leader", source="codex")
+            # Register leader identity from another project to force non-operational status.
+            orch.register_agent(
+                "claude_code",
+                metadata={
+                    "client": "claude-code",
+                    "model": "claude-opus-4-6",
+                    "cwd": "/tmp/outside-project",
+                    "project_root": "/tmp/outside-project",
+                    "permissions_mode": "default",
+                    "sandbox_mode": "none",
+                    "session_id": "foreign-session",
+                    "connection_id": "foreign-conn",
+                    "server_version": "1.0.0",
+                    "verification_source": "test",
+                    "role": "team_member",
+                    "status": "idle",
+                },
+            )
+            # codex is no longer the current leader, but should be allowed to recover.
+            result = orch.set_role("codex", "leader", source="codex")
+            self.assertEqual("codex", result["leader"])
 
     def test_demote_leader_to_team_member_rejected(self) -> None:
         """Current leader cannot be assigned as team_member."""

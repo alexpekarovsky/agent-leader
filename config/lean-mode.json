@@ -1,0 +1,18 @@
+{
+  "enabled": true,
+  "enforce_by_default": true,
+  "task_profile_defaults": {
+    "risk": "medium",
+    "test_plan": "targeted",
+    "doc_impact": "none"
+  },
+  "guardrails": {
+    "max_new_docs": 0,
+    "max_new_test_files": 2,
+    "max_test_to_code_loc_ratio": 1.0,
+    "allow_labels": [
+      "docs-approved",
+      "qa-approved"
+    ]
+  }
+}

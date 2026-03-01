@@ -8,8 +8,8 @@ import subprocess
 import tempfile
 import time
 import unittest
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
 from orchestrator.bus import EventBus
 from orchestrator.engine import Orchestrator
@@ -473,6 +473,7 @@ class ConnectBehaviorTests(unittest.TestCase):
                 agent="codex",
                 metadata={
                     "role": "team_member",
+                    "instance_id": "codex#default",
                     "client": "codex-cli",
                     "model": "gpt-5",
                     "cwd": str(root),
@@ -501,6 +502,7 @@ class ConnectBehaviorTests(unittest.TestCase):
             result = orch.connect_to_leader(
                 agent="codex",
                 metadata={
+                    "instance_id": "codex#default",
                     "client": "codex-cli",
                     "model": "gpt-5",
                     "cwd": str(root),
@@ -1038,7 +1040,7 @@ class LeaseReliabilityTests(unittest.TestCase):
                 owner="claude_code",
                 acceptance_criteria=["block on no worker"],
             )
-            claimed = orch.claim_next_task(owner="claude_code")
+            orch.claim_next_task(owner="claude_code")
             tasks = orch._read_json(orch.tasks_path)
             for item in tasks:
                 if item["id"] == task["id"]:

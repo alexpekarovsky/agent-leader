@@ -28,23 +28,27 @@ This document tracks planned direction for `agent-leader`.
 - Add event retention/compaction with cursor safety.
 - Improve reconnect behavior for interrupted sessions.
 
-## v0.5 - Governance
+## v0.5 - Governance & Quality Gates
 - Add policy bundles:
   - strict QA
   - prototype/fast iteration
   - balanced default
 - Add explicit risk gates for high-impact actions.
 - Expand architecture-decision workflow templates and tie-break rules.
+- **Quality gate system** (ralph-inspired): automated "plankton" checker that runs between task completion and PR creation — catches architecture violations, missing tests, bad patterns, style/consistency issues.
+- **Iterative self-review**: workers critique their own output 2-3 rounds before submitting to wingman/manager. Reduces review noise, catches obvious issues earlier.
 
 ## v0.6 - Multi-Project Operations
 - Add global config + per-repo override model.
 - Add project registry for quick context switching.
 - Add cross-project status/reporting view.
+- **Codebase comprehension phase** (ralph-inspired): `comprehend_project` task type where parallel workers map an unfamiliar codebase (file structure, key modules, patterns, dependencies) before planning begins. Output feeds into all subsequent task planning.
 
 ## v0.7 - Integrations
 - GitHub integration:
   - open issues from orchestrator bugs
   - PR-ready summaries from reports
+  - **Stacked/dependent PR chains** (ralph-inspired): when features span multiple PRs, auto-create base→child branch relationships with proper ordering
 - CI integration:
   - consume CI test outcomes in validation cycle
   - attach logs/artifacts to reports

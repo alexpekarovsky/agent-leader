@@ -204,6 +204,7 @@ class Orchestrator:
         project_root: Optional[str] = None,
         project_name: Optional[str] = None,
         tags: Optional[List[str]] = None,
+        team_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         delivery_profile = self._normalize_task_delivery_profile(
             risk=risk,
@@ -212,10 +213,12 @@ class Orchestrator:
         )
         normalized_root = str(project_root or str(self.root)).strip() or str(self.root)
         normalized_name = str(project_name or Path(normalized_root).name or self.root.name).strip() or self.root.name
+        normalized_team_id = str(team_id or "").strip().lower()
         task_tags = self._normalize_task_tags(
             tags=tags,
             project_name=normalized_name,
             workstream=workstream,
+            team_id=normalized_team_id or None,
         )
         with self._state_lock():
             tasks = self._read_json(self.tasks_path)
@@ -241,6 +244,7 @@ class Orchestrator:
                 "owner": resolved_owner,
                 "project_root": normalized_root,
                 "project_name": normalized_name,
+                "team_id": normalized_team_id or None,
                 "tags": task_tags,
                 "status": "assigned",
                 "acceptance_criteria": acceptance_criteria,
@@ -262,6 +266,7 @@ class Orchestrator:
                 "workstream": workstream,
                 "project_root": normalized_root,
                 "project_name": normalized_name,
+                "team_id": normalized_team_id or None,
                 "tags": task_tags,
                 "acceptance_criteria": acceptance_criteria,
                 "delivery_profile": delivery_profile,
@@ -283,6 +288,7 @@ class Orchestrator:
                 "owner": resolved_owner,
                 "workstream": workstream,
                 "project_name": normalized_name,
+                "team_id": normalized_team_id or None,
                 "tags": task_tags,
             },
             source=self.manager_agent(),
@@ -334,6 +340,7 @@ class Orchestrator:
         project_name: Optional[str] = None,
         project_root: Optional[str] = None,
         tags: Optional[List[str]] = None,
+        team_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         tasks = self._read_json(self.tasks_path)
         if not isinstance(tasks, list):
@@ -342,6 +349,7 @@ class Orchestrator:
         normalized_tags = self._normalize_task_tags(tags=tags) if tags else []
         normalized_project_name = str(project_name or "").strip()
         normalized_project_root = self._safe_resolve(str(project_root).strip()) if project_root else None
+        normalized_team_id = str(team_id or "").strip().lower()
 
         filtered: List[Dict[str, Any]] = []
         for task in tasks:
@@ -350,6 +358,8 @@ class Orchestrator:
             if status and task.get("status") != status:
                 continue
             if owner and task.get("owner") != owner:
+                continue
+            if normalized_team_id and str(task.get("team_id", "")).strip().lower() != normalized_team_id:
                 continue
             if normalized_project_name and str(task.get("project_name", "")).strip() != normalized_project_name:
                 continue
@@ -378,8 +388,14 @@ class Orchestrator:
         except Exception:
             return 5.0
 
-    def claim_next_task(self, owner: str, instance_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def claim_next_task(
+        self,
+        owner: str,
+        instance_id: Optional[str] = None,
+        team_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         self._assert_agent_operational(owner)
+        normalized_team_id = str(team_id or "").strip().lower()
 
         # --- Anti-spam cooldown for rapid empty claims ---
         # Uses tasks file mtime to detect new work; only throttles when the
@@ -429,6 +445,9 @@ class Orchestrator:
             if override_task_id:
                 forced = next((t for t in tasks if t.get("id") == override_task_id and t.get("owner") == owner), None)
                 if forced and forced.get("status") in {"assigned", "bug_open"}:
+                    if normalized_team_id and str(forced.get("team_id", "")).strip().lower() != normalized_team_id:
+                        forced = None
+                if forced and forced.get("status") in {"assigned", "bug_open"}:
                     self._assert_task_project_scope(
                         forced,
                         operation="claim_override",
@@ -475,6 +494,8 @@ class Orchestrator:
                 if task.get("owner") != owner:
                     continue
                 if task.get("status") not in {"assigned", "bug_open"}:
+                    continue
+                if normalized_team_id and str(task.get("team_id", "")).strip().lower() != normalized_team_id:
                     continue
                 if not self._task_matches_project_scope(
                     task,
@@ -2643,6 +2664,7 @@ class Orchestrator:
         tags: Optional[Any],
         project_name: Optional[str] = None,
         workstream: Optional[str] = None,
+        team_id: Optional[str] = None,
     ) -> List[str]:
         items: List[str] = []
         if isinstance(tags, list):
@@ -2664,6 +2686,10 @@ class Orchestrator:
             ws = str(workstream).strip().lower()
             if ws:
                 items.append(f"workstream:{ws}")
+        if team_id:
+            tid = str(team_id).strip().lower()
+            if tid:
+                items.append(f"team:{tid}")
 
         return sorted(set(items))
 

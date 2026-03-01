@@ -66,6 +66,7 @@ class Scenario1SelfConnectGuard(unittest.TestCase):
                 "cwd": str(self.root), "project_root": str(self.root),
                 "permissions_mode": "default", "sandbox_mode": False,
                 "session_id": "codex-sid", "connection_id": "codex-cid",
+                "instance_id": "codex#default",
                 "server_version": "1.0", "verification_source": "codex",
                 "role": "team_member",
             },
@@ -84,6 +85,7 @@ class Scenario1SelfConnectGuard(unittest.TestCase):
                 "cwd": str(self.root), "project_root": str(self.root),
                 "permissions_mode": "default", "sandbox_mode": False,
                 "session_id": "codex-sid", "connection_id": "codex-cid",
+                "instance_id": "codex#default",
                 "server_version": "1.0", "verification_source": "codex",
                 "role": "team_member",
             },
@@ -103,6 +105,7 @@ class Scenario1SelfConnectGuard(unittest.TestCase):
                 "cwd": str(self.root), "project_root": str(self.root),
                 "permissions_mode": "default", "sandbox_mode": False,
                 "session_id": "codex-sid", "connection_id": "codex-cid",
+                "instance_id": "codex#default",
                 "server_version": "1.0", "verification_source": "codex",
             },
         )
@@ -128,10 +131,54 @@ class Scenario1SelfConnectGuard(unittest.TestCase):
                 "cwd": str(self.root), "project_root": str(self.root),
                 "permissions_mode": "default", "sandbox_mode": False,
                 "session_id": "codex-sid", "connection_id": "codex-cid",
+                "instance_id": "codex#default",
                 "server_version": "1.0", "verification_source": "codex",
             },
         )
         self.assertIsNone(result["auto_claimed_task"])
+
+    def test_second_codex_instance_can_connect_as_wingman(self) -> None:
+        """Different codex instance_id should be allowed as team_member when leader is codex."""
+        leader_connect = self.orch.connect_to_leader(
+            agent="codex",
+            source="codex",
+            metadata={
+                "client": "codex",
+                "model": "codex",
+                "cwd": str(self.root),
+                "project_root": str(self.root),
+                "permissions_mode": "default",
+                "sandbox_mode": False,
+                "session_id": "codex-leader-session",
+                "connection_id": "codex-leader-conn",
+                "server_version": "1.0",
+                "verification_source": "codex",
+                "role": "manager",
+            },
+        )
+        self.assertTrue(leader_connect["connected"])
+
+        wingman_connect = self.orch.connect_to_leader(
+            agent="codex",
+            source="codex",
+            metadata={
+                "client": "codex",
+                "model": "codex",
+                "cwd": str(self.root),
+                "project_root": str(self.root),
+                "permissions_mode": "default",
+                "sandbox_mode": False,
+                "session_id": "codex-wingman-session",
+                "connection_id": "codex-wingman-conn",
+                "server_version": "1.0",
+                "verification_source": "codex",
+                "role": "team_member",
+                "role_intent": "wingman",
+            },
+        )
+        self.assertTrue(wingman_connect["connected"])
+        self.assertEqual("verified_identity", wingman_connect["reason"])
+        self.assertEqual("codex", wingman_connect["manager"])
 
 
 class Scenario2LeaderHandoffWingman(unittest.TestCase):

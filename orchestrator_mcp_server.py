@@ -564,6 +564,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                     "project_root": {"type": "string", "description": "Optional project root override for multi-project manager mode."},
                     "project_name": {"type": "string", "description": "Optional project name tag override."},
                     "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional content tags. project:* and workstream:* are auto-added."},
+                    "team_id": {"type": "string", "description": "Optional team id tag for multi-team routing."},
                 },
                 "required": ["title", "workstream"],
             },
@@ -588,6 +589,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                     "owner": {"type": "string", "description": "Optional owner filter (codex|claude_code|gemini)."},
                     "project_name": {"type": "string", "description": "Optional project_name filter."},
                     "project_root": {"type": "string", "description": "Optional project_root filter."},
+                    "team_id": {"type": "string", "description": "Optional team_id filter."},
                     "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional tags filter (all tags must match)."},
                 },
             },
@@ -612,6 +614,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                 "properties": {
                     "agent": {"type": "string", "description": "codex|claude_code|gemini"},
                     "instance_id": {"type": "string", "description": "Optional explicit worker instance id for same-agent multi-session claims."},
+                    "team_id": {"type": "string", "description": "Optional team_id scope for multi-team routing."},
                 },
                 "required": ["agent"],
             },
@@ -1773,6 +1776,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 project_root=args.get("project_root"),
                 project_name=args.get("project_name"),
                 tags=tags,
+                team_id=args.get("team_id"),
             )
             return _ok_and_audit(request_id, name, args, task)
 
@@ -1789,6 +1793,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 owner=args.get("owner"),
                 project_name=args.get("project_name"),
                 project_root=args.get("project_root"),
+                team_id=args.get("team_id"),
                 tags=tags,
             )
             return _ok_and_audit(request_id, name, args, tasks)
@@ -1798,7 +1803,11 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             return _ok_and_audit(request_id, name, args, tasks)
 
         if name == "orchestrator_claim_next_task":
-            result = ORCH.claim_next_task(owner=args["agent"], instance_id=args.get("instance_id"))
+            result = ORCH.claim_next_task(
+                owner=args["agent"],
+                instance_id=args.get("instance_id"),
+                team_id=args.get("team_id"),
+            )
             if result and isinstance(result, dict) and result.get("throttled"):
                 # Anti-spam cooldown: rapid empty claims are suppressed.
                 backoff = result.get("backoff_seconds", 5)

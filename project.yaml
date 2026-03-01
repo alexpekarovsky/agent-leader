@@ -1,0 +1,117 @@
+name: Agent Leader Orchestrator
+description: MCP control plane for leader+worker autonomous software delivery
+icon: "🧭"
+revenue: true
+
+version:
+  current: v0.2.0
+  name: "Stability + Multi-Project Foundation"
+  started: 2026-02-16
+
+  milestones:
+    - id: connect-workflow-hardening
+      title: Finalize connect_to_leader/connect_team_members reliability and role safety
+      effort: M
+      status: done
+      tags: [backend, orchestration, auth]
+
+    - id: claim-cooldown-and-doctor
+      title: Add claim_next_task anti-spam cooldown and orchestrator_doctor diagnostics
+      effort: M
+      status: done
+      tags: [backend, reliability, ops]
+
+    - id: wingman-headless-lane
+      title: Add first-class wingman lane in headless/tmux flows with status visibility
+      effort: M
+      status: done
+      tags: [autopilot, qa, headless]
+
+    - id: multi-project-task-tagging
+      title: Add project-aware task tags and MCP filters (project_root, project_name, tags)
+      effort: L
+      status: in_progress
+      tags: [backend, multi-project, routing]
+
+    - id: headless-multi-team-routing
+      title: Add headless multi-team routing (team_id lanes, extra workers, team-scoped claims)
+      effort: L
+      status: in_progress
+      tags: [headless, multi-team, routing]
+      depends_on: [multi-project-task-tagging]
+
+    - id: multi-project-regression-fixes
+      title: Stabilize multi-project regressions and align script/test expectations
+      effort: L
+      status: in_progress
+      tags: [qa, reliability, tests]
+      depends_on: [multi-project-task-tagging, headless-multi-team-routing]
+
+    - id: policy-bundle-presets
+      title: Add policy bundles for strict QA, prototype, and balanced modes
+      effort: M
+      status: planned
+      tags: [governance, policy]
+
+    - id: ci-github-integrations
+      title: Integrate GitHub issue/PR handoff and CI result ingestion into validation loop
+      effort: XL
+      status: planned
+      tags: [integrations, ci, github]
+
+    # --- Ralph-inspired additions (Feb 2026) ---
+    - id: quality-gate-system
+      title: "Plankton-style quality gate: automated arch violations, missing tests, bad patterns, style checks before PR"
+      effort: L
+      status: planned
+      tags: [qa, quality-gate, governance]
+      inspiration: ralph
+
+    - id: codebase-comprehension-phase
+      title: "Add comprehend_project task type: parallel workers map codebase structure before planning begins"
+      effort: M
+      status: planned
+      tags: [orchestration, comprehension, onboarding]
+      inspiration: ralph
+
+    - id: iterative-self-review
+      title: "Multi-round self-review loop: workers critique own output 2-3 rounds before submitting to wingman/manager"
+      effort: M
+      status: planned
+      tags: [qa, self-review, quality]
+      inspiration: ralph
+
+    - id: stacked-pr-support
+      title: "Stacked/dependent PR chains: when features span multiple PRs, auto-create base→child branch relationships"
+      effort: L
+      status: planned
+      tags: [integrations, github, pr-workflow]
+      depends_on: [ci-github-integrations]
+      inspiration: ralph
+
+roadmap:
+  - version: v0.3.0
+    name: "UX and Operator Experience"
+    items:
+      - Slash-command bundles for manager/team workflows
+      - Cleaner live status summaries and next-action guidance
+      - Prompt/template startup polish
+
+  - version: v0.4.0
+    name: "Reliability and Recovery"
+    items:
+      - Stale-task reassignment policy hardening
+      - Idempotent report dedupe by task+commit
+      - Event retention/compaction with cursor safety
+
+  - version: v0.6.0
+    name: "Multi-Project Operations"
+    items:
+      - Project registry and context switching
+      - Cross-project status/reporting view
+      - Per-project override model
+
+history:
+  - version: v0.1.0
+    released: 2026-02-15
+    summary: "First public release with manager/team-member orchestration, connect workflow, and live status reporting."

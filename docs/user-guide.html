@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agent Leader Guide (Codex CLI)</title>
+  <style>
+    :root {
+      --bg1: #fff6e8;
+      --bg2: #e8f4ff;
+      --ink: #1f2840;
+      --muted: #485a7c;
+      --card: #ffffff;
+      --line: #dce6fb;
+      --blue: #2f6bff;
+      --teal: #0f9d8a;
+      --orange: #ee7b30;
+      --rose: #d63384;
+      --good: #0f7a44;
+      --warn: #84480f;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      font: 16px/1.65 "Avenir Next", "Segoe UI", system-ui, -apple-system, sans-serif;
+      background:
+        radial-gradient(900px 520px at 10% -12%, #ffe1ef 0%, transparent 68%),
+        radial-gradient(900px 480px at 90% -10%, #d9efff 0%, transparent 65%),
+        linear-gradient(150deg, var(--bg1), var(--bg2));
+    }
+
+    .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 20px 80px; }
+
+    .hero {
+      border-radius: 24px;
+      padding: 28px 30px;
+      border: 1px solid rgba(255,255,255,.95);
+      background:
+        linear-gradient(130deg, rgba(255,255,255,.92), rgba(255,255,255,.96)),
+        linear-gradient(120deg, #ff7eb3, #7f7fff 45%, #2bd4c6);
+      box-shadow: 0 18px 44px rgba(32, 34, 86, .16);
+    }
+
+    h1 { margin: 0 0 8px; font-size: 36px; line-height: 1.15; }
+    h2 {
+      margin: 30px 0 10px;
+      font-size: 27px;
+      border-bottom: 3px solid #e3eafc;
+      padding-bottom: 6px;
+    }
+    h3 { margin: 12px 0 8px; font-size: 20px; }
+    p, li { color: var(--muted); }
+
+    .chips { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip {
+      font-size: 12px;
+      border-radius: 999px;
+      border: 1px solid #cddcff;
+      padding: 4px 10px;
+      background: linear-gradient(120deg, #f2f7ff, #fff1f9);
+      color: #28406e;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 16px;
+      box-shadow: 0 8px 24px rgba(30, 44, 90, .08);
+      margin-top: 12px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      gap: 14px;
+      margin-top: 12px;
+    }
+
+    .tag {
+      display: inline-block;
+      text-transform: uppercase;
+      letter-spacing: .4px;
+      font-size: 11px;
+      font-weight: 700;
+      border-radius: 999px;
+      padding: 3px 9px;
+      border: 1px solid;
+      margin-bottom: 6px;
+    }
+    .t-blue { color: #184694; background: #eaf1ff; border-color: #c7dbff; }
+    .t-orange { color: #8b3f10; background: #fff1e7; border-color: #f2cfad; }
+
+    .step {
+      margin: 10px 0;
+      padding: 12px 14px;
+      border-radius: 12px;
+      border: 1px solid #e1e8fb;
+      border-left: 5px solid var(--blue);
+      background: #fff;
+    }
+    .step.swarm { border-left-color: var(--orange); }
+
+    .say {
+      margin-top: 7px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid #d8e3ff;
+      background: linear-gradient(180deg, #f8fbff, #f1f6ff);
+      color: #1d355d;
+      font-weight: 600;
+    }
+
+    code {
+      background: #eef3ff;
+      border: 1px solid #d6e1ff;
+      color: #10264e;
+      border-radius: 6px;
+      padding: 2px 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .92em;
+    }
+
+    .timeline {
+      margin-top: 8px;
+      padding-left: 14px;
+      border-left: 3px solid #e4e9fb;
+    }
+    .timeline div { margin: 6px 0; }
+
+    .good {
+      margin-top: 8px;
+      border: 1px solid #bfe7cf;
+      background: #ecfff4;
+      color: var(--good);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-weight: 600;
+    }
+
+    .warn {
+      margin-top: 8px;
+      border: 1px solid #f4d8bf;
+      background: #fff6ef;
+      color: var(--warn);
+      border-radius: 10px;
+      padding: 10px 12px;
+    }
+
+    .role {
+      border: 1px solid #e1e8fb;
+      border-radius: 12px;
+      padding: 10px 12px;
+      background: #fafcff;
+      margin-top: 8px;
+    }
+
+    .footer { margin-top: 28px; text-align: center; color: #5c6a89; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <h1>How To Run The System From Codex CLI</h1>
+      <p>This is a user guide in plain language. You control everything from this chat. Codex runs the orchestrator steps for you.</p>
+      <div class="chips">
+        <span class="chip">Flow A: Interactive (chat-driven, step by step)</span>
+        <span class="chip">Flow B: Headless swarm (continuous autonomous cycles)</span>
+        <span class="chip">Project example: <code>/Users/alex/my-api</code></span>
+      </div>
+    </section>
+
+    <h2>What You Need Before Starting</h2>
+    <div class="card">
+      <ul>
+        <li>Your project exists locally (example: <code>/Users/alex/my-api</code>).</li>
+        <li>Orchestrator MCP is reachable from this Codex session.</li>
+        <li>You know your goal in one sentence (for example: "add /health endpoint and tests").</li>
+      </ul>
+      <div class="warn">If connection fails, ask: <code>check orchestrator status and tell me what is down</code>.</div>
+    </div>
+
+    <h2>Who Does What</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Leader (Codex)</h3>
+        <ul>
+          <li>Owns task lifecycle.</li>
+          <li>Connects team members.</li>
+          <li>Creates tasks, validates reports, accepts or requests fixes.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Wingman / Worker</h3>
+        <ul>
+          <li>Implements code changes.</li>
+          <li>Adds tests.</li>
+          <li>Submits delivery report with test results.</li>
+        </ul>
+      </div>
+    </div>
+
+    <h2>Flow A: Interactive (Recommended For Manual Control)</h2>
+
+    <div class="step">
+      <span class="tag t-blue">Step 1</span>
+      <h3>Tell Codex to enter leader mode and connect team</h3>
+      <div class="say">Say in chat: "You are the leader. Connect to team and show connection status."</div>
+      <p>Codex should reply with current roles and active team members.</p>
+    </div>
+
+    <div class="step">
+      <span class="tag t-blue">Step 2</span>
+      <h3>If you also have a wingman session, attach it</h3>
+      <div class="say">In wingman session, say: "You are team member. Connect to leader and report status."</div>
+      <p>If the same identity is already leader, Codex explains why attach is blocked and what to switch.</p>
+    </div>
+
+    <div class="step">
+      <span class="tag t-blue">Step 3</span>
+      <h3>Give goal in human language</h3>
+      <div class="say">Say: "Use project /Users/alex/my-api. Please add a /health endpoint and tests. Make a minimal plan, then execute."</div>
+      <p>Codex converts this to tasks and assigns workers.</p>
+    </div>
+
+    <div class="step">
+      <span class="tag t-blue">Step 4</span>
+      <h3>Steer during execution</h3>
+      <div class="say">Say: "Status now." or "Show blockers only." or "Validate reported tasks now."</div>
+      <p>You can intervene at any time: pause, reprioritize, or request review focus.</p>
+    </div>
+
+    <div class="step">
+      <span class="tag t-blue">Step 5</span>
+      <h3>Close the run</h3>
+      <div class="say">Say: "Close completed tasks and summarize what changed, what was tested, and any risks."</div>
+      <div class="good">Done means: tasks are <code>done</code>, no open blockers, no open bugs.</div>
+    </div>
+
+    <h2>Flow B: Headless Swarm (Recommended For Throughput)</h2>
+
+    <div class="step swarm">
+      <span class="tag t-orange">Step 1</span>
+      <h3>Start autonomous run in plain language</h3>
+      <div class="say">Say: "Start headless swarm for /Users/alex/my-api to add /health endpoint and tests. Use leader codex and available workers. Send progress every cycle."</div>
+      <p>You do not need to type low-level parameter blocks unless you want to.</p>
+    </div>
+
+    <div class="step swarm">
+      <span class="tag t-orange">Step 2</span>
+      <h3>Let Codex seed and run tasks</h3>
+      <p>Codex will create tasks, workers claim them, code is implemented, tests run, and reports are submitted.</p>
+      <div class="timeline">
+        <div>1) Connection and role checks.</div>
+        <div>2) Task creation from your mission.</div>
+        <div>3) Worker claim and execution loops.</div>
+        <div>4) Leader validation and possible fix-loop.</div>
+        <div>5) Completion summary.</div>
+      </div>
+    </div>
+
+    <div class="step swarm">
+      <span class="tag t-orange">Step 3</span>
+      <h3>Observe without micromanaging</h3>
+      <div class="say">Say: "Report every cycle. Alert me only on blockers, failures, or regressions."</div>
+      <p>You can also ask for a short table of in-progress and done tasks at any time.</p>
+    </div>
+
+    <div class="step swarm">
+      <span class="tag t-orange">Step 4</span>
+      <h3>Recover if stalled</h3>
+      <div class="say">Say: "Diagnose swarm health and recover automatically. Show only actions taken and unresolved blockers."</div>
+      <div class="good">Done means: mission tasks done, tests green, no unresolved blockers.</div>
+    </div>
+
+    <h2>New: One Leader, Multiple Teams (Headless)</h2>
+    <div class="card">
+      <p>You can now run one leader and route workers into separate teams using <code>team_id</code>.</p>
+      <ul>
+        <li>Create tasks with <code>team_id</code>, <code>project_root</code>, and <code>project_name</code>.</li>
+        <li>Start workers with matching team lanes (for example <code>team-api</code> and <code>team-web</code>).</li>
+        <li>Use <code>orchestrator_list_tasks(team_id=\"...\")</code> to monitor each team separately.</li>
+      </ul>
+      <div class="say">Example: "Run one leader. Put Codex+Wingman on team-api in /Users/alex/my-api and Gemini on team-web in /Users/alex/my-web."</div>
+    </div>
+
+    <div class="card">
+      <h3>Headless Command Pattern</h3>
+      <pre><code>./scripts/autopilot/supervisor.sh start \
+  --project-root /Users/alex/claude-multi-ai \
+  --leader-agent claude_code \
+  --codex-team-id team-api \
+  --wingman-team-id team-api \
+  --gemini-team-id team-web \
+  --codex-project-root /Users/alex/my-api \
+  --wingman-project-root /Users/alex/my-api \
+  --gemini-project-root /Users/alex/my-web</code></pre>
+      <p>If you need more workers, add <code>--extra-worker name:cli:agent:team_id:project_root[:lane]</code>.</p>
+    </div>
+
+    <h2>End-To-End Example (Small API Project)</h2>
+    <div class="grid">
+      <div class="card">
+        <span class="tag t-blue">Interactive Example</span>
+        <div class="role"><strong>You:</strong> "You are the leader. Connect to team and show status."</div>
+        <div class="role"><strong>You:</strong> "Use /Users/alex/my-api. Add /health endpoint and tests. Keep scope small."</div>
+        <div class="role"><strong>You:</strong> "Assign coding to wingman. Leader should review and validate."</div>
+        <div class="role"><strong>You:</strong> "Status every 2 minutes. Blockers only if urgent."</div>
+        <div class="role"><strong>You:</strong> "When done, commit and summarize files changed + tests run."</div>
+      </div>
+      <div class="card">
+        <span class="tag t-orange">Headless Example</span>
+        <div class="role"><strong>You:</strong> "Start headless swarm for /Users/alex/my-api. Mission is /health endpoint plus tests."</div>
+        <div class="role"><strong>You:</strong> "Keep cycles running automatically and report each cycle briefly."</div>
+        <div class="role"><strong>You:</strong> "If something fails, retry once and then ask me only with options."</div>
+        <div class="role"><strong>You:</strong> "When complete, produce final review summary and close tasks."</div>
+      </div>
+    </div>
+
+    <h2>If You Have Only Leader + Wingman</h2>
+    <div class="card">
+      <p>This setup works well:</p>
+      <ul>
+        <li>Wingman: implementation + unit tests + delivery report.</li>
+        <li>Leader: code review + regression checks + accept/reject + task state management.</li>
+      </ul>
+      <div class="say">Use this sentence: "Wingman writes code and tests. Leader only reviews, validates, and controls task lifecycle."</div>
+    </div>
+
+    <h2>Common Problems And Exact Fix Prompts</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Transport closed</h3>
+        <div class="say">"Check orchestrator connectivity and tell me what service is down. Retry connect once service is up."</div>
+      </div>
+      <div class="card">
+        <h3>No claimable task</h3>
+        <div class="say">"Create new tasks for current mission and assign owners, then show queue."</div>
+      </div>
+      <div class="card">
+        <h3>Role mismatch</h3>
+        <div class="say">"Show current leader and team members. If needed, switch leader so wingman can attach."</div>
+      </div>
+      <div class="card">
+        <h3>Too many noisy updates</h3>
+        <div class="say">"Switch to concise updates: blockers, failures, and completion only."</div>
+      </div>
+    </div>
+
+    <h2>What To Say First (Cheat Sheet)</h2>
+    <div class="card">
+      <ul>
+        <li>Interactive: "You are the leader. Connect to team. I will steer step by step."</li>
+        <li>Headless: "Start headless swarm for this project and keep it running until mission is done."</li>
+        <li>Status: "Give me current status: in progress, done, blockers, and next action."</li>
+      </ul>
+    </div>
+
+    <p class="footer">Human-language operator guide for Codex CLI. No terminal choreography required.</p>
+  </main>
+</body>
+</html>

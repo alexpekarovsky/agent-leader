@@ -115,6 +115,37 @@ class MultiProjectTaskTagTests(unittest.TestCase):
             self.assertEqual(1, len(filtered))
             self.assertEqual("A", filtered[0]["title"])
 
+    def test_team_id_scopes_list_and_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = Orchestrator(root=root, policy=_make_policy(root / "policy.json"))
+            orch.bootstrap()
+
+            _register_agent(orch, "claude_code", project_root=root)
+
+            t1 = orch.create_task(
+                title="Team A task",
+                workstream="backend",
+                acceptance_criteria=["done"],
+                owner="claude_code",
+                team_id="team-a",
+            )
+            orch.create_task(
+                title="Team B task",
+                workstream="backend",
+                acceptance_criteria=["done"],
+                owner="claude_code",
+                team_id="team-b",
+            )
+
+            listed = orch.list_tasks(team_id="team-a")
+            self.assertEqual(1, len(listed))
+            self.assertEqual("Team A task", listed[0]["title"])
+
+            claimed = orch.claim_next_task(owner="claude_code", team_id="team-a")
+            self.assertIsNotNone(claimed)
+            self.assertEqual(t1["id"], claimed["id"])
+
     def test_claim_next_task_is_scoped_to_agent_project(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_root = Path(tmp) / "state-root"
@@ -154,4 +185,3 @@ class MultiProjectTaskTagTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -25,6 +25,11 @@
 #   --gemini-project-root DIR Worker project root for gemini (default: --project-root)
 #   --codex-project-root DIR  Worker project root for codex worker (default: --project-root)
 #   --wingman-project-root DIR Worker project root for wingman (default: --project-root)
+#   --claude-team-id ID       Team id for claude_code worker lane
+#   --gemini-team-id ID       Team id for gemini worker lane
+#   --codex-team-id ID        Team id for codex worker lane
+#   --wingman-team-id ID      Team id for wingman worker lane
+#   --extra-worker SPEC       Extra worker: name:cli:agent:team_id:project_root[:lane]
 #   --max-restarts N          Max restarts before giving up on a process (default: 5)
 #   --backoff-base N          Base backoff seconds on restart (default: 10)
 #   --backoff-max N           Max backoff seconds (default: 120)
@@ -60,6 +65,11 @@ CLAUDE_PROJECT_ROOT=""
 GEMINI_PROJECT_ROOT=""
 CODEX_PROJECT_ROOT=""
 WINGMAN_PROJECT_ROOT=""
+CLAUDE_TEAM_ID=""
+GEMINI_TEAM_ID=""
+CODEX_TEAM_ID=""
+WINGMAN_TEAM_ID=""
+EXTRA_WORKER_SPECS=()
 MAX_RESTARTS=5
 BACKOFF_BASE=10
 BACKOFF_MAX=120
@@ -81,6 +91,11 @@ while [[ $# -gt 0 ]]; do
     --gemini-project-root) GEMINI_PROJECT_ROOT="$2"; shift 2 ;;
     --codex-project-root) CODEX_PROJECT_ROOT="$2"; shift 2 ;;
     --wingman-project-root) WINGMAN_PROJECT_ROOT="$2"; shift 2 ;;
+    --claude-team-id) CLAUDE_TEAM_ID="$2"; shift 2 ;;
+    --gemini-team-id) GEMINI_TEAM_ID="$2"; shift 2 ;;
+    --codex-team-id) CODEX_TEAM_ID="$2"; shift 2 ;;
+    --wingman-team-id) WINGMAN_TEAM_ID="$2"; shift 2 ;;
+    --extra-worker) EXTRA_WORKER_SPECS+=("$2"); shift 2 ;;
     --max-restarts) MAX_RESTARTS="$2"; shift 2 ;;
     --backoff-base) BACKOFF_BASE="$2"; shift 2 ;;
     --backoff-max) BACKOFF_MAX="$2"; shift 2 ;;
@@ -105,6 +120,8 @@ if [[ -z "$LEADER_CLI" ]]; then
 fi
 
 PROCS=(manager wingman claude gemini codex_worker watchdog)
+EXTRA_PROC_NAMES=()
+EXTRA_PROC_CMDS=()
 
 proc_enabled() {
   local name="$1"
@@ -118,27 +135,72 @@ proc_enabled() {
 
 proc_cmd() {
   local name="$1"
+  local i
+  for (( i=0; i<${#EXTRA_PROC_NAMES[@]}; i++ )); do
+    if [[ "${EXTRA_PROC_NAMES[$i]}" == "$name" ]]; then
+      echo "${EXTRA_PROC_CMDS[$i]}"
+      return 0
+    fi
+  done
+  local claude_team_arg=""
+  local gemini_team_arg=""
+  local codex_team_arg=""
+  local wingman_team_arg=""
+  [[ -n "$CLAUDE_TEAM_ID" ]] && claude_team_arg=" --team-id $CLAUDE_TEAM_ID"
+  [[ -n "$GEMINI_TEAM_ID" ]] && gemini_team_arg=" --team-id $GEMINI_TEAM_ID"
+  [[ -n "$CODEX_TEAM_ID" ]] && codex_team_arg=" --team-id $CODEX_TEAM_ID"
+  [[ -n "$WINGMAN_TEAM_ID" ]] && wingman_team_arg=" --team-id $WINGMAN_TEAM_ID"
   case "$name" in
     manager)
       echo "$ROOT_DIR/scripts/autopilot/manager_loop.sh --cli $LEADER_CLI --leader-agent $LEADER_AGENT --project-root $PROJECT_ROOT --interval $MANAGER_INTERVAL --cli-timeout $MANAGER_CLI_TIMEOUT --log-dir $LOG_DIR"
       ;;
     wingman)
-      echo "$ROOT_DIR/scripts/autopilot/worker_loop.sh --cli $WINGMAN_CLI --agent $WINGMAN_AGENT --lane wingman --project-root $WINGMAN_PROJECT_ROOT --interval $WORKER_INTERVAL --cli-timeout $WORKER_CLI_TIMEOUT --log-dir $LOG_DIR"
+      echo "$ROOT_DIR/scripts/autopilot/worker_loop.sh --cli $WINGMAN_CLI --agent $WINGMAN_AGENT --lane wingman$wingman_team_arg --project-root $WINGMAN_PROJECT_ROOT --interval $WORKER_INTERVAL --cli-timeout $WORKER_CLI_TIMEOUT --log-dir $LOG_DIR"
       ;;
     claude)
-      echo "$ROOT_DIR/scripts/autopilot/worker_loop.sh --cli claude --agent claude_code --project-root $CLAUDE_PROJECT_ROOT --interval $WORKER_INTERVAL --cli-timeout $WORKER_CLI_TIMEOUT --log-dir $LOG_DIR"
+      echo "$ROOT_DIR/scripts/autopilot/worker_loop.sh --cli claude --agent claude_code$claude_team_arg --project-root $CLAUDE_PROJECT_ROOT --interval $WORKER_INTERVAL --cli-timeout $WORKER_CLI_TIMEOUT --log-dir $LOG_DIR"
       ;;
     gemini)
-      echo "$ROOT_DIR/scripts/autopilot/worker_loop.sh --cli gemini --agent gemini --project-root $GEMINI_PROJECT_ROOT --interval $WORKER_INTERVAL --cli-timeout $WORKER_CLI_TIMEOUT --log-dir $LOG_DIR"
+      echo "$ROOT_DIR/scripts/autopilot/worker_loop.sh --cli gemini --agent gemini$gemini_team_arg --project-root $GEMINI_PROJECT_ROOT --interval $WORKER_INTERVAL --cli-timeout $WORKER_CLI_TIMEOUT --log-dir $LOG_DIR"
       ;;
     codex_worker)
-      echo "$ROOT_DIR/scripts/autopilot/worker_loop.sh --cli codex --agent codex --project-root $CODEX_PROJECT_ROOT --interval $WORKER_INTERVAL --cli-timeout $WORKER_CLI_TIMEOUT --log-dir $LOG_DIR"
+      echo "$ROOT_DIR/scripts/autopilot/worker_loop.sh --cli codex --agent codex$codex_team_arg --project-root $CODEX_PROJECT_ROOT --interval $WORKER_INTERVAL --cli-timeout $WORKER_CLI_TIMEOUT --log-dir $LOG_DIR"
       ;;
     watchdog)
       echo "$ROOT_DIR/scripts/autopilot/watchdog_loop.sh --project-root $PROJECT_ROOT --interval 15 --log-dir $LOG_DIR"
       ;;
   esac
 }
+
+register_extra_workers() {
+  if (( ${#EXTRA_WORKER_SPECS[@]} == 0 )); then
+    return 0
+  fi
+  for spec in "${EXTRA_WORKER_SPECS[@]}"; do
+    IFS=':' read -r name cli agent team_id project_root lane <<<"$spec"
+    if [[ -z "$name" || -z "$cli" || -z "$agent" || -z "$team_id" || -z "$project_root" ]]; then
+      log ERROR "Invalid --extra-worker spec '$spec' expected name:cli:agent:team_id:project_root[:lane]"
+      exit 1
+    fi
+    [[ -z "$lane" ]] && lane="default"
+    if [[ "$lane" != "default" && "$lane" != "wingman" ]]; then
+      log ERROR "Invalid lane '$lane' in --extra-worker spec '$spec'"
+      exit 1
+    fi
+    local i
+    for (( i=0; i<${#EXTRA_PROC_NAMES[@]}; i++ )); do
+      if [[ "${EXTRA_PROC_NAMES[$i]}" == "$name" ]]; then
+        log ERROR "Duplicate extra worker process name '$name'"
+        exit 1
+      fi
+    done
+    EXTRA_PROC_NAMES+=("$name")
+    EXTRA_PROC_CMDS+=("$ROOT_DIR/scripts/autopilot/worker_loop.sh --cli $cli --agent $agent --lane $lane --team-id $team_id --project-root $project_root --interval $WORKER_INTERVAL --cli-timeout $WORKER_CLI_TIMEOUT --log-dir $LOG_DIR")
+    PROCS+=("$name")
+  done
+}
+
+register_extra_workers
 
 pid_file() {
   echo "$PID_DIR/$1.pid"
