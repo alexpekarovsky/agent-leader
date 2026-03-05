@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+import json
 
 
 class HeadlessMcpToolsTests(unittest.TestCase):
@@ -37,6 +38,23 @@ class HeadlessMcpToolsTests(unittest.TestCase):
             self.assertEqual("stop", payload["action"])
             self.assertEqual(root, payload["project_root"])
             self.assertIsInstance(payload["processes"], list)
+
+    def test_handle_tool_call_headless_status_returns_payload(self) -> None:
+        from orchestrator_mcp_server import handle_tool_call
+
+        with tempfile.TemporaryDirectory() as tmp:
+            response = handle_tool_call(
+                "req-2",
+                {
+                    "name": "orchestrator_headless_status",
+                    "arguments": {"project_root": str(Path(tmp))},
+                },
+            )
+            content = response["result"]["content"][0]["text"]
+            payload = json.loads(content)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(str(Path(tmp)), payload["project_root"])
+            self.assertIn("processes", payload)
 
 
 if __name__ == "__main__":

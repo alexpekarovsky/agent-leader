@@ -84,7 +84,7 @@ Authoritative parity view from current code/tests (`orchestrator_mcp_server.py`,
 | Connect/identity verify | `orchestrator_connect_to_leader` | worker connect flow | Partial | missing visibility | codex |
 | Claim/report lifecycle | claim/report tools | worker loop claim/report cycle | Full | none | codex |
 | Blocker raise/resolve | blocker tools | manager + watchdog handling | Partial | missing behavior | codex |
-| Runtime start/stop/status | shell-driven today | `supervisor.sh`, `headless_status.sh` | Partial | missing automation path | codex |
+| Runtime start/stop/status | `orchestrator_headless_start/stop/status` | `supervisor.sh`, `headless_status.sh` | Full | none | codex |
 | Team/lane routing | `team_id` in task APIs | supervisor/worker team flags | Full | none | claude_code |
 | Lease recovery | engine lease model + recovery | watchdog/manager assists | Partial | missing visibility | codex |
 | QA wingman validation loop | explicit review/validate tools | wingman lane + manager cycle | Partial | missing behavior | codex |
