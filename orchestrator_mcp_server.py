@@ -7,11 +7,13 @@ Expose configurable multi-agent orchestration tools via MCP JSON-RPC.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import subprocess
 import sys
 import threading
+from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -19,6 +21,7 @@ from typing import Any, Dict, List, Optional
 from orchestrator.doctor import build_doctor_payload
 from orchestrator.engine import Orchestrator
 from orchestrator.policy import Policy
+from orchestrator.supervisor import ExtraWorker, Supervisor, SupervisorConfig
 
 try:
     import fcntl
@@ -358,6 +361,70 @@ def _parse_json_argument(raw: Any, expected: str) -> Any:
     return {} if expected == "object" else []
 
 
+def _supervisor_from_tool_args(args: Dict[str, Any]) -> Supervisor:
+    project_root = str(args.get("project_root") or str(ROOT_DIR))
+    extra_workers: List[ExtraWorker] = []
+    raw_extra = args.get("extra_workers", [])
+    if isinstance(raw_extra, list):
+        for item in raw_extra:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            cli = str(item.get("cli", "")).strip()
+            agent = str(item.get("agent", "")).strip()
+            team_id = str(item.get("team_id", "")).strip()
+            project = str(item.get("project_root", "")).strip()
+            lane = str(item.get("lane", "default")).strip() or "default"
+            if name and cli and agent and team_id and project:
+                extra_workers.append(
+                    ExtraWorker(
+                        name=name,
+                        cli=cli,
+                        agent=agent,
+                        team_id=team_id,
+                        project_root=project,
+                        lane=lane,
+                    )
+                )
+    cfg = SupervisorConfig(
+        project_root=project_root,
+        leader_agent=str(args.get("leader_agent", "codex")),
+        manager_interval=int(args.get("manager_interval", 20)),
+        worker_interval=int(args.get("worker_interval", 25)),
+        manager_cli_timeout=int(args.get("manager_cli_timeout", 300)),
+        worker_cli_timeout=int(args.get("worker_cli_timeout", 600)),
+        claude_project_root=str(args.get("claude_project_root", "")),
+        gemini_project_root=str(args.get("gemini_project_root", "")),
+        codex_project_root=str(args.get("codex_project_root", "")),
+        wingman_project_root=str(args.get("wingman_project_root", "")),
+        claude_team_id=str(args.get("claude_team_id", "")),
+        gemini_team_id=str(args.get("gemini_team_id", "")),
+        codex_team_id=str(args.get("codex_team_id", "")),
+        wingman_team_id=str(args.get("wingman_team_id", "")),
+        extra_workers=extra_workers,
+    )
+    return Supervisor(cfg)
+
+
+def _run_supervisor_action(supervisor: Supervisor, action: str) -> Dict[str, Any]:
+    # Supervisor methods print operator output. Suppress stdout to avoid
+    # contaminating MCP JSON-RPC transport.
+    with redirect_stdout(io.StringIO()):
+        if action == "start":
+            supervisor.start()
+        elif action == "stop":
+            supervisor.stop()
+        else:
+            raise ValueError(f"Unsupported supervisor action: {action}")
+    return {
+        "ok": True,
+        "action": action,
+        "project_root": supervisor.cfg.project_root,
+        "leader_agent": supervisor.cfg.leader_agent,
+        "processes": supervisor.status_json(),
+    }
+
+
 def handle_initialize(request_id: Any) -> Dict[str, Any]:
     return {
         "jsonrpc": "2.0",
@@ -384,6 +451,84 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
             "name": "orchestrator_status",
             "description": "Show redacted status plus ready-to-paste live status report. When user asks for status updates, return live_status_text verbatim. Set ORCHESTRATOR_STATUS_VERBOSE_PATHS=1 for full paths.",
             "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "orchestrator_headless_start",
+            "description": "Start headless supervisor lanes (manager/workers/watchdog) for this project without shell wrappers.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project_root": {"type": "string"},
+                    "leader_agent": {"type": "string", "description": "codex|claude_code|gemini"},
+                    "manager_interval": {"type": "integer"},
+                    "worker_interval": {"type": "integer"},
+                    "manager_cli_timeout": {"type": "integer"},
+                    "worker_cli_timeout": {"type": "integer"},
+                    "claude_project_root": {"type": "string"},
+                    "gemini_project_root": {"type": "string"},
+                    "codex_project_root": {"type": "string"},
+                    "wingman_project_root": {"type": "string"},
+                    "claude_team_id": {"type": "string"},
+                    "gemini_team_id": {"type": "string"},
+                    "codex_team_id": {"type": "string"},
+                    "wingman_team_id": {"type": "string"},
+                    "extra_workers": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "cli": {"type": "string"},
+                                "agent": {"type": "string"},
+                                "team_id": {"type": "string"},
+                                "project_root": {"type": "string"},
+                                "lane": {"type": "string"},
+                            },
+                            "required": ["name", "cli", "agent", "team_id", "project_root"],
+                        },
+                    },
+                },
+            },
+        },
+        {
+            "name": "orchestrator_headless_stop",
+            "description": "Stop headless supervisor lanes for this project.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project_root": {"type": "string"},
+                    "leader_agent": {"type": "string", "description": "codex|claude_code|gemini"},
+                    "claude_project_root": {"type": "string"},
+                    "gemini_project_root": {"type": "string"},
+                    "codex_project_root": {"type": "string"},
+                    "wingman_project_root": {"type": "string"},
+                    "claude_team_id": {"type": "string"},
+                    "gemini_team_id": {"type": "string"},
+                    "codex_team_id": {"type": "string"},
+                    "wingman_team_id": {"type": "string"},
+                    "extra_workers": {"type": "array", "items": {"type": "object"}},
+                },
+            },
+        },
+        {
+            "name": "orchestrator_headless_status",
+            "description": "Return machine-readable headless supervisor process status for this project.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project_root": {"type": "string"},
+                    "leader_agent": {"type": "string", "description": "codex|claude_code|gemini"},
+                    "claude_project_root": {"type": "string"},
+                    "gemini_project_root": {"type": "string"},
+                    "codex_project_root": {"type": "string"},
+                    "wingman_project_root": {"type": "string"},
+                    "claude_team_id": {"type": "string"},
+                    "gemini_team_id": {"type": "string"},
+                    "codex_team_id": {"type": "string"},
+                    "wingman_team_id": {"type": "string"},
+                    "extra_workers": {"type": "array", "items": {"type": "object"}},
+                },
+            },
         },
         {
             "name": "orchestrator_doctor",
@@ -1653,6 +1798,26 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 discovered=discovered,
                 orch_available=ORCH is not None,
             )
+            return _ok_and_audit(request_id, name, args, payload)
+
+        if name == "orchestrator_headless_start":
+            supervisor = _supervisor_from_tool_args(args if isinstance(args, dict) else {})
+            payload = _run_supervisor_action(supervisor, "start")
+            return _ok_and_audit(request_id, name, args, payload)
+
+        if name == "orchestrator_headless_stop":
+            supervisor = _supervisor_from_tool_args(args if isinstance(args, dict) else {})
+            payload = _run_supervisor_action(supervisor, "stop")
+            return _ok_and_audit(request_id, name, args, payload)
+
+        if name == "orchestrator_headless_status":
+            supervisor = _supervisor_from_tool_args(args if isinstance(args, dict) else {})
+            payload = {
+                "ok": True,
+                "project_root": supervisor.cfg.project_root,
+                "leader_agent": supervisor.cfg.leader_agent,
+                "processes": supervisor.status_json(),
+            }
             return _ok_and_audit(request_id, name, args, payload)
 
         # ── Degraded-mode guard: reject tool calls when binding failed ──
