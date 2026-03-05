@@ -8,6 +8,13 @@ This document tracks planned direction for `agent-leader`.
   - `orchestrator_connect_team_members`
 - Add server-side anti-spam guard for `claim_next_task` (cooldown/retry hint).
 - Add `orchestrator_doctor` for root/policy/auth/connectivity checks.
+- Add project-aware and team-aware routing primitives:
+  - task `project_root`/`project_name` tags and filters
+  - `team_id` lanes and team-scoped claim routing
+- Add MCP-native headless runtime lifecycle controls:
+  - `orchestrator_headless_start`
+  - `orchestrator_headless_stop`
+  - `orchestrator_headless_status`
 - Harden docs for manual MCP-first workflow.
 
 ## v0.3 - UX

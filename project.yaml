@@ -30,22 +30,28 @@ version:
     - id: multi-project-task-tagging
       title: Add project-aware task tags and MCP filters (project_root, project_name, tags)
       effort: L
-      status: in_progress
+      status: done
       tags: [backend, multi-project, routing]
 
     - id: headless-multi-team-routing
       title: Add headless multi-team routing (team_id lanes, extra workers, team-scoped claims)
       effort: L
-      status: in_progress
+      status: done
       tags: [headless, multi-team, routing]
       depends_on: [multi-project-task-tagging]
 
     - id: multi-project-regression-fixes
       title: Stabilize multi-project regressions and align script/test expectations
       effort: L
-      status: in_progress
+      status: done
       tags: [qa, reliability, tests]
       depends_on: [multi-project-task-tagging, headless-multi-team-routing]
+
+    - id: mcp-headless-runtime-control
+      title: Add MCP-native headless runtime lifecycle tools (start/stop/status)
+      effort: M
+      status: done
+      tags: [backend, mcp-only, headless, runtime-control]
 
     - id: policy-bundle-presets
       title: Add policy bundles for strict QA, prototype, and balanced modes
