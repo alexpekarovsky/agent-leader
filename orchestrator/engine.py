@@ -341,6 +341,7 @@ class Orchestrator:
         project_root: Optional[str] = None,
         tags: Optional[List[str]] = None,
         team_id: Optional[str] = None,
+        lane: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         tasks = self._read_json(self.tasks_path)
         if not isinstance(tasks, list):
@@ -361,6 +362,14 @@ class Orchestrator:
                 continue
             if normalized_team_id and str(task.get("team_id", "")).strip().lower() != normalized_team_id:
                 continue
+            if lane == "wingman":
+                # Wingman lane: tasks that have a pending or rejected review gate.
+                rg = task.get("review_gate")
+                if not isinstance(rg, dict) or rg.get("status") not in {"pending", "rejected"}:
+                    continue
+            elif lane:
+                # Other lanes could be added here; for now, ignore unknown lanes.
+                pass
             if normalized_project_name and str(task.get("project_name", "")).strip() != normalized_project_name:
                 continue
             if normalized_project_root is not None:

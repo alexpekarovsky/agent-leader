@@ -4,4 +4,5 @@ __all__ = [
     "bus",
     "policy",
     "engine",
+    "supervisor",
 ]

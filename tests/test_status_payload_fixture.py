@@ -58,6 +58,7 @@ def _full_metadata(root: Path, agent: str, instance_id: str = "") -> dict:
 EXPECTED_STATUS_KEYS = {
     "task_count",
     "task_status_counts",
+    "team_lane_counters",
     "bug_count",
     "active_agents",
     "active_agent_identities",
@@ -97,9 +98,11 @@ class StatusPayloadShapeTests(unittest.TestCase):
         for task in tasks:
             by_status[task["status"]] = by_status.get(task["status"], 0) + 1
 
+        from orchestrator_mcp_server import _aggregate_team_lanes
         return {
             "task_count": len(tasks),
             "task_status_counts": by_status,
+            "team_lane_counters": _aggregate_team_lanes(tasks),
             "bug_count": len(bugs),
             "active_agents": [a["agent"] for a in agents],
             "active_agent_identities": [
@@ -208,9 +211,11 @@ class StatusPayloadWithMixedInstancesTests(unittest.TestCase):
         for task in tasks:
             by_status[task["status"]] = by_status.get(task["status"], 0) + 1
 
+        from orchestrator_mcp_server import _aggregate_team_lanes
         return {
             "task_count": len(tasks),
             "task_status_counts": by_status,
+            "team_lane_counters": _aggregate_team_lanes(tasks),
             "bug_count": len(bugs),
             "active_agents": [a["agent"] for a in agents],
             "active_agent_identities": [

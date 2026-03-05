@@ -581,7 +581,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_list_tasks",
-            "description": "List tasks, optionally filtered by status or owner. Use for planning dashboards and polling.",
+            "description": "List tasks, optionally filtered by status, owner, or lane. Use for planning dashboards and polling.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -590,6 +590,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                     "project_name": {"type": "string", "description": "Optional project_name filter."},
                     "project_root": {"type": "string", "description": "Optional project_root filter."},
                     "team_id": {"type": "string", "description": "Optional team_id filter."},
+                    "lane": {"type": "string", "description": "Optional lane filter (e.g., 'wingman' for tasks awaiting review)."},
                     "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional tags filter (all tags must match)."},
                 },
             },
@@ -1324,6 +1325,21 @@ def _report_metrics_snapshot() -> Dict[str, Any]:
     return {"totals": totals, "by_agent": by_agent, "provenance": "report_commit_metrics"}
 
 
+def _aggregate_team_lanes(tasks: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
+    """Aggregate task counts by team_id and status for per-team lane visibility."""
+    team_lanes: Dict[str, Dict[str, int]] = {}
+    for task in tasks:
+        team_id = task.get("team_id")
+        if not team_id:
+            continue
+        if team_id not in team_lanes:
+            team_lanes[team_id] = {"total": 0}
+        team_lanes[team_id]["total"] += 1
+        status = task.get("status", "unknown")
+        team_lanes[team_id][status] = team_lanes[team_id].get(status, 0) + 1
+    return team_lanes
+
+
 def _status_metrics(tasks: List[Dict[str, Any]], bugs_open: List[Dict[str, Any]], blockers_open: List[Dict[str, Any]]) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     done_tasks = [t for t in tasks if t.get("status") == "done"]
@@ -1383,6 +1399,55 @@ def _status_metrics(tasks: List[Dict[str, Any]], bugs_open: List[Dict[str, Any]]
     }
 
 
+def _suggest_recovery_actions(
+    tasks: List[Dict[str, Any]], 
+    blockers: List[Dict[str, Any]], 
+    bugs: List[Dict[str, Any]]
+) -> List[Dict[str, str]]:
+    """Analyze state to suggest recovery actions for the operator."""
+    actions = []
+    now = datetime.now(timezone.utc)
+    
+    # 1. Stale in_progress tasks
+    for task in tasks:
+        if task.get("status") == "in_progress":
+            claimed_at = _parse_iso(task.get("claimed_at"))
+            if claimed_at:
+                age = (now - claimed_at).total_seconds()
+                if age > 1800: # 30 minutes
+                    actions.append({
+                        "type": "stale_task",
+                        "task_id": task["id"],
+                        "message": f"Task {task['id']} has been in_progress for {int(age//60)}m. If the agent is dead, reassign it.",
+                        "action": f"orchestrator_reassign_stale_tasks(stale_after_seconds=600)"
+                    })
+
+    # 2. Open blockers
+    for blk in blockers:
+        if blk.get("status") == "open":
+            actions.append({
+                "type": "open_blocker",
+                "blocker_id": blk["id"],
+                "message": f"Blocker {blk['id']} is stopping Task {blk.get('task_id')}. Resolve it to resume work.",
+                "action": f"orchestrator_resolve_blocker(blocker_id='{blk['id']}', resolution='...', source='operator')"
+            })
+
+    # 3. Open bugs
+    for bug in bugs:
+        if bug.get("status") == "open":
+            actions.append({
+                "type": "open_bug",
+                "bug_id": bug["id"],
+                "message": f"Bug {bug['id']} was found in Task {bug.get('source_task')}. Ensure an agent is assigned to fix it.",
+                "action": f"orchestrator_list_tasks(owner='{bug.get('owner')}')"
+            })
+
+    # 4. No active leader
+    # (Note: this check is handled by higher-level status but good to have here too)
+
+    return actions
+
+
 def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
     tasks = ORCH.list_tasks()
     blockers_open = ORCH.list_blockers(status="open")
@@ -1393,8 +1458,16 @@ def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
 
     total_tasks = len(tasks)
     done_tasks = len([task for task in tasks if task.get("status") == "done"])
-    reported_tasks = len([task for task in tasks if task.get("status") == "reported"])
+    reported_tasks = [task for task in tasks if task.get("status") == "reported"]
+    reported_count = len(reported_tasks)
     overall_auto = _percent(done_tasks, total_tasks)
+
+    # Wingman Lane Visibility: tasks with review_gate status 'pending' or 'rejected'
+    wingman_pending = [t for t in tasks if isinstance(t.get("review_gate"), dict) and t["review_gate"].get("status") == "pending"]
+    wingman_rejected = [t for t in tasks if isinstance(t.get("review_gate"), dict) and t["review_gate"].get("status") == "rejected"]
+    wingman_count = len(wingman_pending) + len(wingman_rejected)
+
+    recovery_actions = _suggest_recovery_actions(tasks, blockers_open, bugs_open)
 
     backend_tasks = [task for task in tasks if task.get("workstream") == "backend"]
     frontend_tasks = [task for task in tasks if task.get("workstream") == "frontend"]
@@ -1432,9 +1505,28 @@ def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
     if not frontend_task_id:
         frontend_task_id = "n/a"
 
+    # Unified Header for both Interactive and Headless
+    leader = str(roles.get("leader", "codex"))
+    team = ", ".join(sorted(roles.get("team_members", []) or []))
+    status_state = "Active" if any(a.get("status") == "active" for a in agents_all) else "Idle"
+    in_progress_count = len([t for t in tasks if t.get("status") == "in_progress"])
+    assigned_count = len([t for t in tasks if t.get("status") == "assigned"])
+
     lines = [
-        "Current live status:",
+        f"ORCHESTRATOR STATUS: {status_state}",
+        f"PROJECT: {ROOT_DIR}",
+        f"LEADER: {leader} | TEAM: {team or 'none'}",
+        f"PIPELINE: {total_tasks} Tasks | {assigned_count} Assigned | {in_progress_count} IP | {reported_count} Review | {done_tasks} Done",
+        f"BLOCKERS: {len(blockers_open)} Open | BUGS: {len(bugs_open)} Open",
+    ]
+    if wingman_count > 0 or "ccm" in by_agent or "wingman" in team.lower():
+        wingman_agent = "ccm" if "ccm" in by_agent else "none"
+        wingman_status = by_agent.get(wingman_agent, {}).get("status", "offline") if wingman_agent != "none" else "n/a"
+        lines.append(f"WINGMAN LANE: {wingman_agent} [{wingman_status}] | {wingman_count} Tasks Awaiting Review")
+    
+    lines.extend([
         "",
+        "Progress details:",
         f"- Overall project: {overall}%",
         f"- Phase 1 (Architecture + Vertical Slice): {phase_1}%",
         f"- Phase 2 (Content Pipeline): {phase_2}%",
@@ -1444,11 +1536,10 @@ def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
         f"- QA/validation completion: {qa_percent}%",
         "",
         "Pipeline health:",
-        "",
-        f"- Reported tasks: {reported_tasks}",
+        f"- Reported tasks: {reported_count}",
         f"- Open blockers: {len(blockers_open)}",
         f"- Open bugs: {len(bugs_open)}",
-    ]
+    ])
 
     # Team member operational summary for manager-friendly status checks.
     lines.extend(["", "Team members:"])
@@ -1477,6 +1568,30 @@ def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
         tail = "; " + "; ".join(chunks) if chunks else ""
         lines.append(f"- {agent} ({role}): {status}{tail}")
 
+    # Per-team lane snapshot
+    team_lanes = _aggregate_team_lanes(tasks)
+    if team_lanes:
+        lines.extend(["", "Team lanes:"])
+        for tid in sorted(team_lanes):
+            lc = team_lanes[tid]
+            parts = []
+            for key in ("in_progress", "reported", "blocked"):
+                count = lc.get(key, 0)
+                if count:
+                    parts.append(f"{key}={count}")
+            total = lc.get("total", 0)
+            done = lc.get("done", 0)
+            summary = f"{done}/{total} done"
+            if parts:
+                summary += ", " + ", ".join(parts)
+            lines.append(f"- {tid}: {summary}")
+
+    if recovery_actions:
+        lines.extend(["", "Suggested recovery actions:"])
+        for action in recovery_actions[:5]:
+            lines.append(f"- [{action['type']}] {action['message']}")
+            lines.append(f"  Suggested: {action['action']}")
+
     payload = {
         "report_text": "\n".join(lines),
         "report": {
@@ -1490,10 +1605,12 @@ def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
             "frontend_percent": frontend_percent,
             "qa_validation_percent": qa_percent,
             "pipeline_health": {
-                "reported_tasks": reported_tasks,
+                "reported_tasks": reported_count,
                 "open_blockers": len(blockers_open),
                 "open_bugs": len(bugs_open),
             },
+            "team_lane_counters": team_lanes,
+            "suggested_recovery_actions": recovery_actions,
         },
         "recommended_cadence_seconds": 600,
     }
@@ -1592,7 +1709,9 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "roles": roles,
                 "task_count": len(tasks),
                 "task_status_counts": by_status,
+                "team_lane_counters": _aggregate_team_lanes(tasks),
                 "bug_count": len(bugs),
+                "recovery_actions": live_status.get("report", {}).get("suggested_recovery_actions", []),
                 "active_agents": [agent["agent"] for agent in agents],
                 "active_agent_identities": [
                     {
@@ -1795,6 +1914,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 project_root=args.get("project_root"),
                 team_id=args.get("team_id"),
                 tags=tags,
+                lane=args.get("lane"),
             )
             return _ok_and_audit(request_id, name, args, tasks)
 

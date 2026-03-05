@@ -60,7 +60,7 @@ Rules:
 - Keep this to one cycle and stop.
 EOF
 
-  log INFO "manager cycle=$cycle cli=$CLI leader_agent=$LEADER_AGENT project=$PROJECT_ROOT"
+  log INFO "CANONICAL ACTION: MANAGER_SYNC cycle=$cycle cli=$CLI leader_agent=$LEADER_AGENT project=$PROJECT_ROOT"
   if run_cli_prompt "$CLI" "$PROJECT_ROOT" "$prompt_file" "$out_file" "$CLI_TIMEOUT"; then
     log INFO "manager cycle complete; log=$out_file"
   else

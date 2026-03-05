@@ -95,8 +95,38 @@ status_counts = Counter(str(t.get("status", "unknown")) for t in tasks)
 in_progress = [t for t in tasks if t.get("status") == "in_progress"]
 reported = [t for t in tasks if t.get("status") == "reported"]
 assigned = [t for t in tasks if t.get("status") == "assigned"]
+done = [t for t in tasks if t.get("status") == "done"]
 open_blockers = [b for b in blockers if b.get("status") != "resolved"]
 open_bugs = [b for b in bugs if b.get("status") != "closed"]
+
+# Wingman Lane Visibility
+wingman_pending = [t for t in tasks if isinstance(t.get("review_gate"), dict) and t["review_gate"].get("status") == "pending"]
+wingman_rejected = [t for t in tasks if isinstance(t.get("review_gate"), dict) and t["review_gate"].get("status") == "rejected"]
+wingman_count = len(wingman_pending) + len(wingman_rejected)
+
+# Suggested Recovery Actions
+recovery_actions = []
+now = datetime.now(timezone.utc)
+for t in tasks:
+    if t.get("status") == "in_progress":
+        claimed_at = parse_iso(t.get("claimed_at"))
+        if claimed_at:
+            age = (now - claimed_at).total_seconds()
+            if age > 1800:
+                recovery_actions.append({
+                    "type": "stale_task",
+                    "task_id": t["id"],
+                    "message": f"Task {t['id']} IP for {int(age//60)}m",
+                    "action": "orchestrator_reassign_stale_tasks(stale_after_seconds=600)"
+                })
+for blk in blockers:
+    if blk.get("status") == "open":
+        recovery_actions.append({
+            "type": "open_blocker",
+            "blocker_id": blk["id"],
+            "message": f"Blocker {blk['id']} on {blk.get('task_id')}",
+            "action": f"orchestrator_resolve_blocker(blocker_id='{blk['id']}', ...)"
+        })
 
 active_agents = []
 for name, entry in agents.items():
@@ -149,8 +179,11 @@ payload = {
     ],
     "reported_count": len(reported),
     "assigned_count": len(assigned),
+    "done_count": len(done),
     "open_blockers": len(open_blockers),
     "open_bugs": len(open_bugs),
+    "wingman_count": wingman_count,
+    "recovery_actions": recovery_actions,
     "agents": active_agents,
     "processes": proc,
     "log_dir_exists": log_dir.exists(),
@@ -160,14 +193,30 @@ if as_json:
     print(json.dumps(payload, indent=2))
     raise SystemExit(0)
 
-print("Headless Swarm Status")
-print(f"time={payload['timestamp']}")
-print(f"project={payload['project_root']}")
-print(f"leader={payload['leader']} team_members={payload['team_members']}")
-print()
-print("Pipeline")
-print(f"  total={payload['task_total']} assigned={payload['assigned_count']} in_progress={len(in_progress)} reported={payload['reported_count']} done={status_counts.get('done', 0)}")
-print(f"  blockers={payload['open_blockers']} bugs={payload['open_bugs']}")
+# Unified Header
+leader = payload["leader"]
+team = ", ".join(sorted(payload["team_members"]))
+status_state = "Active" if any(a["state"] == "active" for a in payload["agents"]) else "Idle"
+
+print(f"ORCHESTRATOR STATUS: {status_state}")
+print(f"PROJECT: {payload['project_root']}")
+print(f"LEADER: {leader} | TEAM: {team or 'none'}")
+print(f"PIPELINE: {payload['task_total']} Tasks | {payload['assigned_count']} Assigned | {len(in_progress)} IP | {payload['reported_count']} Review | {payload['done_count']} Done")
+print(f"BLOCKERS: {payload['open_blockers']} Open | BUGS: {payload['open_bugs']} Open")
+
+by_agent_name = {a["agent"]: a for a in payload["agents"]}
+if wingman_count > 0 or "ccm" in by_agent_name or "wingman" in team.lower():
+    wingman_agent = "ccm" if "ccm" in by_agent_name else "none"
+    wingman_status = by_agent_name.get(wingman_agent, {}).get("state", "offline") if wingman_agent != "none" else "n/a"
+    print(f"WINGMAN LANE: {wingman_agent} [{wingman_status}] | {wingman_count} Tasks Awaiting Review")
+
+if recovery_actions:
+    print()
+    print("Suggested recovery actions:")
+    for action in recovery_actions[:5]:
+        print(f"  [{action['type']}] {action['message']}")
+        print(f"    Suggested: {action['action']}")
+
 print()
 print("Processes")
 preferred = ("manager", "wingman", "claude", "gemini", "codex_worker", "watchdog")
