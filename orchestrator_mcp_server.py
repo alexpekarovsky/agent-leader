@@ -39,7 +39,9 @@ __version__ = "0.1.0"
 SCRIPT_DIR = Path(__file__).resolve().parent
 STARTUP_CWD = Path.cwd().resolve()
 ORCHESTRATOR_ROOT_RAW = os.getenv("ORCHESTRATOR_ROOT", "").strip()
-ROOT_DIR = Path(ORCHESTRATOR_ROOT_RAW or str(SCRIPT_DIR)).resolve()
+# Prefer explicit ORCHESTRATOR_ROOT. When absent, fall back to startup cwd
+# so project-local launches from a shared install can still bind correctly.
+ROOT_DIR = Path(ORCHESTRATOR_ROOT_RAW or str(STARTUP_CWD)).resolve()
 EXPECTED_ROOT_RAW = os.getenv("ORCHESTRATOR_EXPECTED_ROOT", "").strip()
 ENFORCE_SHARED_BINDING = os.getenv("ORCHESTRATOR_ENFORCE_SHARED_BINDING", "1").strip().lower() not in {"0", "false", "no"}
 POLICY_PATH = Path(
@@ -90,11 +92,12 @@ if EXPECTED_ROOT_RAW:
 
 if not _BINDING_ERROR and ENFORCE_SHARED_BINDING and _is_shared_agent_leader_install(SCRIPT_DIR):
     if not ORCHESTRATOR_ROOT_RAW:
-        _BINDING_ERROR = (
-            "Shared agent-leader install requires explicit ORCHESTRATOR_ROOT "
-            "to prevent cross-project binding leaks. "
-            "Set ORCHESTRATOR_ROOT in your MCP server config env."
-        )
+        if ROOT_DIR == SCRIPT_DIR:
+            _BINDING_ERROR = (
+                "Shared agent-leader install requires explicit ORCHESTRATOR_ROOT "
+                "to prevent cross-project binding leaks. "
+                "Set ORCHESTRATOR_ROOT in your MCP server config env."
+            )
     elif not EXPECTED_ROOT_RAW:
         _BINDING_ERROR = (
             "Shared agent-leader install requires ORCHESTRATOR_EXPECTED_ROOT "
