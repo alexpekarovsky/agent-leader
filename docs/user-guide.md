@@ -82,6 +82,16 @@ Option B (`supervisor`):
 ./scripts/autopilot/supervisor.sh status --project-root /Users/alex/claude-multi-ai
 ```
 
+Option C (MCP-only runtime control):
+
+Call these tools from your leader session:
+
+1. `orchestrator_headless_start`  
+2. `orchestrator_headless_status`  
+3. `orchestrator_headless_stop`
+
+You can pass the same routing/topology fields as supervisor (`leader_agent`, team ids, per-agent project roots, intervals/timeouts, and optional `extra_workers`).
+
 ### 3. Single leader + multiple teams (new)
 
 Use one leader and assign each worker lane a `team_id`.

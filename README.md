@@ -334,6 +334,15 @@ tmux attach -t agents-autopilot
 ./scripts/autopilot/supervisor.sh clean    # remove stale pids + supervisor logs
 ```
 
+### Quick start (MCP-only headless control)
+Use MCP tools instead of shell wrappers when driving runtime directly from Codex/Claude/Gemini:
+
+1. `orchestrator_headless_start`  
+2. `orchestrator_headless_status`  
+3. `orchestrator_headless_stop`  
+
+`orchestrator_headless_start` accepts the same topology knobs as the supervisor path (`leader_agent`, team ids, per-agent project roots, intervals/timeouts, optional extra workers).
+
 ### Smoke tests
 Verify all autopilot scripts work without real CLI agents:
 ```bash
