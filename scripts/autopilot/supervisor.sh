@@ -7,6 +7,7 @@
 #   ./scripts/autopilot/supervisor.sh status   [options]
 #   ./scripts/autopilot/supervisor.sh restart  [options]
 #   ./scripts/autopilot/supervisor.sh clean    [options]   # remove stale pids + supervisor logs
+#   ./scripts/autopilot/supervisor.sh monitor  [options]   # watch for dead processes and restart
 #   ./scripts/autopilot/headless_status.sh --watch [--interval N] [--project-root DIR]
 #
 # Options:
@@ -33,6 +34,7 @@
 #   --max-restarts N          Max restarts before giving up on a process (default: 5)
 #   --backoff-base N          Base backoff seconds on restart (default: 10)
 #   --backoff-max N           Max backoff seconds (default: 120)
+#   --monitor-interval N      Monitor loop interval in seconds (default: 30)
 #
 # Processes managed:
 #   manager   — manager_loop.sh (leader agent)

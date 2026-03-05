@@ -435,6 +435,38 @@ class Supervisor:
         else:
             print(f"Cleaned {cleaned} file(s).")
 
+    def monitor(self, interval: int = 30) -> None:
+        """Continuously check for dead processes and restart them."""
+        _log("INFO", f"Starting supervisor monitor loop (interval={interval}s)")
+        try:
+            while True:
+                for name in self._procs:
+                    if not proc_enabled(name, self.cfg.leader_agent):
+                        continue
+                    
+                    ps = self._status_proc(name)
+                    if ps.state == "dead":
+                        _log("WARN", f"Detected dead process: {name} (pid={ps.pid})")
+                        if ps.restarts < self.cfg.max_restarts:
+                            # Calculate backoff: base * (2 ^ restarts)
+                            delay = min(self.cfg.backoff_base * (2 ** ps.restarts), self.cfg.backoff_max)
+                            _log("INFO", f"Restarting {name} in {delay}s (restart count={ps.restarts + 1}/{self.cfg.max_restarts})")
+                            time.sleep(delay)
+                            
+                            self._start_proc(name)
+                            # Increment restart count
+                            new_count = ps.restarts + 1
+                            _restart_count_file(self.cfg.pid_dir, name).write_text(str(new_count))
+                        else:
+                            _log(
+                                "ERROR", 
+                                f"Process {name} reached max restarts ({self.cfg.max_restarts}). Manual intervention required."
+                            )
+                
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            _log("INFO", "Monitor loop stopped by user.")
+
     # -- JSON-friendly status for MCP tools ---------------------------------
 
     def status_json(self) -> List[Dict]:
@@ -468,14 +500,14 @@ def _parse_extra_worker(spec: str) -> ExtraWorker:
     )
 
 
-_VALID_ACTIONS = ("start", "stop", "status", "restart", "clean")
+_VALID_ACTIONS = ("start", "stop", "status", "restart", "clean", "monitor")
 
 
 def build_config_from_args(argv: Sequence[str] | None = None) -> Tuple[str, SupervisorConfig]:
     """Parse CLI args and return ``(action, config)``."""
     parser = argparse.ArgumentParser(
         description="Autopilot process supervisor",
-        usage="%(prog)s {start|stop|status|restart|clean} [options]",
+        usage="%(prog)s {start|stop|status|restart|clean|monitor} [options]",
     )
     parser.add_argument("action", nargs="?")
     parser.add_argument("--project-root", default="")
@@ -501,6 +533,7 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> Tuple[str, Supe
     parser.add_argument("--max-restarts", type=int, default=5)
     parser.add_argument("--backoff-base", type=int, default=10)
     parser.add_argument("--backoff-max", type=int, default=120)
+    parser.add_argument("--monitor-interval", type=int, default=30)
 
     args = parser.parse_args(argv)
     cfg = SupervisorConfig(
@@ -528,12 +561,16 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> Tuple[str, Supe
         backoff_base=args.backoff_base,
         backoff_max=args.backoff_max,
     )
+    # Patch monitor interval into cfg if we want to store it there, 
+    # but for now we'll just return it as a local var or use a custom action.
+    # To keep it simple, I'll pass it to main.
+    setattr(cfg, "monitor_interval", args.monitor_interval)
     return args.action, cfg
 
 
 def _print_usage() -> None:
     prog = "scripts/autopilot/supervisor.sh"
-    print(f"Usage: {prog} {{start|stop|status|restart|clean}} [options]")
+    print(f"Usage: {prog} {{start|stop|status|restart|clean|monitor}} [options]")
     print()
     print("Commands:")
     print("  start    Start all autopilot processes")
@@ -541,6 +578,7 @@ def _print_usage() -> None:
     print("  status   Show process status")
     print("  restart  Stop then start all processes")
     print("  clean    Remove stale pid files and supervisor logs")
+    print("  monitor  Watch for dead processes and restart them")
     print()
     print("Visibility:")
     print("  ./scripts/autopilot/headless_status.sh --once")
@@ -562,6 +600,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "status": sup.status,
         "restart": sup.restart,
         "clean": sup.clean,
+        "monitor": lambda: sup.monitor(interval=getattr(cfg, "monitor_interval", 30)),
     }
     dispatch[action]()
     return 0
