@@ -74,6 +74,33 @@ WINGMAN LANE: [Agent] [Status] | [Count] Tasks Awaiting Review
 3. **Wingman** claims task, performs QA, and updates status to `done` or `bug_open`.
 4. **Manager** cycle validates and closes the loop.
 
+## 4. Capability Matrix and Gaps
+
+Authoritative parity view from current code/tests (`orchestrator_mcp_server.py`, `orchestrator/engine.py`, `scripts/autopilot/*`, `tests/*`).
+
+| Capability | Interactive (MCP) | Headless (loops/scripts) | Parity | Gap Type | Owner |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| Bootstrap runtime state | `orchestrator_bootstrap` | manager bootstrap in loops | Partial | missing automation path | codex |
+| Connect/identity verify | `orchestrator_connect_to_leader` | worker connect flow | Partial | missing visibility | codex |
+| Claim/report lifecycle | claim/report tools | worker loop claim/report cycle | Full | none | codex |
+| Blocker raise/resolve | blocker tools | manager + watchdog handling | Partial | missing behavior | codex |
+| Runtime start/stop/status | shell-driven today | `supervisor.sh`, `headless_status.sh` | Partial | missing automation path | codex |
+| Team/lane routing | `team_id` in task APIs | supervisor/worker team flags | Full | none | claude_code |
+| Lease recovery | engine lease model + recovery | watchdog/manager assists | Partial | missing visibility | codex |
+| QA wingman validation loop | explicit review/validate tools | wingman lane + manager cycle | Partial | missing behavior | codex |
+| Operator status summary | `orchestrator_status` payload | `headless_status.sh` output | Partial | missing visibility | gemini |
+| Source/runtime consistency guard | runtime hash checks | watchdog + status diagnostics | Full | none | codex |
+
+### Top 5 Parity Blockers
+
+| Priority | Blocker | Why It Blocks Parity | Implementation Type | Owner |
+| :--- | :--- | :--- | :--- | :--- |
+| P1 | No MCP-native headless lifecycle control | Operator still depends on shell choreography for start/stop/status | missing automation path | codex |
+| P2 | Headless lanes can die after single cycle without unified recovery UX | Interactive mode appears healthier than headless from operator view | missing behavior | claude_code |
+| P3 | Wingman QA auto-validate policy not consistently defaulted | Requires manual manager intervention in paths that should be routine | missing behavior | codex |
+| P4 | Parity status schema is not identical across MCP status vs headless status | Forces operator to translate between two mental models | missing visibility | gemini |
+| P5 | Cross-project scope/identity errors are not surfaced with one canonical remediation block | Slower recovery and repeated operator confusion | missing visibility | codex |
+
 ## 5. Headless Execution Path Upgrades (v0.2+)
 
 Concrete upgrades to bring headless execution to parity with interactive control and safety.
