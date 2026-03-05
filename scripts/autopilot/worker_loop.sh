@@ -103,6 +103,8 @@ Rules:
 - Never silently stop; submit report or raise blocker
 EOF
 
+  # Keep legacy marker for existing parsers/tests while adding canonical action event.
+  log INFO "worker cycle=$cycle agent=$AGENT cli=$CLI project=$PROJECT_ROOT"
   log INFO "CANONICAL ACTION: WORKER_PULSE cycle=$cycle agent=$AGENT cli=$CLI project=$PROJECT_ROOT"
   if run_cli_prompt "$CLI" "$PROJECT_ROOT" "$prompt_file" "$out_file" "$CLI_TIMEOUT"; then
     log INFO "worker cycle complete agent=$AGENT; log=$out_file"
