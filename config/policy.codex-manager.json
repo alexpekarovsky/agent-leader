@@ -21,6 +21,7 @@
   },
   "triggers": {
     "heartbeat_timeout_minutes": 10,
+    "auto_validate_reports_on_submit": true,
     "auto_open_bug_on_validation_failure": true,
     "auto_requeue_on_offline": true,
     "unsupervised_stop_enabled": false,
