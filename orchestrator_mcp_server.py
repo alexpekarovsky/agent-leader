@@ -830,6 +830,10 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                         "required": ["command", "passed", "failed"],
                     },
                     "artifacts": {"type": "array", "items": {"type": "string"}, "description": "Optional changed files / evidence."},
+                    "review_gate": {
+                        "type": "object",
+                        "description": "Optional wingman review decision metadata (required/status/reviewer_* fields).",
+                    },
                     "notes": {"type": "string", "default": "", "description": "Implementation summary and residual risks."},
                 },
                 "required": ["task_id", "agent", "commit_sha", "status", "test_summary"],
@@ -1109,6 +1113,7 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
     stale_after_seconds = ORCH._heartbeat_timeout_seconds()
     tasks = ORCH.list_tasks()
     processed: List[Dict[str, Any]] = []
+    deferred: List[Dict[str, Any]] = []
     retry_base_seconds = int(ORCH.policy.triggers.get("report_retry_base_seconds", 15))
     retry_base_seconds = max(3, min(retry_base_seconds, 300))
     retry_max_seconds = int(ORCH.policy.triggers.get("report_retry_max_backoff_seconds", 300))
@@ -1142,15 +1147,43 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
         summary = report.get("test_summary", {}) or {}
         failed_tests = int(summary.get("failed", 1))
         has_command = bool(str(summary.get("command", "")).strip())
-        report_status = report.get("status", "blocked")
-        passed = report_status == "done" and failed_tests == 0
-        if strict:
-            passed = passed and bool(report.get("commit_sha")) and has_command
+        report_status = str(report.get("status", "blocked")).strip().lower()
+        has_commit = bool(str(report.get("commit_sha", "")).strip())
+        strict_requirements_met = bool(has_commit and has_command) if strict else True
+        review_gate = task.get("review_gate") if isinstance(task.get("review_gate"), dict) else {}
+        review_status = str(review_gate.get("status", "")).strip().lower()
+        review_approved = review_status in {"approved", "waived"}
+        review_rejected = review_status == "rejected"
+
+        passed = failed_tests == 0 and strict_requirements_met and (
+            report_status == "done" or (report_status == "needs_review" and review_approved)
+        )
+        defer_for_manual_review = (
+            report_status == "needs_review"
+            and not review_approved
+            and not review_rejected
+            and failed_tests == 0
+            and strict_requirements_met
+        )
+        if defer_for_manual_review:
+            deferred.append(
+                {
+                    "task_id": task["id"],
+                    "status": report_status,
+                    "review_status": review_status or "unknown",
+                    "reason": "awaiting_manual_review_decision",
+                }
+            )
+            continue
 
         notes = (
             f"Auto manager cycle accepted report {report.get('commit_sha', 'unknown')}"
             if passed
-            else f"Auto manager cycle rejected report status={report_status}, failed_tests={failed_tests}, has_command={has_command}"
+            else (
+                "Auto manager cycle rejected report "
+                f"status={report_status}, failed_tests={failed_tests}, has_command={has_command}, "
+                f"has_commit={has_commit}, review_status={review_status or 'none'}"
+            )
         )
         result = ORCH.validate_task(
             task_id=task["id"],
@@ -1275,6 +1308,7 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
 
     return {
         "processed_reports": processed,
+        "deferred_reports": deferred,
         "report_retry_queue": retry_queue,
         "auto_connect": auto_connect,
         "auto_resolved_blockers": auto_resolved_blockers,
@@ -2157,6 +2191,9 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             test_summary = args.get("test_summary", {})
             if isinstance(test_summary, str):
                 test_summary = _parse_json_argument(test_summary, "object")
+            review_gate = args.get("review_gate")
+            if isinstance(review_gate, str):
+                review_gate = _parse_json_argument(review_gate, "object")
             reporting_agent = args["agent"]
             report = {
                 "task_id": args["task_id"],
@@ -2167,6 +2204,8 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "artifacts": args.get("artifacts", []),
                 "notes": args.get("notes", ""),
             }
+            if isinstance(review_gate, dict):
+                report["review_gate"] = review_gate
             report["run_context"] = {
                 "run_id": RUN_ID or None,
                 "orchestrator_version": __version__,
@@ -2192,6 +2231,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                     "auto_manager_cycle": {
                         "enabled": True,
                         "processed_reports": cycle.get("processed_reports", []),
+                        "deferred_reports": cycle.get("deferred_reports", []),
                         "pending_total": cycle.get("pending_total", 0),
                     },
                 }

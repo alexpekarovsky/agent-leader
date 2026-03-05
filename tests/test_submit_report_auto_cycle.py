@@ -66,25 +66,34 @@ class SubmitReportAutoCycleTests(unittest.TestCase):
         self.assertIsNotNone(claimed)
         return task
 
-    def _run_submit_via_mcp(self, orch: Orchestrator, policy: Policy) -> dict:
+    def _run_submit_via_mcp(
+        self,
+        orch: Orchestrator,
+        policy: Policy,
+        *,
+        report_overrides: dict | None = None,
+    ) -> dict:
         import orchestrator_mcp_server as mcp
 
         old_orch, old_policy = mcp.ORCH, mcp.POLICY
         try:
             mcp.ORCH = orch
             mcp.POLICY = policy
+            arguments = {
+                "task_id": orch.list_tasks(status="in_progress", owner="codex")[0]["id"],
+                "agent": "codex",
+                "commit_sha": "abc123",
+                "status": "done",
+                "test_summary": {"command": "pytest -q", "passed": 1, "failed": 0},
+                "notes": "auto-cycle test",
+            }
+            if report_overrides:
+                arguments.update(report_overrides)
             response = mcp.handle_tool_call(
                 "req-submit",
                 {
                     "name": "orchestrator_submit_report",
-                    "arguments": {
-                        "task_id": orch.list_tasks(status="in_progress", owner="codex")[0]["id"],
-                        "agent": "codex",
-                        "commit_sha": "abc123",
-                        "status": "done",
-                        "test_summary": {"command": "pytest -q", "passed": 1, "failed": 0},
-                        "notes": "auto-cycle test",
-                    },
+                    "arguments": arguments,
                 },
             )
             return json.loads(response["result"]["content"][0]["text"])
@@ -112,6 +121,64 @@ class SubmitReportAutoCycleTests(unittest.TestCase):
             self.assertNotIn("auto_manager_cycle", payload)
             updated = next(t for t in orch.list_tasks() if t["id"] == task["id"])
             self.assertEqual("reported", updated["status"])
+
+    def test_submit_report_auto_manager_cycle_accepts_approved_needs_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            orch, policy = _mk_orch(Path(tmp), auto_validate=True)
+            task = self._seed_claimed_task(orch)
+            payload = self._run_submit_via_mcp(
+                orch,
+                policy,
+                report_overrides={
+                    "status": "needs_review",
+                    "review_gate": {"required": True, "status": "approved", "reviewer_agent": "ccm"},
+                },
+            )
+
+            self.assertIn("auto_manager_cycle", payload)
+            processed = payload["auto_manager_cycle"]["processed_reports"]
+            self.assertEqual(1, len(processed))
+            self.assertTrue(processed[0]["passed"])
+            updated = next(t for t in orch.list_tasks() if t["id"] == task["id"])
+            self.assertEqual("done", updated["status"])
+
+    def test_submit_report_auto_manager_cycle_defers_pending_needs_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            orch, policy = _mk_orch(Path(tmp), auto_validate=True)
+            task = self._seed_claimed_task(orch)
+            payload = self._run_submit_via_mcp(
+                orch,
+                policy,
+                report_overrides={
+                    "status": "needs_review",
+                    "review_gate": {"required": True, "status": "pending", "reviewer_agent": "ccm"},
+                },
+            )
+
+            cycle = payload["auto_manager_cycle"]
+            self.assertEqual([], cycle["processed_reports"])
+            self.assertEqual(1, len(cycle["deferred_reports"]))
+            updated = next(t for t in orch.list_tasks() if t["id"] == task["id"])
+            self.assertEqual("reported", updated["status"])
+
+    def test_submit_report_auto_manager_cycle_rejects_rejected_needs_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            orch, policy = _mk_orch(Path(tmp), auto_validate=True)
+            task = self._seed_claimed_task(orch)
+            payload = self._run_submit_via_mcp(
+                orch,
+                policy,
+                report_overrides={
+                    "status": "needs_review",
+                    "review_gate": {"required": True, "status": "rejected", "reviewer_agent": "ccm"},
+                },
+            )
+
+            processed = payload["auto_manager_cycle"]["processed_reports"]
+            self.assertEqual(1, len(processed))
+            self.assertFalse(processed[0]["passed"])
+            updated = next(t for t in orch.list_tasks() if t["id"] == task["id"])
+            self.assertIn(updated["status"], {"bug_open", "in_progress"})
 
 
 if __name__ == "__main__":
