@@ -73,16 +73,32 @@ run_cli_prompt() {
   local prompt_file="$3"
   local output_file="$4"
   local timeout_seconds="${5:-300}"
+  local agent="${6:-}"
+  local role="${7:-}"
+  local instance_id="${8:-}"
 
   [[ "$timeout_seconds" =~ ^[0-9]+$ ]] || timeout_seconds=300
   (( timeout_seconds > 0 )) || timeout_seconds=300
-  python3 - "$cli" "$cwd" "$prompt_file" "$output_file" "$timeout_seconds" <<'PY'
+  python3 - "$cli" "$cwd" "$prompt_file" "$output_file" "$timeout_seconds" "$agent" "$role" "$instance_id" <<'PY'
 import os
 import subprocess
 import sys
 
-cli, cwd, prompt_file, output_file, timeout_seconds = sys.argv[1:]
+cli, cwd, prompt_file, output_file, timeout_seconds, agent, role, instance_id = sys.argv[1:]
 timeout_seconds = int(timeout_seconds)
+
+# Identity mapping check (Basic Safety)
+valid_agents = {
+    "codex": ["codex"],
+    "claude": ["claude_code", "ccm"],
+    "gemini": ["gemini"]
+}
+if agent and cli in valid_agents and agent not in valid_agents[cli]:
+    msg = f"ERROR: Agent identity mismatch. CLI '{cli}' cannot act as agent '{agent}'."
+    print(msg, file=sys.stderr)
+    with open(output_file, "wb") as f:
+        f.write(msg.encode("utf-8"))
+    sys.exit(1)
 
 if cli == "codex":
     cmd = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "-C", cwd, "-"]
@@ -95,6 +111,10 @@ else:
     sys.exit(2)
 
 env = os.environ.copy()
+if agent: env["ORCHESTRATOR_AGENT"] = agent
+if role: env["ORCHESTRATOR_ROLE"] = role
+if instance_id: env["ORCHESTRATOR_INSTANCE_ID"] = instance_id
+
 with open(prompt_file, "rb") as stdin_f, open(output_file, "wb") as out_f:
     try:
         result = subprocess.run(

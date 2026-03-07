@@ -61,7 +61,7 @@ Rules:
 EOF
 
   log INFO "CANONICAL ACTION: MANAGER_SYNC cycle=$cycle cli=$CLI leader_agent=$LEADER_AGENT project=$PROJECT_ROOT"
-  if run_cli_prompt "$CLI" "$PROJECT_ROOT" "$prompt_file" "$out_file" "$CLI_TIMEOUT"; then
+  if run_cli_prompt "$CLI" "$PROJECT_ROOT" "$prompt_file" "$out_file" "$CLI_TIMEOUT" "$LEADER_AGENT" "leader" "${LEADER_AGENT}#headless-manager"; then
     log INFO "manager cycle complete; log=$out_file"
   else
     rc=$?

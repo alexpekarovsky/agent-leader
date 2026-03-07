@@ -131,5 +131,5 @@ Concrete upgrades to bring headless execution to parity with interactive control
 | :--- | :--- | :--- | :--- |
 | **Phase 1** | Unified status UX and recovery actions | 4h | [x] Done |
 | **Phase 2** | Supervisor health & auto-restart | 2h | [x] Done |
-| **Phase 3** | Role/Instance safety hardening | 1h | [ ] Planned |
+| **Phase 3** | Role/Instance safety hardening | 1h | [x] Done |
 | **Phase 4** | Automated error event emission | 2h | [ ] Planned |
