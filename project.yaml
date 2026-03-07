@@ -59,6 +59,12 @@ version:
       status: done
       tags: [backend, mcp-only, headless, runtime-control, parity]
 
+    - id: operational-parity-certification
+      title: Run final acceptance and certify interactive/headless operational parity
+      effort: S
+      status: done
+      tags: [qa, parity, certification]
+
     - id: policy-bundle-presets
       title: Add policy bundles for strict QA, prototype, and balanced modes
       effort: M
