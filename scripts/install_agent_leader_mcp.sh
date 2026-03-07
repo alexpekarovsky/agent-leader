@@ -213,9 +213,15 @@ cp "$SOURCE_ROOT/config"/*.json "$TARGET_DIR/config/"
 
 SERVER_PATH="$TARGET_DIR/orchestrator_mcp_server.py"
 DEFAULT_POLICY_PATH="$TARGET_DIR/config/policy.codex-manager.json"
+PROJECT_SERVER_PATH="$SOURCE_ROOT/orchestrator_mcp_server.py"
+PROJECT_POLICY_PATH_DEFAULT="$SOURCE_ROOT/config/policy.codex-manager.json"
 
 if [[ -z "$POLICY_PATH" ]]; then
-  POLICY_PATH="$DEFAULT_POLICY_PATH"
+  if [[ "$MODE" == "project" ]]; then
+    POLICY_PATH="$PROJECT_POLICY_PATH_DEFAULT"
+  else
+    POLICY_PATH="$DEFAULT_POLICY_PATH"
+  fi
 else
   if [[ "$POLICY_PATH" != /* ]]; then
     if [[ -f "$SOURCE_ROOT/$POLICY_PATH" ]]; then
@@ -230,6 +236,10 @@ else
       POLICY_PATH="$TARGET_DIR/$rel"
     fi
   fi
+fi
+
+if [[ "$MODE" == "project" ]]; then
+  SERVER_PATH="$PROJECT_SERVER_PATH"
 fi
 
 if [[ ! -f "$POLICY_PATH" ]]; then
