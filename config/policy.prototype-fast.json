@@ -1,0 +1,34 @@
+{
+  "name": "prototype-fast",
+  "roles": {
+    "manager": "codex",
+    "product_manager": "codex",
+    "scrum_master": "codex",
+    "qa_lead": "codex"
+  },
+  "routing": {
+    "backend": "claude_code",
+    "frontend": "gemini",
+    "qa": "gemini",
+    "default": "claude_code"
+  },
+  "decisions": {
+    "architecture": {
+      "mode": "delegated",
+      "owner": "claude_code"
+    }
+  },
+  "triggers": {
+    "heartbeat_timeout_minutes": 20,
+    "auto_validate_reports_on_submit": true,
+    "auto_open_bug_on_validation_failure": false,
+    "auto_requeue_on_offline": true,
+    "unsupervised_stop_enabled": false,
+    "stop_max_open_bugs": 20,
+    "stop_max_open_blockers": 30,
+    "stop_max_validation_failures_per_task": 10,
+    "stop_on_integrity_mismatch": false,
+    "stop_on_deploy_mismatch": false,
+    "allow_cross_project_agents": true
+  }
+}

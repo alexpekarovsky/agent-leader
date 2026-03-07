@@ -56,7 +56,7 @@ version:
     - id: policy-bundle-presets
       title: Add policy bundles for strict QA, prototype, and balanced modes
       effort: M
-      status: planned
+      status: done
       tags: [governance, policy]
 
     - id: ci-github-integrations
