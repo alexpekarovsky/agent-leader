@@ -71,6 +71,12 @@ version:
       status: done
       tags: [backend, mcp-only, stability, reliability]
 
+    - id: autopilot-smoke-contract-sync
+      title: Align headless smoke contracts/docs with current supervisor topology and verify full pass
+      effort: S
+      status: done
+      tags: [qa, headless, smoke, docs]
+
     - id: policy-bundle-presets
       title: Add policy bundles for strict QA, prototype, and balanced modes
       effort: M

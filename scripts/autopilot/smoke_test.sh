@@ -402,12 +402,20 @@ else
     report "tmux session exists" "false" "session $SMOKE_SESSION not found"
   fi
 
-  # Verify pane count in manager window (expect 4: manager, claude, gemini, watchdog)
+  # Verify pane count in manager window (current layout keeps manager isolated).
   pane_count=$(tmux list-panes -t "$SMOKE_SESSION:manager" 2>/dev/null | wc -l | tr -d ' ')
-  if [[ "$pane_count" -eq 4 ]]; then
-    report "tmux has 4 panes in manager window" "true"
+  if [[ "$pane_count" -eq 1 ]]; then
+    report "tmux has 1 pane in manager window" "true"
   else
-    report "tmux has 4 panes in manager window" "false" "expected 4, got $pane_count"
+    report "tmux has 1 pane in manager window" "false" "expected 1, got $pane_count"
+  fi
+
+  # Worker window should include claude/gemini/wingman/watchdog panes.
+  worker_pane_count=$(tmux list-panes -t "$SMOKE_SESSION:workers" 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$worker_pane_count" -ge 3 ]]; then
+    report "tmux workers window has expected panes" "true"
+  else
+    report "tmux workers window has expected panes" "false" "expected >=3, got $worker_pane_count"
   fi
 
   # Verify monitor window exists
@@ -1691,10 +1699,13 @@ from pathlib import Path
 script = Path(sys.argv[1]).read_text(encoding="utf-8")
 spec = Path(sys.argv[2]).read_text(encoding="utf-8")
 
-# Commands the script supports (from main case "$ACTION" block)
-# Look for the pattern: action)  do_action ;; at the end of the file
+# Commands the script supports:
+# 1) legacy shell case block pattern
+# 2) wrapper usage header ("supervisor.sh start ...")
 script_cmds = set(re.findall(r'^\s+(\w+)\)\s+do_\w+', script, re.MULTILINE))
 script_cmds.discard("*")
+if not script_cmds:
+    script_cmds = set(re.findall(r'supervisor\.sh\s+(start|stop|status|restart|clean)\b', script))
 
 # Commands documented in spec
 spec_cmds = set()
@@ -1727,8 +1738,12 @@ from pathlib import Path
 script = Path(sys.argv[1]).read_text(encoding="utf-8")
 profiles = Path(sys.argv[2]).read_text(encoding="utf-8")
 
-# Flags the script accepts (from case statement in while loop)
+# Flags the script accepts:
+# 1) legacy shell arg-case pattern
+# 2) wrapper options header comments ("#   --flag ...")
 script_flags = set(re.findall(r'(--[\w-]+)\)', script))
+header_flags = set(re.findall(r'^\s*#\s+--([a-zA-Z][\w-]*)\b', script, re.MULTILINE))
+script_flags |= {f"--{f}" for f in header_flags}
 
 # Flags used in profile examples (only in code blocks or command lines)
 # Filter out markdown table separators (strings of only dashes)

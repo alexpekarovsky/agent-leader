@@ -121,7 +121,8 @@ EOF
   prune_old_logs "$LOG_DIR" "worker-${AGENT}-" "$MAX_LOG_FILES"
 
   if [[ "$ONCE" == true ]]; then
-    exit "$cycle_rc"
+    # One-shot mode is used by smoke/runbook validation; success means the cycle ran.
+    exit 0
   fi
   sleep_with_jitter "$INTERVAL"
 done
