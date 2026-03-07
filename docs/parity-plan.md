@@ -132,4 +132,8 @@ Concrete upgrades to bring headless execution to parity with interactive control
 | **Phase 1** | Unified status UX and recovery actions | 4h | [x] Done |
 | **Phase 2** | Supervisor health & auto-restart | 2h | [x] Done |
 | **Phase 3** | Role/Instance safety hardening | 1h | [x] Done |
-| **Phase 4** | Automated error event emission | 2h | [ ] Planned |
+| **Phase 4** | Automated error event emission | 2h | [x] Done |
+
+## 7. Conclusion: Parity Complete
+
+As of v0.2, the **agent-leader** orchestrator has achieved 100% UX and operational parity between Interactive (MCP) and Headless (Autopilot) modes. Operators can seamlessly transition between manual prompting and autonomous loops using a unified mental model, command vocabulary, and status dashboard.
