@@ -101,6 +101,45 @@ class HeadlessMcpToolsTests(unittest.TestCase):
                 self.assertEqual(action, payload["action"])
                 self.assertEqual(str(Path(tmp)), payload["project_root"])
 
+    def test_select_root_dir_prefers_explicit_env(self) -> None:
+        from orchestrator_mcp_server import _select_root_dir
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _select_root_dir(
+                orchestrator_root_raw=tmp,
+                startup_cwd=Path("/tmp"),
+                script_dir=Path("/opt/shared/agent-leader/current"),
+            )
+            self.assertEqual(Path(tmp).resolve(), root)
+
+    def test_select_root_dir_uses_project_cwd_when_no_env(self) -> None:
+        from orchestrator_mcp_server import _select_root_dir
+
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "orchestrator").mkdir()
+            (d / "orchestrator_mcp_server.py").write_text("# stub\n", encoding="utf-8")
+            (d / "project.yaml").write_text("name: test\n", encoding="utf-8")
+            root = _select_root_dir(
+                orchestrator_root_raw="",
+                startup_cwd=d,
+                script_dir=Path("/opt/shared/agent-leader/current"),
+            )
+            self.assertEqual(d.resolve(), root)
+
+    def test_select_root_dir_rejects_temp_cwd_without_project_markers(self) -> None:
+        from orchestrator_mcp_server import _select_root_dir
+
+        with tempfile.TemporaryDirectory() as tmp:
+            startup = Path(tmp)
+            script_dir = Path("/opt/shared/agent-leader/current")
+            root = _select_root_dir(
+                orchestrator_root_raw="",
+                startup_cwd=startup,
+                script_dir=script_dir,
+            )
+            self.assertEqual(script_dir.resolve(), root)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -42,18 +42,42 @@ __version__ = "0.1.0"
 SCRIPT_DIR = Path(__file__).resolve().parent
 STARTUP_CWD = Path.cwd().resolve()
 ORCHESTRATOR_ROOT_RAW = os.getenv("ORCHESTRATOR_ROOT", "").strip()
-# Prefer explicit ORCHESTRATOR_ROOT. When absent, fall back to startup cwd
-# so project-local launches from a shared install can still bind correctly.
-ROOT_DIR = Path(ORCHESTRATOR_ROOT_RAW or str(STARTUP_CWD)).resolve()
 EXPECTED_ROOT_RAW = os.getenv("ORCHESTRATOR_EXPECTED_ROOT", "").strip()
 ENFORCE_SHARED_BINDING = os.getenv("ORCHESTRATOR_ENFORCE_SHARED_BINDING", "1").strip().lower() not in {"0", "false", "no"}
-POLICY_PATH = Path(
-    os.getenv("ORCHESTRATOR_POLICY", str(ROOT_DIR / "config" / "policy.codex-manager.json"))
-).resolve()
 STATUS_VERBOSE_PATHS = os.getenv("ORCHESTRATOR_STATUS_VERBOSE_PATHS", "").strip().lower() in {"1", "true", "yes"}
 RUN_ID = os.getenv("ORCHESTRATOR_RUN_ID", "").strip()
 PROMPT_PROFILE_VERSION = os.getenv("ORCHESTRATOR_PROMPT_PROFILE_VERSION", "").strip()
 ALLOW_SHARED_MCP_JSON_PATH = os.getenv("ORCHESTRATOR_ALLOW_SHARED_MCP_JSON_PATH", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _looks_like_project_root(path: Path) -> bool:
+    return (
+        (path / "orchestrator_mcp_server.py").exists()
+        and (path / "orchestrator").is_dir()
+        and (path / "project.yaml").exists()
+    )
+
+
+def _select_root_dir(orchestrator_root_raw: str, startup_cwd: Path, script_dir: Path) -> Path:
+    # Explicit env always wins.
+    if orchestrator_root_raw:
+        return Path(orchestrator_root_raw).resolve()
+    # Without explicit env, only trust cwd if it is clearly this project root.
+    # This avoids accidental binding drift to temp dirs when tests/tools launch
+    # from non-project working directories.
+    if _looks_like_project_root(startup_cwd):
+        return startup_cwd.resolve()
+    return script_dir.resolve()
+
+
+ROOT_DIR = _select_root_dir(
+    orchestrator_root_raw=ORCHESTRATOR_ROOT_RAW,
+    startup_cwd=STARTUP_CWD,
+    script_dir=SCRIPT_DIR,
+)
+POLICY_PATH = Path(
+    os.getenv("ORCHESTRATOR_POLICY", str(ROOT_DIR / "config" / "policy.codex-manager.json"))
+).resolve()
 
 
 def _is_shared_agent_leader_install(path: Path) -> bool:

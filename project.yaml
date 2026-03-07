@@ -65,6 +65,12 @@ version:
       status: done
       tags: [qa, parity, certification]
 
+    - id: mcp-transport-stability
+      title: Harden MCP root binding to prevent temp-dir drift and transport instability
+      effort: S
+      status: done
+      tags: [backend, mcp-only, stability, reliability]
+
     - id: policy-bundle-presets
       title: Add policy bundles for strict QA, prototype, and balanced modes
       effort: M
