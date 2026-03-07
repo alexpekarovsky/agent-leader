@@ -1,6 +1,6 @@
-# Supervisor Prototype Troubleshooting
+# Supervisor Troubleshooting
 
-Common issues with the supervisor prototype and how to resolve them.
+Common issues with the headless supervisor and how to resolve them.
 
 ## Stale PID Files
 
@@ -109,13 +109,13 @@ The loop script itself is failing on startup. Common reasons:
 
 ### Symptom
 
-In future auto-restart mode: the supervisor keeps restarting a process that immediately crashes.
+Supervisor restarts a process repeatedly because it crashes immediately after launch.
 
-### Current prototype behavior
+### Current behavior
 
-The current prototype does not auto-restart. If a process crashes, it stays dead until manually restarted. The restart counter in `.autopilot-pids/{process}.restarts` tracks restarts but is not enforced.
+The supervisor now includes monitor/restart behavior with bounded retry controls. If a process repeatedly fails, inspect its supervisor log and lane configuration before forcing more restarts.
 
-### If you're manually restarting in a loop
+### If you're in a repeated restart loop
 
 Stop and diagnose:
 
