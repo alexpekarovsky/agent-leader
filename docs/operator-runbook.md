@@ -265,6 +265,28 @@ Note: if a CLI call is in progress, Ctrl-C will wait for the current `--cli-time
 
 ## 8. Troubleshooting
 
+### Parity Smoke Test
+
+If you suspect an issue between your interactive environment and the headless runner (e.g., missing tasks, stuck agents, unreadable status), run the MCP parity smoke test tool to check the health of the integration:
+
+```
+orchestrator_parity_smoke()
+```
+
+**Expected JSON Response:**
+```json
+{
+  "overall_status": "pass",
+  "checks": [
+    { "name": "engine_loaded", "status": "pass", "reason": "Engine loaded successfully.", "action": null },
+    { "name": "leader_assigned", "status": "pass", "reason": "Leader is codex.", "action": null },
+    { "name": "task_listing", "status": "pass", "reason": "Found 373 tasks.", "action": null },
+    { "name": "headless_status_script", "status": "pass", "reason": "Headless status script is present and executable.", "action": null }
+  ]
+}
+```
+If a check fails, the `"action"` field will recommend remediation steps.
+
 ### CLI timeout logs
 
 When a CLI call exceeds `--cli-timeout`, the log file will contain:

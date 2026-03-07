@@ -1893,6 +1893,48 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             payload = _run_supervisor_action(supervisor, "stop")
             return _ok_and_audit(request_id, name, args, payload)
 
+        if name == "orchestrator_parity_smoke":
+            checks = []
+            overall_status = "pass"
+            
+            # 1. Lifecycle: Check if ORCH engine is loaded
+            if ORCH is None:
+                checks.append({"name": "engine_loaded", "status": "fail", "reason": "Orchestrator engine not initialized.", "action": "Check project root binding and configuration."})
+                overall_status = "fail"
+            else:
+                checks.append({"name": "engine_loaded", "status": "pass", "reason": "Engine loaded successfully.", "action": None})
+                
+                # 2. Status: Check roles
+                roles = ORCH.get_roles()
+                if not roles.get("leader"):
+                    checks.append({"name": "leader_assigned", "status": "fail", "reason": "No leader assigned in roles.", "action": "Agent should run orchestrator_set_role or manager_loop.sh."})
+                    overall_status = "fail"
+                else:
+                    checks.append({"name": "leader_assigned", "status": "pass", "reason": f"Leader is {roles['leader']}.", "action": None})
+                
+                # 3. Task flow: Check tasks can be listed
+                try:
+                    tasks = ORCH.list_tasks()
+                    checks.append({"name": "task_listing", "status": "pass", "reason": f"Found {len(tasks)} tasks.", "action": None})
+                except Exception as e:
+                    checks.append({"name": "task_listing", "status": "fail", "reason": f"Error listing tasks: {e}", "action": "Check task storage file integrity."})
+                    overall_status = "fail"
+            
+            # 4. Check headless execution path
+            script_path = ROOT_DIR / "scripts" / "autopilot" / "headless_status.sh"
+            if not script_path.exists() or not os.access(script_path, os.X_OK):
+                checks.append({"name": "headless_status_script", "status": "fail", "reason": f"Script {script_path.name} missing or not executable.", "action": "Ensure scripts are installed and executable."})
+                overall_status = "fail"
+            else:
+                checks.append({"name": "headless_status_script", "status": "pass", "reason": "Headless status script is present and executable.", "action": None})
+
+            payload = {
+                "overall_status": overall_status,
+                "checks": checks,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            return _ok_and_audit(request_id, name, args, payload)
+
         if name == "orchestrator_headless_status":
             supervisor = _supervisor_from_tool_args(args if isinstance(args, dict) else {})
             payload = {
