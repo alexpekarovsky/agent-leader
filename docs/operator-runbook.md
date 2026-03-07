@@ -362,6 +362,25 @@ orchestrator_parity_smoke()
 
 **Go Signal:** All checks `pass` and `overall_status` is `"pass"`.
 
+### Machine-Readable Status Contract
+
+For dashboard integrators and automated tools, both `orchestrator_status` (MCP) and `headless_status.sh --json` commit to the following top-level JSON keys:
+
+| Key | Description |
+| :--- | :--- |
+| `task_count` | Total number of tasks in the system. |
+| `task_status_counts` | Map of status (e.g. `done`, `in_progress`) to task counts. |
+| `team_lane_counters` | Per-team breakdown of task statuses. |
+| `bug_count` | Number of open bugs. |
+| `recovery_actions` | List of suggested remediation steps for the operator. |
+| `active_agents` | List of agent IDs currently seen by the orchestrator. |
+| `active_agent_identities` | Detailed metadata for currently active agents. |
+| `agent_instances` | List of all known agent sessions across projects. |
+| `live_status_text` | The human-readable "Ready-to-Paste" summary block. |
+| `integrity` | Health indicators for state consistency. |
+
+The `orchestrator_headless_status` tool provides process-level details plus a concise `pipeline` summary compatible with these counts.
+
 ## 10. Scripted Smoke Tests
 
 Run the built-in scripted smoke test to verify script execution paths:

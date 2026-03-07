@@ -1954,11 +1954,25 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
 
         if name == "orchestrator_headless_status":
             supervisor = _supervisor_from_tool_args(args if isinstance(args, dict) else {})
+            
+            tasks = ORCH.list_tasks() if ORCH else []
+            blockers_open = ORCH.list_blockers(status="open") if ORCH else []
+            bugs_open = ORCH.list_bugs(status="open") if ORCH else []
+            
             payload = {
                 "ok": True,
                 "project_root": supervisor.cfg.project_root,
                 "leader_agent": supervisor.cfg.leader_agent,
                 "processes": supervisor.status_json(),
+                "pipeline": {
+                    "total": len(tasks),
+                    "done": len([t for t in tasks if t.get("status") == "done"]),
+                    "reported": len([t for t in tasks if t.get("status") == "reported"]),
+                    "in_progress": len([t for t in tasks if t.get("status") == "in_progress"]),
+                    "assigned": len([t for t in tasks if t.get("status") == "assigned"]),
+                },
+                "blockers_open_count": len(blockers_open),
+                "bugs_open_count": len(bugs_open),
             }
             return _ok_and_audit(request_id, name, args, payload)
 

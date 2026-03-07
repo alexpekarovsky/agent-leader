@@ -60,11 +60,13 @@ EXPECTED_STATUS_KEYS = {
     "task_status_counts",
     "team_lane_counters",
     "bug_count",
+    "recovery_actions",
     "active_agents",
     "active_agent_identities",
     "agent_instances",
     "integrity",
     "stats_provenance",
+    "live_status_text",
 }
 
 EXPECTED_AGENT_IDENTITY_KEYS = {"agent", "instance_id", "status", "last_seen"}
