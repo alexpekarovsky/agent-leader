@@ -1523,6 +1523,20 @@ def _collect_commit_metrics(commit_sha: str) -> Dict[str, Any]:
 
 
 def _report_metrics_snapshot() -> Dict[str, Any]:
+    if ORCH is None:
+        return {
+            "totals": {
+                "reports_total": 0,
+                "reports_with_commit_metrics": 0,
+                "unique_commits": 0,
+                "files_changed_total": 0,
+                "lines_added_total": 0,
+                "lines_deleted_total": 0,
+                "net_lines_total": 0,
+            },
+            "by_agent": {},
+            "provenance": "report_commit_metrics",
+        }
     reports_dir = ORCH.bus.reports_dir
     totals = {
         "reports_total": 0,
@@ -1580,6 +1594,22 @@ def _report_metrics_snapshot() -> Dict[str, Any]:
     return {"totals": totals, "by_agent": by_agent, "provenance": "report_commit_metrics"}
 
 
+
+def _collect_audit_metrics() -> Dict[str, int]:
+    """Aggregate tool call counts from audit.jsonl efficiently."""
+    counts: Dict[str, int] = {}
+    try:
+        # Bounded read for performance if file is very large.
+        audit_records = ORCH.bus.read_audit(limit=2000) 
+        for record in audit_records:
+            if record.get("category") == "mcp_tool_call":
+                tool = record.get("tool", "unknown")
+                counts[tool] = counts.get(tool, 0) + 1
+    except Exception:
+        pass
+    return counts
+
+
 def _aggregate_team_lanes(tasks: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
     """Aggregate task counts by team_id and status for per-team lane visibility."""
     team_lanes: Dict[str, Dict[str, int]] = {}
@@ -1610,6 +1640,12 @@ def _status_metrics(tasks: List[Dict[str, Any]], bugs_open: List[Dict[str, Any]]
 
     stale_in_progress = 0
     stale_reported = 0
+    unique_agents = set()
+    for task in tasks:
+        owner = task.get("owner")
+        if owner:
+            unique_agents.add(owner)
+
     for task in in_progress_tasks:
         ts = _parse_iso(task.get("claimed_at") or task.get("updated_at"))
         if ts and (now - ts).total_seconds() > 1800:
@@ -1619,7 +1655,28 @@ def _status_metrics(tasks: List[Dict[str, Any]], bugs_open: List[Dict[str, Any]]
         if ts and (now - ts).total_seconds() > 600:
             stale_reported += 1
 
+    # Calculate tasks_done_per_hour (based on tasks done in the last 24h)
+    done_last_24h = 0
+    for task in done_tasks:
+        ts = _parse_iso(task.get("validated_at") or task.get("updated_at"))
+        if ts and (now - ts).total_seconds() <= 86400:
+            done_last_24h += 1
+    tasks_per_hour = round(done_last_24h / 24.0, 2)
+
+    # All-time unique agents from state
+    all_time_agents_count = 0
+    try:
+        agents_path = ROOT_DIR / "state" / "agents.json"
+        if agents_path.exists():
+            agents_data = json.loads(agents_path.read_text(encoding="utf-8"))
+            if isinstance(agents_data, dict):
+                all_time_agents_count = len(agents_data)
+    except Exception:
+        pass
+
     report_metrics = _report_metrics_snapshot()
+    tool_calls = _collect_audit_metrics()
+
     return {
         "throughput": {
             "tasks_total": len(tasks),
@@ -1630,6 +1687,7 @@ def _status_metrics(tasks: List[Dict[str, Any]], bugs_open: List[Dict[str, Any]]
             "tasks_superseded": len(superseded_tasks),
             "tasks_archived": len(archived_tasks),
             "completion_rate_percent": _percent(len(done_tasks), len(tasks)),
+            "tasks_done_per_hour": tasks_per_hour,
         },
         "timings_seconds": {
             "avg_time_to_claim": _avg_int(time_to_claim),
@@ -1642,6 +1700,11 @@ def _status_metrics(tasks: List[Dict[str, Any]], bugs_open: List[Dict[str, Any]]
             "stale_in_progress_over_30m": stale_in_progress,
             "stale_reported_over_10m": stale_reported,
         },
+        "usage": {
+            "unique_agents_seen": len(unique_agents),
+            "unique_agents_all_time": max(len(unique_agents), all_time_agents_count),
+            "tool_call_counts_recent": tool_calls,
+        },
         "code_output": {
             **report_metrics.get("totals", {}),
             "by_agent": report_metrics.get("by_agent", {}),
@@ -1649,7 +1712,7 @@ def _status_metrics(tasks: List[Dict[str, Any]], bugs_open: List[Dict[str, Any]]
         },
         "efficiency": {
             "energy_mode": "not_yet_instrumented",
-            "metrics_provenance": "task_state + report_commit_metrics",
+            "metrics_provenance": "task_state + audit_log + report_commit_metrics",
         },
     }
 

@@ -67,7 +67,11 @@ EXPECTED_STATUS_KEYS = {
     "integrity",
     "stats_provenance",
     "live_status_text",
+    "metrics",
 }
+
+EXPECTED_METRICS_KEYS = {"throughput", "timings_seconds", "reliability", "usage", "code_output", "efficiency"}
+EXPECTED_USAGE_KEYS = {"unique_agents_seen", "unique_agents_all_time", "tool_call_counts_recent"}
 
 EXPECTED_AGENT_IDENTITY_KEYS = {"agent", "instance_id", "status", "last_seen"}
 
@@ -100,12 +104,13 @@ class StatusPayloadShapeTests(unittest.TestCase):
         for task in tasks:
             by_status[task["status"]] = by_status.get(task["status"], 0) + 1
 
-        from orchestrator_mcp_server import _aggregate_team_lanes
+        from orchestrator_mcp_server import _aggregate_team_lanes, _status_metrics
         return {
             "task_count": len(tasks),
             "task_status_counts": by_status,
             "team_lane_counters": _aggregate_team_lanes(tasks),
             "bug_count": len(bugs),
+            "recovery_actions": [],
             "active_agents": [a["agent"] for a in agents],
             "active_agent_identities": [
                 {
@@ -138,6 +143,8 @@ class StatusPayloadShapeTests(unittest.TestCase):
                 "task_summary": "live_state",
                 "integrity_state": "ok",
             },
+            "live_status_text": "ORCHESTRATOR STATUS: ...",
+            "metrics": _status_metrics(tasks=tasks, bugs_open=bugs, blockers_open=[]),
         }
 
     def test_empty_state_payload_has_required_keys(self) -> None:
@@ -148,6 +155,14 @@ class StatusPayloadShapeTests(unittest.TestCase):
 
             for key in EXPECTED_STATUS_KEYS:
                 self.assertIn(key, payload, f"Missing key: {key}")
+
+            metrics = payload.get("metrics", {})
+            for key in EXPECTED_METRICS_KEYS:
+                self.assertIn(key, metrics, f"Missing metrics key: {key}")
+
+            usage = metrics.get("usage", {})
+            for key in EXPECTED_USAGE_KEYS:
+                self.assertIn(key, usage, f"Missing usage key: {key}")
 
     def test_empty_state_has_zero_counts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
