@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 import json
+from unittest.mock import patch
 
 
 class HeadlessMcpToolsTests(unittest.TestCase):
@@ -17,6 +18,8 @@ class HeadlessMcpToolsTests(unittest.TestCase):
         self.assertIn("orchestrator_headless_start", names)
         self.assertIn("orchestrator_headless_stop", names)
         self.assertIn("orchestrator_headless_status", names)
+        self.assertIn("orchestrator_headless_restart", names)
+        self.assertIn("orchestrator_headless_clean", names)
 
     def test_supervisor_from_tool_args_applies_project_root(self) -> None:
         from orchestrator_mcp_server import _supervisor_from_tool_args
@@ -39,6 +42,21 @@ class HeadlessMcpToolsTests(unittest.TestCase):
             self.assertEqual(root, payload["project_root"])
             self.assertIsInstance(payload["processes"], list)
 
+    def test_run_supervisor_action_supports_restart_and_clean(self) -> None:
+        from orchestrator_mcp_server import _run_supervisor_action, _supervisor_from_tool_args
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = str(Path(tmp))
+            supervisor = _supervisor_from_tool_args({"project_root": root})
+            with patch.object(supervisor, "restart", return_value=None) as mock_restart:
+                payload = _run_supervisor_action(supervisor, "restart")
+                self.assertEqual("restart", payload["action"])
+                mock_restart.assert_called_once()
+            with patch.object(supervisor, "clean", return_value=None) as mock_clean:
+                payload = _run_supervisor_action(supervisor, "clean")
+                self.assertEqual("clean", payload["action"])
+                mock_clean.assert_called_once()
+
     def test_handle_tool_call_headless_status_returns_payload(self) -> None:
         from orchestrator_mcp_server import handle_tool_call
 
@@ -55,6 +73,24 @@ class HeadlessMcpToolsTests(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertEqual(str(Path(tmp)), payload["project_root"])
             self.assertIn("processes", payload)
+
+    def test_handle_tool_call_headless_restart_and_clean_return_payload(self) -> None:
+        from orchestrator_mcp_server import handle_tool_call
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for tool_name in ("orchestrator_headless_restart", "orchestrator_headless_clean"):
+                response = handle_tool_call(
+                    f"req-{tool_name}",
+                    {
+                        "name": tool_name,
+                        "arguments": {"project_root": str(Path(tmp))},
+                    },
+                )
+                content = response["result"]["content"][0]["text"]
+                payload = json.loads(content)
+                self.assertTrue(payload["ok"])
+                self.assertEqual(tool_name.replace("orchestrator_headless_", ""), payload["action"])
+                self.assertEqual(str(Path(tmp)), payload["project_root"])
 
 
 if __name__ == "__main__":

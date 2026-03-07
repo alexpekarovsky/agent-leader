@@ -53,6 +53,12 @@ version:
       status: done
       tags: [backend, mcp-only, headless, runtime-control]
 
+    - id: mcp-headless-lifecycle-parity
+      title: Add MCP-native restart/clean lifecycle parity with supervisor
+      effort: S
+      status: done
+      tags: [backend, mcp-only, headless, runtime-control, parity]
+
     - id: policy-bundle-presets
       title: Add policy bundles for strict QA, prototype, and balanced modes
       effort: M

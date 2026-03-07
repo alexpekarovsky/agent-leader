@@ -414,6 +414,10 @@ def _run_supervisor_action(supervisor: Supervisor, action: str) -> Dict[str, Any
             supervisor.start()
         elif action == "stop":
             supervisor.stop()
+        elif action == "restart":
+            supervisor.restart()
+        elif action == "clean":
+            supervisor.clean()
         else:
             raise ValueError(f"Unsupported supervisor action: {action}")
     return {
@@ -513,6 +517,46 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         {
             "name": "orchestrator_headless_status",
             "description": "Return machine-readable headless supervisor process status for this project.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project_root": {"type": "string"},
+                    "leader_agent": {"type": "string", "description": "codex|claude_code|gemini"},
+                    "claude_project_root": {"type": "string"},
+                    "gemini_project_root": {"type": "string"},
+                    "codex_project_root": {"type": "string"},
+                    "wingman_project_root": {"type": "string"},
+                    "claude_team_id": {"type": "string"},
+                    "gemini_team_id": {"type": "string"},
+                    "codex_team_id": {"type": "string"},
+                    "wingman_team_id": {"type": "string"},
+                    "extra_workers": {"type": "array", "items": {"type": "object"}},
+                },
+            },
+        },
+        {
+            "name": "orchestrator_headless_restart",
+            "description": "Restart headless supervisor lanes for this project.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project_root": {"type": "string"},
+                    "leader_agent": {"type": "string", "description": "codex|claude_code|gemini"},
+                    "claude_project_root": {"type": "string"},
+                    "gemini_project_root": {"type": "string"},
+                    "codex_project_root": {"type": "string"},
+                    "wingman_project_root": {"type": "string"},
+                    "claude_team_id": {"type": "string"},
+                    "gemini_team_id": {"type": "string"},
+                    "codex_team_id": {"type": "string"},
+                    "wingman_team_id": {"type": "string"},
+                    "extra_workers": {"type": "array", "items": {"type": "object"}},
+                },
+            },
+        },
+        {
+            "name": "orchestrator_headless_clean",
+            "description": "Clean stale pid/log artifacts for headless supervisor lanes in this project.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1852,6 +1896,16 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "leader_agent": supervisor.cfg.leader_agent,
                 "processes": supervisor.status_json(),
             }
+            return _ok_and_audit(request_id, name, args, payload)
+
+        if name == "orchestrator_headless_restart":
+            supervisor = _supervisor_from_tool_args(args if isinstance(args, dict) else {})
+            payload = _run_supervisor_action(supervisor, "restart")
+            return _ok_and_audit(request_id, name, args, payload)
+
+        if name == "orchestrator_headless_clean":
+            supervisor = _supervisor_from_tool_args(args if isinstance(args, dict) else {})
+            payload = _run_supervisor_action(supervisor, "clean")
             return _ok_and_audit(request_id, name, args, payload)
 
         # ── Degraded-mode guard: reject tool calls when binding failed ──
