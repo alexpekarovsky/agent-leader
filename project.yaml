@@ -92,7 +92,7 @@ version:
     - id: ci-github-integrations
       title: Integrate GitHub issue/PR handoff and CI result ingestion into validation loop
       effort: XL
-      status: planned
+      status: in_progress
       tags: [integrations, ci, github]
 
     # --- Ralph-inspired additions (Feb 2026) ---
