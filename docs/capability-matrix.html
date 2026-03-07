@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agent Leader Capability Matrix</title>
+  <style>
+    :root {
+      --bg: #f7f6f2;
+      --panel: #ffffff;
+      --ink: #1e1d1a;
+      --muted: #6f6a5f;
+      --line: #d8d2c6;
+      --ok: #1f7a3e;
+      --warn: #9a5a00;
+      --partial: #0b5f8a;
+      --interactive: #1e3a8a;
+      --headless: #7c2d12;
+    }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+      color: var(--ink);
+      background: radial-gradient(circle at 10% 10%, #fff8dd 0%, var(--bg) 40%), var(--bg);
+    }
+    .wrap {
+      max-width: 1400px;
+      margin: 28px auto;
+      padding: 0 18px 28px;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 28px;
+      letter-spacing: 0.2px;
+    }
+    .meta {
+      color: var(--muted);
+      margin-bottom: 16px;
+      font-size: 14px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.06);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 14px;
+    }
+    thead th {
+      text-align: left;
+      background: #f2efe8;
+      color: #222;
+      border-bottom: 1px solid var(--line);
+      padding: 12px 10px;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    tbody td {
+      border-top: 1px solid var(--line);
+      vertical-align: top;
+      padding: 10px;
+      line-height: 1.4;
+    }
+    tbody tr:hover { background: #faf8f3; }
+    .w-cap { width: 19%; }
+    .w-int { width: 28%; }
+    .w-head { width: 28%; }
+    .w-status { width: 10%; }
+    .w-notes { width: 15%; }
+    .tag {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-weight: 600;
+      font-size: 12px;
+      border: 1px solid transparent;
+      white-space: nowrap;
+    }
+    .t-parity { color: var(--ok); border-color: #bde3c9; background: #eaf7ef; }
+    .t-partial { color: var(--partial); border-color: #b9dff3; background: #eaf5fb; }
+    .t-io { color: var(--warn); border-color: #efc996; background: #fff3e3; }
+    code { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Agent Leader Feature / Capability Matrix</h1>
+    <div class="meta">Mode comparison: Interactive (MCP tools) vs Headless (scripts/runtime). Snapshot date: 2026-03-07 (post smoke 177/177 + parity close).</div>
+
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th class="w-cap">Capability</th>
+            <th class="w-int">Interactive (MCP)</th>
+            <th class="w-head">Headless (Scripts / Runtime)</th>
+            <th class="w-status">Status</th>
+            <th class="w-notes">Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Bootstrap orchestrator state</td><td><code>orchestrator_bootstrap</code></td><td><code>manager_loop.sh</code> bootstrap path</td><td><span class="tag t-parity">Parity</span></td><td>Both supported.</td></tr>
+          <tr><td>Register + heartbeat identity</td><td><code>orchestrator_register_agent</code>, <code>orchestrator_heartbeat</code></td><td>Loop-driven identity updates</td><td><span class="tag t-parity">Parity</span></td><td>Identity metadata normalized in engine.</td></tr>
+          <tr><td>Leader/team connect workflow</td><td><code>orchestrator_connect_to_leader</code>, <code>orchestrator_connect_team_members</code></td><td>Worker/manager connect choreography</td><td><span class="tag t-parity">Parity</span></td><td>Role-safety tests are in place.</td></tr>
+          <tr><td>Roles management</td><td><code>orchestrator_get_roles</code>, <code>orchestrator_set_role</code></td><td>Consumed by supervisor topology</td><td><span class="tag t-parity">Parity</span></td><td>Leader handoff supported.</td></tr>
+          <tr><td>Task creation + routing</td><td><code>orchestrator_create_task</code></td><td>Loops consume assigned tasks</td><td><span class="tag t-parity">Parity</span></td><td>Policy-routed ownership.</td></tr>
+          <tr><td>Multi-project scoping</td><td><code>project_root</code>/<code>project_name</code> task fields + filters</td><td><code>--project-root</code> in loops/supervisor</td><td><span class="tag t-parity">Parity</span></td><td>Task tags + filtering implemented.</td></tr>
+          <tr><td>Multi-team routing</td><td><code>team_id</code> in create/claim/list</td><td><code>--team-id</code> lanes + extra workers</td><td><span class="tag t-parity">Parity</span></td><td>Team-scoped claims supported.</td></tr>
+          <tr><td>Task listing/filtering</td><td><code>orchestrator_list_tasks</code>, <code>orchestrator_get_tasks_for_agent</code></td><td><code>headless_status.sh</code> + state/log review</td><td><span class="tag t-partial">Partial</span></td><td>MCP filtering is richer than script output.</td></tr>
+          <tr><td>Claim lifecycle</td><td><code>orchestrator_claim_next_task</code></td><td>Automatic claims in worker loop</td><td><span class="tag t-parity">Parity</span></td><td>Same backend path.</td></tr>
+          <tr><td>Claim cooldown anti-spam</td><td>Retry hints from claim API</td><td>Inherited via backend claim path</td><td><span class="tag t-parity">Parity</span></td><td>Cooldown enforcement centralized.</td></tr>
+          <tr><td>Lease renew/recovery</td><td><code>orchestrator_renew_task_lease</code></td><td>Watchdog/manager recovery flows</td><td><span class="tag t-parity">Parity</span></td><td>Lease expiry recovery active.</td></tr>
+          <tr><td>Status transitions</td><td><code>orchestrator_update_task_status</code></td><td>Worker/manager transitions</td><td><span class="tag t-parity">Parity</span></td><td>Same task state engine.</td></tr>
+          <tr><td>Submit delivery reports</td><td><code>orchestrator_submit_report</code></td><td>Worker submit path</td><td><span class="tag t-parity">Parity</span></td><td>Auto manager cycle validates.</td></tr>
+          <tr><td>Validation gate</td><td><code>orchestrator_validate_task</code></td><td>Manager loop + auto cycle</td><td><span class="tag t-parity">Parity</span></td><td>Manual and automated paths.</td></tr>
+          <tr><td>Blocker management</td><td>Raise/list/resolve blocker tools</td><td>Observed by loops, less direct controls</td><td><span class="tag t-partial">Partial</span></td><td>MCP has fuller operator controls.</td></tr>
+          <tr><td>Bug loop visibility</td><td><code>orchestrator_list_bugs</code></td><td>Indirect via status/log files</td><td><span class="tag t-partial">Partial</span></td><td>MCP gives structured bug query.</td></tr>
+          <tr><td>Event bus controls</td><td>Publish/poll/ack/cursor MCP tools</td><td>Implicit bus usage via loops</td><td><span class="tag t-partial">Partial</span></td><td>Interactive has explicit bus APIs.</td></tr>
+          <tr><td>Manager cycle trigger</td><td><code>orchestrator_manager_cycle</code></td><td><code>manager_loop.sh --once</code></td><td><span class="tag t-parity">Parity</span></td><td>Equivalent execution intent.</td></tr>
+          <tr><td>Stale task reassignment</td><td><code>orchestrator_reassign_stale_tasks</code></td><td><code>watchdog_loop.sh</code> + manager</td><td><span class="tag t-parity">Parity</span></td><td>Both paths exist.</td></tr>
+          <tr><td>Architecture decision records</td><td><code>orchestrator_decide_architecture</code></td><td>No direct script equivalent</td><td><span class="tag t-io">Interactive-only</span></td><td>Intentional governance API.</td></tr>
+          <tr><td>Audit query</td><td><code>orchestrator_list_audit_logs</code></td><td>Raw log file inspection</td><td><span class="tag t-partial">Partial</span></td><td>MCP provides structured querying.</td></tr>
+          <tr><td>Doctor diagnostics</td><td><code>orchestrator_doctor</code></td><td>Manual script/log troubleshooting</td><td><span class="tag t-partial">Partial</span></td><td>MCP has richer diagnostics payload.</td></tr>
+          <tr><td>Global status summary</td><td><code>orchestrator_status</code>, <code>orchestrator_live_status_report</code></td><td><code>headless_status.sh</code>, <code>supervisor.sh status</code></td><td><span class="tag t-parity">Parity</span></td><td>Operator fields aligned across interactive and headless views.</td></tr>
+          <tr><td>Status usage metrics</td><td><code>orchestrator_status.metrics</code> (throughput, usage, efficiency)</td><td>Rendered via headless status pipeline</td><td><span class="tag t-parity">Parity</span></td><td>Includes tool-call counts, unique agents, and tasks/hour.</td></tr>
+          <tr><td>Headless runtime start</td><td><code>orchestrator_headless_start</code></td><td><code>supervisor.sh start</code></td><td><span class="tag t-parity">Parity</span></td><td>MCP-native control added.</td></tr>
+          <tr><td>Headless runtime stop</td><td><code>orchestrator_headless_stop</code></td><td><code>supervisor.sh stop</code></td><td><span class="tag t-parity">Parity</span></td><td>MCP-native control added.</td></tr>
+          <tr><td>Headless runtime status</td><td><code>orchestrator_headless_status</code></td><td><code>supervisor.sh status</code></td><td><span class="tag t-parity">Parity</span></td><td>Machine-readable MCP status available.</td></tr>
+          <tr><td>Headless runtime restart</td><td><code>orchestrator_headless_restart</code></td><td><code>supervisor.sh restart</code></td><td><span class="tag t-parity">Parity</span></td><td>MCP lifecycle parity completed.</td></tr>
+          <tr><td>Headless runtime clean</td><td><code>orchestrator_headless_clean</code></td><td><code>supervisor.sh clean</code></td><td><span class="tag t-parity">Parity</span></td><td>MCP lifecycle parity completed.</td></tr>
+          <tr><td>tmux multi-pane UX</td><td>Not required in MCP flow</td><td><code>team_tmux.sh</code></td><td><span class="tag t-io">Headless-only</span></td><td>Convenience orchestration shell UX.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</body>
+</html>
