@@ -79,17 +79,26 @@ class HeadlessMcpToolsTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             for tool_name in ("orchestrator_headless_restart", "orchestrator_headless_clean"):
-                response = handle_tool_call(
-                    f"req-{tool_name}",
-                    {
-                        "name": tool_name,
-                        "arguments": {"project_root": str(Path(tmp))},
-                    },
-                )
+                action = tool_name.replace("orchestrator_headless_", "")
+                with patch("orchestrator_mcp_server._run_supervisor_action") as mock_action:
+                    mock_action.return_value = {
+                        "ok": True,
+                        "action": action,
+                        "project_root": str(Path(tmp)),
+                        "leader_agent": "codex",
+                        "processes": [],
+                    }
+                    response = handle_tool_call(
+                        f"req-{tool_name}",
+                        {
+                            "name": tool_name,
+                            "arguments": {"project_root": str(Path(tmp))},
+                        },
+                    )
                 content = response["result"]["content"][0]["text"]
                 payload = json.loads(content)
                 self.assertTrue(payload["ok"])
-                self.assertEqual(tool_name.replace("orchestrator_headless_", ""), payload["action"])
+                self.assertEqual(action, payload["action"])
                 self.assertEqual(str(Path(tmp)), payload["project_root"])
 
 

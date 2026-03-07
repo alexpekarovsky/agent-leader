@@ -585,6 +585,11 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
             },
         },
         {
+            "name": "orchestrator_parity_smoke",
+            "description": "Run an operational parity smoke test checking lifecycle, status, and task flow, returning a diagnostic report.",
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
             "name": "orchestrator_get_roles",
             "description": "Get current orchestrator role assignments (leader, team_members). Default leader is codex via policy unless changed.",
             "inputSchema": {"type": "object", "properties": {}},
