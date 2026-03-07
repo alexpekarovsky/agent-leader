@@ -99,6 +99,17 @@ done = [t for t in tasks if t.get("status") == "done"]
 open_blockers = [b for b in blockers if b.get("status") != "resolved"]
 open_bugs = [b for b in bugs if b.get("status") != "closed"]
 
+# Team lane counters (parity with MCP orchestrator_status)
+team_lane_counters = {}
+for t in tasks:
+    team_id = t.get("team_id") or "default"
+    if team_id not in team_lane_counters:
+        team_lane_counters[team_id] = {"total": 0, "in_progress": 0, "done": 0, "reported": 0, "assigned": 0}
+    team_lane_counters[team_id]["total"] += 1
+    s = t.get("status", "unknown")
+    if s in team_lane_counters[team_id]:
+        team_lane_counters[team_id][s] += 1
+
 # Wingman Lane Visibility
 wingman_pending = [t for t in tasks if isinstance(t.get("review_gate"), dict) and t["review_gate"].get("status") == "pending"]
 wingman_rejected = [t for t in tasks if isinstance(t.get("review_gate"), dict) and t["review_gate"].get("status") == "rejected"]
@@ -164,10 +175,12 @@ if pid_dir.exists():
 payload = {
     "timestamp": datetime.now(timezone.utc).isoformat(),
     "project_root": str(project_root),
-    "leader": roles.get("leader", "codex"),
-    "team_members": roles.get("team_members", []),
-    "task_total": len(tasks),
+    "manager": roles.get("leader", "codex"),
+    "roles": roles,
+    "task_count": len(tasks),
     "task_status_counts": dict(status_counts),
+    "team_lane_counters": team_lane_counters,
+    "bug_count": len(open_bugs),
     "in_progress": [
         {
             "id": t.get("id"),
@@ -177,15 +190,23 @@ payload = {
         }
         for t in sorted(in_progress, key=lambda x: str(x.get("updated_at", "")), reverse=True)[:8]
     ],
-    "reported_count": len(reported),
-    "assigned_count": len(assigned),
-    "done_count": len(done),
-    "open_blockers": len(open_blockers),
-    "open_bugs": len(open_bugs),
     "wingman_count": wingman_count,
     "recovery_actions": recovery_actions,
-    "agents": active_agents,
+    "active_agents": [a["agent"] for a in active_agents if a["state"] == "active"],
+    "active_agent_identities": active_agents,
     "processes": proc,
+    "metrics": {
+        "throughput": {
+            "tasks_total": len(tasks),
+            "tasks_done": len(done),
+            "tasks_reported": len(reported),
+            "tasks_in_progress": len(in_progress),
+        },
+        "reliability": {
+            "open_bugs": len(open_bugs),
+            "open_blockers": len(open_blockers),
+        },
+    },
     "log_dir_exists": log_dir.exists(),
 }
 
@@ -194,17 +215,19 @@ if as_json:
     raise SystemExit(0)
 
 # Unified Header
-leader = payload["leader"]
-team = ", ".join(sorted(payload["team_members"]))
-status_state = "Active" if any(a["state"] == "active" for a in payload["agents"]) else "Idle"
+leader = payload["manager"]
+team_members = payload["roles"].get("team_members", [])
+team = ", ".join(sorted(team_members))
+status_state = "Active" if any(a["state"] == "active" for a in active_agents) else "Idle"
 
 print(f"ORCHESTRATOR STATUS: {status_state}")
 print(f"PROJECT: {payload['project_root']}")
 print(f"LEADER: {leader} | TEAM: {team or 'none'}")
-print(f"PIPELINE: {payload['task_total']} Tasks | {payload['assigned_count']} Assigned | {len(in_progress)} IP | {payload['reported_count']} Review | {payload['done_count']} Done")
-print(f"BLOCKERS: {payload['open_blockers']} Open | BUGS: {payload['open_bugs']} Open")
+sc = payload["task_status_counts"]
+print(f"PIPELINE: {payload['task_count']} Tasks | {sc.get('assigned', 0)} Assigned | {sc.get('in_progress', 0)} IP | {sc.get('reported', 0)} Review | {sc.get('done', 0)} Done")
+print(f"BLOCKERS: {payload['metrics']['reliability']['open_blockers']} Open | BUGS: {payload['bug_count']} Open")
 
-by_agent_name = {a["agent"]: a for a in payload["agents"]}
+by_agent_name = {a["agent"]: a for a in active_agents}
 if wingman_count > 0 or "ccm" in by_agent_name or "wingman" in team.lower():
     wingman_agent = "ccm" if "ccm" in by_agent_name else "none"
     wingman_status = by_agent_name.get(wingman_agent, {}).get("state", "offline") if wingman_agent != "none" else "n/a"
@@ -227,7 +250,7 @@ for k in ordered:
     print(f"  {k:8s} {p['status']:7s} pid={p['pid'] if p['pid'] is not None else '-'}")
 print()
 print("Agents")
-for a in payload["agents"]:
+for a in payload["active_agent_identities"]:
     age = "-" if a["age_seconds"] is None else f"{a['age_seconds']}s"
     inst = a["instance_id"] or "-"
     role = a["role"] or "-"

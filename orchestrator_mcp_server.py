@@ -2003,7 +2003,11 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             if not binding["ok"]:
                 integrity["warnings"] = integrity.get("warnings", []) + binding["warnings"]
                 integrity["ok"] = False
+            in_progress_tasks = [t for t in tasks if t.get("status") == "in_progress"]
+            wingman_pending = [t for t in tasks if isinstance(t.get("review_gate"), dict) and t["review_gate"].get("status") == "pending"]
+            wingman_rejected = [t for t in tasks if isinstance(t.get("review_gate"), dict) and t["review_gate"].get("status") == "rejected"]
             payload: Dict[str, Any] = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "server": "agent-leader-orchestrator",
                 "version": __version__,
                 "root_name": ROOT_DIR.name,
@@ -2014,6 +2018,16 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "task_status_counts": by_status,
                 "team_lane_counters": _aggregate_team_lanes(tasks),
                 "bug_count": len(bugs),
+                "in_progress": [
+                    {
+                        "id": t.get("id"),
+                        "owner": t.get("owner"),
+                        "title": t.get("title"),
+                        "updated_at": t.get("updated_at"),
+                    }
+                    for t in sorted(in_progress_tasks, key=lambda x: str(x.get("updated_at", "")), reverse=True)[:8]
+                ],
+                "wingman_count": len(wingman_pending) + len(wingman_rejected),
                 "recovery_actions": live_status.get("report", {}).get("suggested_recovery_actions", []),
                 "active_agents": [agent["agent"] for agent in agents],
                 "active_agent_identities": [
