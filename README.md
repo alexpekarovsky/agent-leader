@@ -343,6 +343,15 @@ Use MCP tools instead of shell wrappers when driving runtime directly from Codex
 
 `orchestrator_headless_start` accepts the same topology knobs as the supervisor path (`leader_agent`, team ids, per-agent project roots, intervals/timeouts, optional extra workers).
 
+### Policy bundles
+Preset policies are available under `config/`:
+
+- `policy.strict-qa.json`
+- `policy.prototype-fast.json`
+- `policy.balanced.json`
+
+Select a preset by setting `ORCHESTRATOR_POLICY` in your MCP server env or shell before launching the orchestrator.
+
 ### Smoke tests
 Verify all autopilot scripts work without real CLI agents:
 ```bash
