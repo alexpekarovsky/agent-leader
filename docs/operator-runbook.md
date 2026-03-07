@@ -337,9 +337,34 @@ echo '[]' > state/bugs.json
 echo '[]' > state/blockers.json
 ```
 
-## 9. Smoke Tests
+## 9. Go/No-Go Checklist (Single-Command Validation)
 
-Run the built-in smoke test to verify all scripts work:
+Before proceeding with high-stakes autonomous execution, use the hardened parity smoke tool to validate the entire integration chain (lifecycle, roles, task state, and file bindings) in a single pass.
+
+### Execution
+
+Call the smoke tool from any connected agent (Gemini, Claude, or Codex):
+
+```
+orchestrator_parity_smoke()
+```
+
+### Interpretation
+
+| Check | Passing State | If Failed (Action) |
+|-------|---------------|-------------------|
+| `engine_loaded` | `pass` | Check `ORCHESTRATOR_ROOT` and `ORCHESTRATOR_POLICY` env vars. |
+| `leader_assigned` | `pass` | Run `orchestrator_set_role(agent="codex", role="leader")`. |
+| `task_listing` | `pass` | Inspect `state/` directory permissions and JSON integrity. |
+| `state_dir`, `bus_dir`, `config_dir` | `pass` | Ensure project is correctly bootstrapped and directories exist. |
+| `mcp_config` | `pass` | Ensure `.mcp.json` is present in the project root. |
+| `headless_status_script` | `pass` | Run `chmod +x scripts/autopilot/headless_status.sh`. |
+
+**Go Signal:** All checks `pass` and `overall_status` is `"pass"`.
+
+## 10. Scripted Smoke Tests
+
+Run the built-in scripted smoke test to verify script execution paths:
 
 ```bash
 ./scripts/autopilot/smoke_test.sh

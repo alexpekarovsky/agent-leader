@@ -1899,7 +1899,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             
             # 1. Lifecycle: Check if ORCH engine is loaded
             if ORCH is None:
-                checks.append({"name": "engine_loaded", "status": "fail", "reason": "Orchestrator engine not initialized.", "action": "Check project root binding and configuration."})
+                checks.append({"name": "engine_loaded", "status": "fail", "reason": "Orchestrator engine not initialized.", "action": "Check project root binding and configuration (ORCHESTRATOR_ROOT, ORCHESTRATOR_POLICY)."})
                 overall_status = "fail"
             else:
                 checks.append({"name": "engine_loaded", "status": "pass", "reason": "Engine loaded successfully.", "action": None})
@@ -1917,13 +1917,30 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                     tasks = ORCH.list_tasks()
                     checks.append({"name": "task_listing", "status": "pass", "reason": f"Found {len(tasks)} tasks.", "action": None})
                 except Exception as e:
-                    checks.append({"name": "task_listing", "status": "fail", "reason": f"Error listing tasks: {e}", "action": "Check task storage file integrity."})
+                    checks.append({"name": "task_listing", "status": "fail", "reason": f"Error listing tasks: {e}", "action": "Check task storage file integrity in state/ directory."})
                     overall_status = "fail"
-            
-            # 4. Check headless execution path
+
+                # 4. Storage: Check state and bus health
+                for subdir in ["state", "bus", "config"]:
+                    p = ROOT_DIR / subdir
+                    if not p.is_dir():
+                        checks.append({"name": f"{subdir}_dir", "status": "fail", "reason": f"Directory {subdir}/ missing.", "action": f"Ensure project is bootstrapped and {subdir}/ exists."})
+                        overall_status = "fail"
+                    else:
+                        checks.append({"name": f"{subdir}_dir", "status": "pass", "reason": f"Directory {subdir}/ present.", "action": None})
+
+                # 5. Config: Check .mcp.json
+                mcp_json = ROOT_DIR / ".mcp.json"
+                if not mcp_json.exists():
+                    checks.append({"name": "mcp_config", "status": "fail", "reason": ".mcp.json missing.", "action": "Ensure .mcp.json is present for project-scoped MCP binding."})
+                    overall_status = "fail"
+                else:
+                    checks.append({"name": "mcp_config", "status": "pass", "reason": ".mcp.json present.", "action": None})
+
+            # 6. Check headless execution path
             script_path = ROOT_DIR / "scripts" / "autopilot" / "headless_status.sh"
             if not script_path.exists() or not os.access(script_path, os.X_OK):
-                checks.append({"name": "headless_status_script", "status": "fail", "reason": f"Script {script_path.name} missing or not executable.", "action": "Ensure scripts are installed and executable."})
+                checks.append({"name": "headless_status_script", "status": "fail", "reason": f"Script {script_path.name} missing or not executable.", "action": "Ensure scripts/autopilot/headless_status.sh is installed and chmod +x."})
                 overall_status = "fail"
             else:
                 checks.append({"name": "headless_status_script", "status": "pass", "reason": "Headless status script is present and executable.", "action": None})
