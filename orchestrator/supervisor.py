@@ -52,6 +52,10 @@ class SupervisorConfig:
     worker_cli_timeout: int = 600
     manager_interval: int = 20
     worker_interval: int = 25
+    idle_backoff: str = "30,60,120,300,900"
+    max_idle_cycles: int = 0
+    daily_call_budget: int = 0
+    low_burn: bool = False
     leader_agent: str = "codex"
     leader_cli: str = ""
     wingman_agent: str = "ccm"
@@ -92,6 +96,14 @@ class SupervisorConfig:
                 "claude_code": "claude",
                 "gemini": "gemini",
             }.get(self.leader_agent, "codex")
+        if self.low_burn:
+            # Conservative low-burn defaults: fewer wakeups, bounded idle life.
+            if self.manager_interval <= 20:
+                self.manager_interval = 120
+            if self.worker_interval <= 25:
+                self.worker_interval = 180
+            if self.max_idle_cycles <= 0:
+                self.max_idle_cycles = 30
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +189,9 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             f" --interval {cfg.manager_interval}"
             f" --cli-timeout {cfg.manager_cli_timeout}"
             f" --log-dir {cfg.log_dir}"
+            f" --idle-backoff {cfg.idle_backoff}"
+            f" --max-idle-cycles {cfg.max_idle_cycles}"
+            f" --daily-call-budget {cfg.daily_call_budget}"
         )
     if name == "wingman":
         return (
@@ -188,6 +203,9 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             f" --interval {cfg.worker_interval}"
             f" --cli-timeout {cfg.worker_cli_timeout}"
             f" --log-dir {cfg.log_dir}"
+            f" --idle-backoff {cfg.idle_backoff}"
+            f" --max-idle-cycles {cfg.max_idle_cycles}"
+            f" --daily-call-budget {cfg.daily_call_budget}"
         )
     if name == "claude":
         return (
@@ -197,6 +215,9 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             f" --interval {cfg.worker_interval}"
             f" --cli-timeout {cfg.worker_cli_timeout}"
             f" --log-dir {cfg.log_dir}"
+            f" --idle-backoff {cfg.idle_backoff}"
+            f" --max-idle-cycles {cfg.max_idle_cycles}"
+            f" --daily-call-budget {cfg.daily_call_budget}"
         )
     if name == "gemini":
         return (
@@ -206,6 +227,9 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             f" --interval {cfg.worker_interval}"
             f" --cli-timeout {cfg.worker_cli_timeout}"
             f" --log-dir {cfg.log_dir}"
+            f" --idle-backoff {cfg.idle_backoff}"
+            f" --max-idle-cycles {cfg.max_idle_cycles}"
+            f" --daily-call-budget {cfg.daily_call_budget}"
         )
     if name == "codex_worker":
         return (
@@ -215,6 +239,9 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             f" --interval {cfg.worker_interval}"
             f" --cli-timeout {cfg.worker_cli_timeout}"
             f" --log-dir {cfg.log_dir}"
+            f" --idle-backoff {cfg.idle_backoff}"
+            f" --max-idle-cycles {cfg.max_idle_cycles}"
+            f" --daily-call-budget {cfg.daily_call_budget}"
         )
     if name == "watchdog":
         return (
@@ -267,6 +294,9 @@ class Supervisor:
                 f" --interval {self.cfg.worker_interval}"
                 f" --cli-timeout {self.cfg.worker_cli_timeout}"
                 f" --log-dir {self.cfg.log_dir}"
+                f" --idle-backoff {self.cfg.idle_backoff}"
+                f" --max-idle-cycles {self.cfg.max_idle_cycles}"
+                f" --daily-call-budget {self.cfg.daily_call_budget}"
             )
             self._extra_names.append(ew.name)
             self._extra_cmds.append(cmd)
@@ -517,6 +547,10 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> Tuple[str, Supe
     parser.add_argument("--worker-cli-timeout", type=int, default=600)
     parser.add_argument("--manager-interval", type=int, default=20)
     parser.add_argument("--worker-interval", type=int, default=25)
+    parser.add_argument("--idle-backoff", default="30,60,120,300,900")
+    parser.add_argument("--max-idle-cycles", type=int, default=0)
+    parser.add_argument("--daily-call-budget", type=int, default=0)
+    parser.add_argument("--low-burn", action="store_true")
     parser.add_argument("--leader-agent", default="codex")
     parser.add_argument("--leader-cli", default="")
     parser.add_argument("--wingman-agent", default="ccm")
@@ -544,6 +578,10 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> Tuple[str, Supe
         worker_cli_timeout=args.worker_cli_timeout,
         manager_interval=args.manager_interval,
         worker_interval=args.worker_interval,
+        idle_backoff=args.idle_backoff,
+        max_idle_cycles=args.max_idle_cycles,
+        daily_call_budget=args.daily_call_budget,
+        low_burn=args.low_burn,
         leader_agent=args.leader_agent,
         leader_cli=args.leader_cli,
         wingman_agent=args.wingman_agent,

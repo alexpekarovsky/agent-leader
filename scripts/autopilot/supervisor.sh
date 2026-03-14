@@ -18,6 +18,10 @@
 #   --worker-cli-timeout N    Worker CLI timeout in seconds (default: 600)
 #   --manager-interval N      Manager loop interval (default: 20)
 #   --worker-interval N       Worker loop interval (default: 25)
+#   --idle-backoff CSV        Idle backoff seconds list for loops (default: 30,60,120,300,900)
+#   --max-idle-cycles N       Auto-exit loop after N idle cycles (0 disables)
+#   --daily-call-budget N     Per-process daily LLM call budget (0 disables)
+#   --low-burn                Apply conservative low-burn defaults
 #   --leader-agent AGENT      Leader agent id (default: codex)
 #   --leader-cli CLI          Leader CLI (default: derived from leader agent)
 #   --wingman-agent AGENT     Wingman agent id (default: ccm)

@@ -1370,11 +1370,31 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
         for task in latest_tasks
         if task.get("status") in pending_statuses
     ]
-    ORCH.publish_event(
-        event_type="manager.task_contracts",
-        source=ORCH.manager_agent(),
-        payload={"contracts": contracts},
-    )
+
+    last_contracts_path = ORCH.state_dir / "last_published_contracts.json"
+    last_contracts = []
+    if last_contracts_path.exists():
+        try:
+            last_contracts = json.loads(last_contracts_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    if contracts != last_contracts:
+        ORCH.publish_event(
+            event_type="manager.task_contracts",
+            source=ORCH.manager_agent(),
+            payload={"contracts": contracts},
+        )
+        try:
+            last_contracts_path.write_text(json.dumps(contracts, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+    elif not contracts:
+        ORCH.publish_event(
+            event_type="manager.idle_heartbeat",
+            source=ORCH.manager_agent(),
+            payload={"message": "No pending tasks."},
+        )
 
     # Evaluate unsupervised stop/escalation policy.
     stop_policy = ORCH.evaluate_stop_policy()

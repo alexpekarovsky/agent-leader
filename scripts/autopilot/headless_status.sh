@@ -172,6 +172,32 @@ if pid_dir.exists():
             proc[name] = proc_status(name)
             known.add(name)
 
+def _collect_budget_metrics(budgets_dir: Path):
+    """Read .budget-*-YYYYMMDD.count files and report daily consumption."""
+    import fnmatch
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+    result = {}
+    if not budgets_dir.exists():
+        return result
+    try:
+        for name in sorted(budgets_dir.iterdir()):
+            if not name.name.startswith(".budget-") or not name.name.endswith(".count"):
+                continue
+            if stamp not in name.name:
+                continue
+            # .budget-{key}-{YYYYMMDD}.count
+            parts = name.stem  # .budget-worker-codex-codex-20260314
+            key = parts[len(".budget-"):-len(f"-{stamp}")]
+            try:
+                count = int(name.read_text(encoding="utf-8").strip())
+            except Exception:
+                count = 0
+            result[key] = count
+    except Exception:
+        pass
+    return result
+
+
 payload = {
     "timestamp": datetime.now(timezone.utc).isoformat(),
     "project_root": str(project_root),
@@ -207,6 +233,7 @@ payload = {
             "open_blockers": len(open_blockers),
         },
     },
+    "budget": _collect_budget_metrics(log_dir),
     "log_dir_exists": log_dir.exists(),
 }
 
@@ -255,6 +282,13 @@ for a in payload["active_agent_identities"]:
     inst = a["instance_id"] or "-"
     role = a["role"] or "-"
     print(f"  {a['agent']:12s} {a['state']:7s} age={age:>6s} instance={inst:20s} role={role}")
+budget = payload.get("budget", {})
+if budget:
+    print()
+    print("Daily Budget")
+    for bkey, bcount in sorted(budget.items()):
+        print(f"  {bkey}: {bcount} calls today")
+
 print()
 print("Active Tasks")
 if not payload["in_progress"]:
