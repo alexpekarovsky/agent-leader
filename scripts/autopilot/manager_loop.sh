@@ -12,6 +12,9 @@ ONCE=false
 LOG_DIR="$ROOT_DIR/.autopilot-logs"
 MAX_LOG_FILES=200
 CLI_TIMEOUT=300
+IDLE_BACKOFF="30,60,120,300,900"
+MAX_IDLE_CYCLES=0
+DAILY_CALL_BUDGET=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -22,6 +25,9 @@ while [[ $# -gt 0 ]]; do
     --log-dir) LOG_DIR="$2"; shift 2 ;;
     --max-logs) MAX_LOG_FILES="$2"; shift 2 ;;
     --cli-timeout) CLI_TIMEOUT="$2"; shift 2 ;;
+    --idle-backoff) IDLE_BACKOFF="$2"; shift 2 ;;
+    --max-idle-cycles) MAX_IDLE_CYCLES="$2"; shift 2 ;;
+    --daily-call-budget) DAILY_CALL_BUDGET="$2"; shift 2 ;;
     --once) ONCE=true; shift ;;
     *) log ERROR "Unknown arg: $1"; exit 1 ;;
   esac
@@ -31,9 +37,55 @@ require_cmd "$CLI"
 mkdir_logs "$LOG_DIR"
 
 cycle=0
+idle_streak=0
+
+manager_has_actionable_work() {
+  python3 - "$PROJECT_ROOT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+tasks_path = root / "state" / "tasks.json"
+if not tasks_path.exists():
+    raise SystemExit(1)
+try:
+    tasks = json.loads(tasks_path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+if not isinstance(tasks, list):
+    raise SystemExit(1)
+actionable = {"assigned", "reported", "bug_open", "blocked"}
+for task in tasks:
+    if str(task.get("status", "")).strip().lower() in actionable:
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 while true; do
   cycle=$((cycle + 1))
   cycle_rc=0
+
+  if [[ "$ONCE" != true ]]; then
+    if ! manager_has_actionable_work; then
+      idle_streak=$((idle_streak + 1))
+      sleep_s="$(backoff_interval_for_streak "$idle_streak" "$IDLE_BACKOFF" "$INTERVAL")"
+      log INFO "idle gate: no actionable manager work (streak=$idle_streak sleep=${sleep_s}s)"
+      if [[ "$MAX_IDLE_CYCLES" =~ ^[0-9]+$ ]] && (( MAX_IDLE_CYCLES > 0 )) && (( idle_streak >= MAX_IDLE_CYCLES )); then
+        log INFO "max idle cycles reached ($MAX_IDLE_CYCLES); exiting manager loop to save tokens"
+        exit 0
+      fi
+      sleep_with_jitter "$sleep_s"
+      continue
+    fi
+    idle_streak=0
+    if ! consume_daily_budget "$DAILY_CALL_BUDGET" "manager-${CLI}-${LEADER_AGENT}" "$LOG_DIR"; then
+      log WARN "daily call budget exhausted (budget=$DAILY_CALL_BUDGET); exiting manager loop"
+      exit 0
+    fi
+  fi
+
   ts="$(date '+%Y%m%d-%H%M%S')"
   prompt_file="$(mktemp)"
   out_file="$LOG_DIR/manager-${CLI}-${ts}.log"

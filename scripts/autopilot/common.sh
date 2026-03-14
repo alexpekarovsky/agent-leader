@@ -141,3 +141,51 @@ sleep_with_jitter() {
   local jitter=$(( RANDOM % 5 ))
   sleep $(( base + jitter ))
 }
+
+backoff_interval_for_streak() {
+  local streak="${1:-1}"
+  local csv="${2:-30,60,120,300,900}"
+  local fallback="${3:-60}"
+  local arr=()
+  local IFS=','
+  read -r -a arr <<< "$csv"
+  local idx=$(( streak - 1 ))
+  if (( idx < 0 )); then
+    idx=0
+  fi
+  if (( idx >= ${#arr[@]} )); then
+    idx=$(( ${#arr[@]} - 1 ))
+  fi
+  local val="${arr[$idx]:-$fallback}"
+  if [[ ! "$val" =~ ^[0-9]+$ ]] || (( val <= 0 )); then
+    val="$fallback"
+  fi
+  echo "$val"
+}
+
+consume_daily_budget() {
+  local budget="${1:-0}"
+  local key="${2:-default}"
+  local root="${3:-.}"
+  if [[ ! "$budget" =~ ^[0-9]+$ ]] || (( budget <= 0 )); then
+    return 0
+  fi
+  mkdir -p "$root"
+  local stamp
+  stamp="$(date '+%Y%m%d')"
+  local safe_key
+  safe_key="$(echo "$key" | tr -cs 'a-zA-Z0-9._-' '_')"
+  local file="$root/.budget-${safe_key}-${stamp}.count"
+  local current=0
+  if [[ -f "$file" ]]; then
+    current="$(cat "$file" 2>/dev/null || echo 0)"
+  fi
+  if [[ ! "$current" =~ ^[0-9]+$ ]]; then
+    current=0
+  fi
+  if (( current >= budget )); then
+    return 1
+  fi
+  echo $(( current + 1 )) > "$file"
+  return 0
+}
