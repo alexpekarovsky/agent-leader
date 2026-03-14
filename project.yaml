@@ -83,6 +83,18 @@ version:
       status: done
       tags: [backend, metrics, observability]
 
+    - id: headless-low-burn-controls
+      title: Add idle gate, backoff, budget guardrails, and low-burn supervisor defaults
+      effort: M
+      status: done
+      tags: [headless, reliability, cost-control]
+
+    - id: low-burn-acceptance-benchmark
+      title: Certify >=90% idle control-plane reduction with benchmark evidence
+      effort: S
+      status: done
+      tags: [qa, benchmark, cost-control]
+
     - id: policy-bundle-presets
       title: Add policy bundles for strict QA, prototype, and balanced modes
       effort: M

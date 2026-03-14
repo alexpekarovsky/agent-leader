@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from orchestrator.supervisor import SupervisorConfig, proc_cmd
+from orchestrator.supervisor import SupervisorConfig, proc_cmd, build_config_from_args
 
 
 def _default_cfg(**overrides) -> SupervisorConfig:
@@ -43,6 +43,14 @@ class SupervisorConfigDefaultsTests(unittest.TestCase):
 
     def test_default_low_burn_false(self):
         cfg = _default_cfg()
+        self.assertFalse(cfg.low_burn)
+
+    def test_parser_defaults_to_low_burn_enabled(self):
+        _action, cfg = build_config_from_args(["status"])
+        self.assertTrue(cfg.low_burn)
+
+    def test_parser_high_throughput_disables_low_burn(self):
+        _action, cfg = build_config_from_args(["status", "--high-throughput"])
         self.assertFalse(cfg.low_burn)
 
 

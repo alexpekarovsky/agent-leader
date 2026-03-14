@@ -71,7 +71,13 @@ EXPECTED_STATUS_KEYS = {
 }
 
 EXPECTED_METRICS_KEYS = {"throughput", "timings_seconds", "reliability", "usage", "code_output", "efficiency"}
-EXPECTED_USAGE_KEYS = {"unique_agents_seen", "unique_agents_all_time", "tool_call_counts_recent"}
+EXPECTED_USAGE_KEYS = {
+    "unique_agents_seen",
+    "unique_agents_all_time",
+    "tool_call_counts_recent",
+    "daily_budget_calls",
+    "daily_budget_by_process",
+}
 
 EXPECTED_AGENT_IDENTITY_KEYS = {"agent", "instance_id", "status", "last_seen"}
 

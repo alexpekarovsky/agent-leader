@@ -1642,6 +1642,31 @@ def _collect_audit_metrics() -> Dict[str, int]:
     return counts
 
 
+def _collect_budget_metrics() -> Dict[str, Any]:
+    """Collect daily headless loop budget counters from .autopilot-logs."""
+    log_dir = ROOT_DIR / ".autopilot-logs"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+    by_process: Dict[str, int] = {}
+    if not log_dir.exists():
+        return {"total_calls_today": 0, "by_process": by_process}
+    try:
+        for path in log_dir.glob(f".budget-*-{stamp}.count"):
+            name = path.name
+            prefix = ".budget-"
+            suffix = f"-{stamp}.count"
+            if not (name.startswith(prefix) and name.endswith(suffix)):
+                continue
+            key = name[len(prefix):-len(suffix)]
+            try:
+                count = int(path.read_text(encoding="utf-8").strip())
+            except Exception:
+                count = 0
+            by_process[key] = count
+    except Exception:
+        pass
+    return {"total_calls_today": sum(by_process.values()), "by_process": by_process}
+
+
 def _aggregate_team_lanes(tasks: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
     """Aggregate task counts by team_id and status for per-team lane visibility."""
     team_lanes: Dict[str, Dict[str, int]] = {}
@@ -1708,6 +1733,7 @@ def _status_metrics(tasks: List[Dict[str, Any]], bugs_open: List[Dict[str, Any]]
 
     report_metrics = _report_metrics_snapshot()
     tool_calls = _collect_audit_metrics()
+    budget_metrics = _collect_budget_metrics()
 
     return {
         "throughput": {
@@ -1736,6 +1762,8 @@ def _status_metrics(tasks: List[Dict[str, Any]], bugs_open: List[Dict[str, Any]]
             "unique_agents_seen": len(unique_agents),
             "unique_agents_all_time": max(len(unique_agents), all_time_agents_count),
             "tool_call_counts_recent": tool_calls,
+            "daily_budget_calls": budget_metrics.get("total_calls_today", 0),
+            "daily_budget_by_process": budget_metrics.get("by_process", {}),
         },
         "code_output": {
             **report_metrics.get("totals", {}),
