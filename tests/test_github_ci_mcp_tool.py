@@ -35,6 +35,35 @@ class GithubCiMcpToolTests(unittest.TestCase):
         self.assertEqual("backend-tests", payload["name"])
         self.assertEqual("abc123", payload["sha"])
 
+    def test_handle_tool_call_normalize_github_ci_accepts_json_string(self) -> None:
+        from orchestrator_mcp_server import handle_tool_call
+
+        response = handle_tool_call(
+            "req-3",
+            {
+                "name": "orchestrator_normalize_github_ci",
+                "arguments": {
+                    "payload": '{"name":"lint","status":"in_progress","conclusion":null}'
+                },
+            },
+        )
+        payload = json.loads(response["result"]["content"][0]["text"])
+        self.assertEqual("running", payload["state"])
+        self.assertEqual("lint", payload["name"])
+
+    def test_handle_tool_call_normalize_github_ci_rejects_non_object(self) -> None:
+        from orchestrator_mcp_server import handle_tool_call
+
+        response = handle_tool_call(
+            "req-4",
+            {
+                "name": "orchestrator_normalize_github_ci",
+                "arguments": {"payload": []},
+            },
+        )
+        self.assertIn("error", response)
+        self.assertIn("payload must be an object", response["error"]["message"])
+
 
 if __name__ == "__main__":
     unittest.main()
