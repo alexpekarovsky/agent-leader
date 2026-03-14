@@ -99,7 +99,7 @@ version:
     - id: quality-gate-system
       title: "Plankton-style quality gate: automated arch violations, missing tests, bad patterns, style checks before PR"
       effort: L
-      status: planned
+      status: in_progress
       tags: [qa, quality-gate, governance]
       inspiration: ralph
 
