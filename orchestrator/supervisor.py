@@ -55,6 +55,7 @@ class SupervisorConfig:
     idle_backoff: str = "30,60,120,300,900"
     max_idle_cycles: int = 0
     daily_call_budget: int = 0
+    event_driven: bool = False
     low_burn: bool = False
     leader_agent: str = "codex"
     leader_cli: str = ""
@@ -180,6 +181,9 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
     def _team_arg(tid: str) -> str:
         return f" --team-id {tid}" if tid else ""
 
+    def _event_driven_arg() -> str:
+        return " --event-driven" if cfg.event_driven else ""
+
     if name == "manager":
         return (
             f"{scripts}/manager_loop.sh"
@@ -206,6 +210,7 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             f" --idle-backoff {cfg.idle_backoff}"
             f" --max-idle-cycles {cfg.max_idle_cycles}"
             f" --daily-call-budget {cfg.daily_call_budget}"
+            f"{_event_driven_arg()}"
         )
     if name == "claude":
         return (
@@ -218,6 +223,7 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             f" --idle-backoff {cfg.idle_backoff}"
             f" --max-idle-cycles {cfg.max_idle_cycles}"
             f" --daily-call-budget {cfg.daily_call_budget}"
+            f"{_event_driven_arg()}"
         )
     if name == "gemini":
         return (
@@ -230,6 +236,7 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             f" --idle-backoff {cfg.idle_backoff}"
             f" --max-idle-cycles {cfg.max_idle_cycles}"
             f" --daily-call-budget {cfg.daily_call_budget}"
+            f"{_event_driven_arg()}"
         )
     if name == "codex_worker":
         return (
@@ -242,6 +249,7 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             f" --idle-backoff {cfg.idle_backoff}"
             f" --max-idle-cycles {cfg.max_idle_cycles}"
             f" --daily-call-budget {cfg.daily_call_budget}"
+            f"{_event_driven_arg()}"
         )
     if name == "watchdog":
         return (
@@ -550,7 +558,9 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> Tuple[str, Supe
     parser.add_argument("--idle-backoff", default="30,60,120,300,900")
     parser.add_argument("--max-idle-cycles", type=int, default=0)
     parser.add_argument("--daily-call-budget", type=int, default=0)
-    parser.add_argument("--low-burn", action="store_true")
+    parser.add_argument("--low-burn", dest="low_burn", action="store_true")
+    parser.add_argument("--high-throughput", dest="low_burn", action="store_false")
+    parser.set_defaults(low_burn=True)
     parser.add_argument("--leader-agent", default="codex")
     parser.add_argument("--leader-cli", default="")
     parser.add_argument("--wingman-agent", default="ccm")

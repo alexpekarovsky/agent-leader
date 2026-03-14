@@ -2985,6 +2985,30 @@ class Orchestrator:
                     "set ORCHESTRATOR_ALLOW_TASK_COUNT_SHRINK=1 to override intentionally"
                 )
         self._write_json(self.tasks_path, tasks)
+        self._touch_wakeup_signals()
+
+    def _touch_wakeup_signals(self) -> None:
+        """Touch per-agent wakeup signal files so event-driven loops can detect changes.
+
+        Creates/updates state/.wakeup-{agent} for each agent that owns an
+        assigned or bug_open task.  Workers using --event-driven watch these
+        files instead of polling on a timer.
+        """
+        try:
+            tasks = self._read_json(self.tasks_path)
+            if not isinstance(tasks, list):
+                return
+            agents_with_work: set = set()
+            for t in tasks:
+                if str(t.get("status", "")).strip().lower() in {"assigned", "bug_open"}:
+                    owner = str(t.get("owner", "")).strip()
+                    if owner:
+                        agents_with_work.add(owner)
+            for agent in agents_with_work:
+                signal_path = self.state_dir / f".wakeup-{agent}"
+                signal_path.write_text(self._now(), encoding="utf-8")
+        except Exception:
+            pass  # Best-effort; never block task mutations
 
     @staticmethod
     def _write_json(path: Path, value: Any) -> None:

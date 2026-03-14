@@ -17,6 +17,9 @@ CLI_TIMEOUT=600
 IDLE_BACKOFF="30,60,120,300,900"
 MAX_IDLE_CYCLES=0
 DAILY_CALL_BUDGET=0
+EVENT_DRIVEN=false
+EVENT_POLL_INTERVAL=2
+EVENT_MAX_WAIT=300
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -32,6 +35,9 @@ while [[ $# -gt 0 ]]; do
     --idle-backoff) IDLE_BACKOFF="$2"; shift 2 ;;
     --max-idle-cycles) MAX_IDLE_CYCLES="$2"; shift 2 ;;
     --daily-call-budget) DAILY_CALL_BUDGET="$2"; shift 2 ;;
+    --event-driven) EVENT_DRIVEN=true; shift ;;
+    --event-poll-interval) EVENT_POLL_INTERVAL="$2"; shift 2 ;;
+    --event-max-wait) EVENT_MAX_WAIT="$2"; shift 2 ;;
     --once) ONCE=true; shift ;;
     *) log ERROR "Unknown arg: $1"; exit 1 ;;
   esac
@@ -48,6 +54,15 @@ if [[ "$LANE" != "default" && "$LANE" != "wingman" ]]; then
 fi
 
 require_cmd "$CLI"
+case "$CLI" in
+  codex|claude|gemini)
+    ;;
+  *)
+    log ERROR "Unsupported CLI: $CLI"
+    log ERROR "worker cycle failed rc=2"
+    exit 2
+    ;;
+esac
 mkdir_logs "$LOG_DIR"
 
 cycle=0
@@ -105,14 +120,30 @@ while true; do
   if [[ "$ONCE" != true ]]; then
     if ! worker_has_claimable_work; then
       idle_streak=$((idle_streak + 1))
-      sleep_s="$(backoff_interval_for_streak "$idle_streak" "$IDLE_BACKOFF" "$INTERVAL")"
-      log INFO "idle gate: no claimable work for $AGENT (streak=$idle_streak sleep=${sleep_s}s)"
-      if [[ "$MAX_IDLE_CYCLES" =~ ^[0-9]+$ ]] && (( MAX_IDLE_CYCLES > 0 )) && (( idle_streak >= MAX_IDLE_CYCLES )); then
-        log INFO "max idle cycles reached ($MAX_IDLE_CYCLES); exiting worker loop for $AGENT"
-        exit 0
+      log INFO "idle gate: no claimable work for $AGENT (streak=$idle_streak)"
+      if [[ "$EVENT_DRIVEN" == true ]]; then
+        log INFO "idle gate: waiting for wakeup signal for $AGENT (streak=$idle_streak max_wait=${EVENT_MAX_WAIT}s)"
+        if wait_for_task_signal "$PROJECT_ROOT" "$AGENT" "$EVENT_MAX_WAIT" "$EVENT_POLL_INTERVAL"; then
+          log INFO "wakeup signal received for $AGENT; checking for work"
+          continue  # Re-check immediately
+        else
+          log INFO "idle gate: no wakeup signal after ${EVENT_MAX_WAIT}s for $AGENT (streak=$idle_streak)"
+          if [[ "$MAX_IDLE_CYCLES" =~ ^[0-9]+$ ]] && (( MAX_IDLE_CYCLES > 0 )) && (( idle_streak >= MAX_IDLE_CYCLES )); then
+            log INFO "max idle cycles reached ($MAX_IDLE_CYCLES); exiting worker loop for $AGENT"
+            exit 0
+          fi
+          continue  # Retry with incremented streak
+        fi
+      else
+        sleep_s="$(backoff_interval_for_streak "$idle_streak" "$IDLE_BACKOFF" "$INTERVAL")"
+        log INFO "idle gate: no claimable work for $AGENT (streak=$idle_streak sleep=${sleep_s}s)"
+        if [[ "$MAX_IDLE_CYCLES" =~ ^[0-9]+$ ]] && (( MAX_IDLE_CYCLES > 0 )) && (( idle_streak >= MAX_IDLE_CYCLES )); then
+          log INFO "max idle cycles reached ($MAX_IDLE_CYCLES); exiting worker loop for $AGENT"
+          exit 0
+        fi
+        sleep_with_jitter "$sleep_s"
+        continue
       fi
-      sleep_with_jitter "$sleep_s"
-      continue
     fi
     idle_streak=0
     if ! consume_daily_budget "$DAILY_CALL_BUDGET" "worker-${CLI}-${AGENT}" "$LOG_DIR"; then

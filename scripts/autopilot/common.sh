@@ -189,3 +189,31 @@ consume_daily_budget() {
   echo $(( current + 1 )) > "$file"
   return 0
 }
+
+wait_for_task_signal() {
+  local project_root="$1"
+  local agent="$2"
+  local max_wait="${3:-300}"
+  local poll_interval="${4:-2}"
+  local signal_file="$project_root/state/.wakeup-${agent}"
+
+  # Record baseline mtime (0 if file doesn't exist yet).
+  local baseline_mtime=0
+  if [[ -f "$signal_file" ]]; then
+    baseline_mtime="$(python3 -c "import os; print(int(os.path.getmtime('$signal_file') * 1000))" 2>/dev/null || echo 0)"
+  fi
+
+  local waited=0
+  while (( waited < max_wait )); do
+    sleep "$poll_interval"
+    waited=$((waited + poll_interval))
+    if [[ -f "$signal_file" ]]; then
+      local current_mtime
+      current_mtime="$(python3 -c "import os; print(int(os.path.getmtime('$signal_file') * 1000))" 2>/dev/null || echo 0)"
+      if [[ "$current_mtime" != "$baseline_mtime" ]]; then
+        return 0  # Signal detected — new work available
+      fi
+    fi
+  done
+  return 1  # Timeout — no signal
+}
