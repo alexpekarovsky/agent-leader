@@ -65,6 +65,29 @@ Conservative hard cap example:
   --max-idle-cycles 30
 ```
 
+## Rollback Guard
+
+If latency or throughput regresses after rollout:
+
+```bash
+./scripts/autopilot/supervisor.sh stop --project-root /Users/alex/Projects/agent-leader
+./scripts/autopilot/supervisor.sh clean --project-root /Users/alex/Projects/agent-leader
+./scripts/autopilot/supervisor.sh start \
+  --project-root /Users/alex/Projects/agent-leader \
+  --high-throughput \
+  --daily-call-budget 0 \
+  --max-idle-cycles 0
+```
+
+This restores the legacy high-frequency cadence while preserving current code.
+
+## Go / No-Go Checklist
+
+- `GO` if idle-path tests pass and no active-task latency regression is observed.
+- `GO` if daily budget counters remain within configured limits.
+- `NO-GO` if wakeup latency blocks urgent assigned tasks.
+- `NO-GO` if manager/worker repeatedly fail to wake on new assignments.
+
 ## Residual Risk
 
 - Event-driven wakeup relies on best-effort file touch signals; fallback polling remains available.
