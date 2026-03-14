@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 
 from orchestrator.doctor import build_doctor_payload
 from orchestrator.engine import Orchestrator
+from orchestrator.github_ci import normalize_github_ci_result
 from orchestrator.policy import Policy
 from orchestrator.supervisor import ExtraWorker, Supervisor, SupervisorConfig
 
@@ -612,6 +613,17 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
             "name": "orchestrator_parity_smoke",
             "description": "Run an operational parity smoke test checking lifecycle, status, and task flow, returning a diagnostic report.",
             "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "orchestrator_normalize_github_ci",
+            "description": "Normalize a GitHub CI/check payload into an orchestration-friendly summary.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "payload": {"type": "object", "description": "Raw check_run/workflow fragment."},
+                },
+                "required": ["payload"],
+            },
         },
         {
             "name": "orchestrator_get_roles",
@@ -2037,6 +2049,15 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "checks": checks,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
+            return _ok_and_audit(request_id, name, args, payload)
+
+        if name == "orchestrator_normalize_github_ci":
+            raw = args.get("payload", {})
+            if isinstance(raw, str):
+                raw = _parse_json_argument(raw, "object")
+            if not isinstance(raw, dict):
+                raise ValueError("payload must be an object")
+            payload = normalize_github_ci_result(raw)
             return _ok_and_audit(request_id, name, args, payload)
 
         if name == "orchestrator_headless_status":
