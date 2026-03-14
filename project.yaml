@@ -118,7 +118,7 @@ version:
     - id: codebase-comprehension-phase
       title: "Add comprehend_project task type: parallel workers map codebase structure before planning begins"
       effort: M
-      status: planned
+      status: in_progress
       tags: [orchestration, comprehension, onboarding]
       inspiration: ralph
 
