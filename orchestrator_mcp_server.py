@@ -1080,6 +1080,50 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                 "required": ["topic", "options", "votes"],
             },
         },
+        {
+            "name": "orchestrator_create_consult",
+            "description": "Create a consult-only review request. Manager asks team for design/bug/architecture feedback without creating tasks or triggering execution.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string", "description": "Requesting agent id (usually manager)."},
+                    "consult_type": {"type": "string", "description": "design|bug|architecture|general"},
+                    "question": {"type": "string", "description": "The review question or topic."},
+                    "context": {"type": "string", "description": "Optional supporting context (code refs, links, background).", "default": ""},
+                    "target_agents": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of agents to target. Consult auto-closes when all respond.",
+                    },
+                },
+                "required": ["source", "consult_type", "question"],
+            },
+        },
+        {
+            "name": "orchestrator_respond_consult",
+            "description": "Team member responds to a consult-only review request. No task claim or execution side effects.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "consult_id": {"type": "string"},
+                    "agent": {"type": "string", "description": "Responding agent id."},
+                    "body": {"type": "string", "description": "Structured review response."},
+                },
+                "required": ["consult_id", "agent", "body"],
+            },
+        },
+        {
+            "name": "orchestrator_list_consults",
+            "description": "List consult-only review requests. Filter by status, type, or agent involvement.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "description": "open|closed"},
+                    "consult_type": {"type": "string", "description": "design|bug|architecture|general"},
+                    "agent": {"type": "string", "description": "Filter by source or target agent."},
+                },
+            },
+        },
     ]
 
     return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": tools}}
@@ -2640,6 +2684,35 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 rationale=rationale,
             )
             return _ok_and_audit(request_id, name, args, {"decision_path": str(path)})
+
+        if name == "orchestrator_create_consult":
+            target_agents = args.get("target_agents", [])
+            if isinstance(target_agents, str):
+                target_agents = _parse_json_argument(target_agents, "array")
+            consult = ORCH.create_consult(
+                source=args["source"],
+                consult_type=args["consult_type"],
+                question=args["question"],
+                context=args.get("context", ""),
+                target_agents=target_agents,
+            )
+            return _ok_and_audit(request_id, name, args, consult)
+
+        if name == "orchestrator_respond_consult":
+            consult = ORCH.respond_consult(
+                consult_id=args["consult_id"],
+                agent=args["agent"],
+                body=args["body"],
+            )
+            return _ok_and_audit(request_id, name, args, consult)
+
+        if name == "orchestrator_list_consults":
+            consults = ORCH.list_consults(
+                status=args.get("status"),
+                consult_type=args.get("consult_type"),
+                agent=args.get("agent"),
+            )
+            return _ok_and_audit(request_id, name, args, consults)
 
         raise ValueError(f"Unknown tool: {name}")
     except Exception as exc:

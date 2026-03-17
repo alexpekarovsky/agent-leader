@@ -57,6 +57,7 @@ class Orchestrator:
         self.claim_overrides_path = self.state_dir / "claim_overrides.json"
         self.report_retry_queue_path = self.state_dir / "report_retry_queue.json"
         self.roles_path = self.state_dir / "roles.json"
+        self.consults_path = self.state_dir / "consults.json"
         self.decisions_dir = self.root / "decisions"
         self.decisions_dir.mkdir(parents=True, exist_ok=True)
         self.state_lock_path = self.state_dir / ".state.lock"
@@ -100,6 +101,8 @@ class Orchestrator:
             self.claim_overrides_path.write_text("{}\n", encoding="utf-8")
         if not self.report_retry_queue_path.exists():
             self.report_retry_queue_path.write_text("[]\n", encoding="utf-8")
+        if not self.consults_path.exists():
+            self.consults_path.write_text("[]\n", encoding="utf-8")
         if not self.roles_path.exists():
             self.roles_path.write_text(
                 json.dumps(
@@ -1445,6 +1448,128 @@ class Orchestrator:
             "skipped_young": skipped_young,
             "threshold_seconds": stale_after_seconds,
         }
+
+    # ------------------------------------------------------------------
+    # Consult-only team review (no task/execution side effects)
+    # ------------------------------------------------------------------
+
+    def create_consult(
+        self,
+        source: str,
+        consult_type: str,
+        question: str,
+        context: str = "",
+        target_agents: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Create a consult-only review request.
+
+        This does NOT create a task, claim, or trigger any execution.
+        It stores a lightweight consult record and emits an event so
+        targeted agents can respond asynchronously.
+        """
+        valid_types = ("design", "bug", "architecture", "general")
+        if consult_type not in valid_types:
+            raise ValueError(f"Invalid consult_type '{consult_type}'. Must be one of: {', '.join(valid_types)}")
+
+        consult_id = f"CONSULT-{uuid.uuid4().hex[:8]}"
+        consult = {
+            "id": consult_id,
+            "source": source,
+            "consult_type": consult_type,
+            "question": question,
+            "context": context,
+            "target_agents": target_agents or [],
+            "responses": [],
+            "status": "open",
+            "created_at": self._now(),
+        }
+
+        with self._state_lock():
+            consults = self._read_json_list(self.consults_path)
+            consults.append(consult)
+            self._write_json(self.consults_path, consults)
+
+        payload: Dict[str, Any] = {
+            "consult_id": consult_id,
+            "source": source,
+            "consult_type": consult_type,
+            "question": question,
+        }
+        if target_agents:
+            payload["audience"] = target_agents
+        self.bus.emit("consult.created", payload, source=source)
+        return consult
+
+    def respond_consult(
+        self,
+        consult_id: str,
+        agent: str,
+        body: str,
+    ) -> Dict[str, Any]:
+        """Add a structured response to a consult request.
+
+        Does not create tasks or trigger execution. The consult is
+        closed automatically when all targeted agents have responded,
+        or it can remain open for additional input.
+        """
+        with self._state_lock():
+            consults = self._read_json_list(self.consults_path)
+            consult = next((c for c in consults if c["id"] == consult_id), None)
+            if consult is None:
+                raise ValueError(f"Consult not found: {consult_id}")
+            if consult.get("status") == "closed":
+                raise ValueError(f"Consult already closed: {consult_id}")
+
+            response = {
+                "agent": agent,
+                "body": body,
+                "responded_at": self._now(),
+            }
+            consult["responses"].append(response)
+            consult["updated_at"] = self._now()
+
+            # Auto-close when all targeted agents have responded.
+            target_agents = consult.get("target_agents", [])
+            if target_agents:
+                responded_agents = {r["agent"] for r in consult["responses"]}
+                if set(target_agents).issubset(responded_agents):
+                    consult["status"] = "closed"
+                    consult["closed_at"] = self._now()
+
+            self._write_json(self.consults_path, consults)
+
+        self.bus.emit(
+            "consult.responded",
+            {
+                "consult_id": consult_id,
+                "agent": agent,
+                "status": consult["status"],
+            },
+            source=agent,
+        )
+        return consult
+
+    def list_consults(
+        self,
+        status: Optional[str] = None,
+        consult_type: Optional[str] = None,
+        agent: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List consults with optional filtering.
+
+        ``agent`` matches either source or target_agents.
+        """
+        consults = self._read_json_list(self.consults_path)
+        if status:
+            consults = [c for c in consults if c.get("status") == status]
+        if consult_type:
+            consults = [c for c in consults if c.get("consult_type") == consult_type]
+        if agent:
+            consults = [
+                c for c in consults
+                if c.get("source") == agent or agent in c.get("target_agents", [])
+            ]
+        return consults
 
     # ------------------------------------------------------------------
     # Unsupervised stop / escalation policy
