@@ -100,6 +100,8 @@ if agent and cli in valid_agents and agent not in valid_agents[cli]:
         f.write(msg.encode("utf-8"))
     sys.exit(1)
 
+env = os.environ.copy()
+
 if cli == "codex":
     cmd = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "-C", cwd, "-"]
 elif cli == "claude":
@@ -113,8 +115,6 @@ elif cli == "gemini":
 else:
     print(f"Unsupported CLI: {cli}", file=sys.stderr)
     sys.exit(2)
-
-env = os.environ.copy()
 if agent: env["ORCHESTRATOR_AGENT"] = agent
 if role: env["ORCHESTRATOR_ROLE"] = role
 if instance_id: env["ORCHESTRATOR_INSTANCE_ID"] = instance_id

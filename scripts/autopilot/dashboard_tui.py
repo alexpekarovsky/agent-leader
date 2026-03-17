@@ -11,7 +11,7 @@ import sys
 import time
 from collections import Counter, deque
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -223,6 +223,15 @@ class DashboardSnapshot:
     agent_diversity: int = 0
     total_validations: int = 0
     avg_review_loop_depth: Optional[float] = None
+    # Claude-specific telemetry
+    claude_throughput_per_hour: Optional[float] = None
+    claude_validation_contribution_percent: Optional[float] = None
+    claude_latest_lane_event_time: Optional[datetime] = None
+    claude_latest_lane_event_type: Optional[str] = None
+    wingman_throughput_per_hour: Optional[float] = None
+    wingman_validation_contribution_percent: Optional[float] = None
+    wingman_latest_lane_event_time: Optional[datetime] = None
+    wingman_latest_lane_event_type: Optional[str] = None
 
 
 def _task_matches_project(task: Dict[str, Any], project_root: str) -> bool:
@@ -268,6 +277,31 @@ def _read_recent_events(root: Path, limit: int = 12) -> List[Dict[str, Any]]:
         if len(events) >= limit:
             break
     return events
+
+
+def _read_agent_events(root: Path, agent_name: str, limit: int = 12) -> List[Dict[str, Any]]:
+    events_tail = _tail_lines(root / "bus" / "events.jsonl", 600)
+    agent_events: List[Dict[str, Any]] = []
+    for line in reversed(events_tail):
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        et = str(ev.get("type", "")).strip()
+        source = str(ev.get("source", "")).strip()
+        if source == agent_name:
+            payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
+            agent_events.append(
+                {
+                    "time": str(ev.get("timestamp", "")),
+                    "type": et,
+                    "source": source,
+                    "task_id": _extract_task_id(payload),
+                }
+            )
+            if len(agent_events) >= limit:
+                break
+    return agent_events
 
 
 def _read_supervisor_processes(root: Path) -> List[Dict[str, Any]]:
@@ -344,7 +378,10 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
 
     in_progress = [t for t in scoped if str(t.get("status", "")).strip().lower() == "in_progress"]
     assigned = [t for t in scoped if str(t.get("status", "")).strip().lower() in {"assigned", "bug_open", "reported"}]
-    stale_in_progress = sum(1 for t in in_progress if (_age_s(t.get("updated_at")) or 0) >= max(1, stale_seconds))
+    stale_in_progress = sum(
+        1 for t in in_progress
+        if (lambda a: a is not None and a >= max(1, stale_seconds))(_age_s(t.get("updated_at")))
+    )
     open_ages = [_age_s(t.get("updated_at")) for t in scoped if str(t.get("status", "")).strip().lower() in OPEN_STATUSES]
     open_ages = [a for a in open_ages if isinstance(a, int)]
     oldest_open_task_age_s = max(open_ages) if open_ages else None
@@ -453,7 +490,11 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
         if status == "blocked":
             lane["blocked"] += 1
 
-    done_last_hour = sum(1 for t in scoped if str(t.get("status", "")).strip().lower() == "done" and (_age_s(t.get("updated_at")) or 999999) <= 3600)
+    done_last_hour = sum(
+        1 for t in scoped
+        if str(t.get("status", "")).strip().lower() == "done"
+        and (lambda a: a is not None and a <= 3600)(_age_s(t.get("updated_at")))
+    )
     throughput_per_hour: Optional[float] = float(done_last_hour) if done_last_hour > 0 else None
     eta_minutes: Optional[int] = None
     if open_tasks > 0 and throughput_per_hour and throughput_per_hour > 0:
@@ -526,6 +567,52 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
     # or just use the ratio of failures to successes as a proxy for depth.
     avg_review_loop_depth = (validation_failed / validation_passed) if validation_passed > 0 else (float(validation_failed) if validation_failed > 0 else 0.0)
 
+    # Claude-only telemetry (claude_code + ccm lanes)
+    claude_done_last_hour = sum(
+        1
+        for t in scoped
+        if str(t.get("status", "")).strip().lower() == "done"
+        and str(t.get("owner", "")).strip() == "claude_code"
+        and (lambda a: a is not None and a <= 3600)(_age_s(t.get("updated_at")))
+    )
+    wingman_done_last_hour = sum(
+        1
+        for t in scoped
+        if str(t.get("status", "")).strip().lower() == "done"
+        and str(t.get("owner", "")).strip() == "ccm"
+        and (lambda a: a is not None and a <= 3600)(_age_s(t.get("updated_at")))
+    )
+    claude_throughput_per_hour: Optional[float] = float(claude_done_last_hour) if claude_done_last_hour > 0 else 0.0
+    wingman_throughput_per_hour: Optional[float] = float(wingman_done_last_hour) if wingman_done_last_hour > 0 else 0.0
+
+    validation_total = 0
+    validation_by_source: Dict[str, int] = {}
+    for line in _tail_lines(root / "bus" / "events.jsonl", 1200):
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        et = str(ev.get("type", "")).strip()
+        if et not in {"validation.passed", "validation.failed"}:
+            continue
+        validation_total += 1
+        src = str(ev.get("source", "")).strip() or "unknown"
+        validation_by_source[src] = validation_by_source.get(src, 0) + 1
+
+    claude_validation_contribution_percent: Optional[float] = None
+    wingman_validation_contribution_percent: Optional[float] = None
+    if validation_total > 0:
+        claude_validation_contribution_percent = (validation_by_source.get("claude_code", 0) / validation_total) * 100.0
+        wingman_validation_contribution_percent = (validation_by_source.get("ccm", 0) / validation_total) * 100.0
+
+
+    claude_events = _read_agent_events(root, "claude_code", limit=1)
+    wingman_events = _read_agent_events(root, "ccm", limit=1)
+    claude_latest_lane_event_time = _parse_iso(claude_events[0]["time"]) if claude_events else None
+    claude_latest_lane_event_type = str(claude_events[0]["type"]) if claude_events else None
+    wingman_latest_lane_event_time = _parse_iso(wingman_events[0]["time"]) if wingman_events else None
+    wingman_latest_lane_event_type = str(wingman_events[0]["type"]) if wingman_events else None
+
     next_actions = _compute_next_actions(
         open_tasks=open_tasks,
         assigned_count=len(assigned),
@@ -586,6 +673,14 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
         agent_diversity=agent_diversity,
         total_validations=total_validations,
         avg_review_loop_depth=avg_review_loop_depth,
+        claude_throughput_per_hour=claude_throughput_per_hour,
+        claude_validation_contribution_percent=claude_validation_contribution_percent,
+        claude_latest_lane_event_time=claude_latest_lane_event_time,
+        claude_latest_lane_event_type=claude_latest_lane_event_type,
+        wingman_throughput_per_hour=wingman_throughput_per_hour,
+        wingman_validation_contribution_percent=wingman_validation_contribution_percent,
+        wingman_latest_lane_event_time=wingman_latest_lane_event_time,
+        wingman_latest_lane_event_type=wingman_latest_lane_event_type,
     )
 
 
@@ -996,6 +1091,7 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
         f"IP/Assigned: {len(snapshot.in_progress)}/{len(snapshot.assigned)}",
         f"Bugs: {snapshot.bugs_open}",
         f"Blockers: {snapshot.blockers_open}",
+        f"Claude/h: {_fmt_number(snapshot.claude_throughput_per_hour)}",
     ]
     lines.append("  |  ".join(stats))
     lines.append(sep)
@@ -1031,6 +1127,16 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
     fleet_rows.append("Agents:")
     for a in snapshot.active_agents[:10]:
         fleet_rows.append(f"{a['agent']:<11} {a['status']:<8} age={_format_age(a['age_s'])}")
+    fleet_rows.append("-")
+    fleet_rows.append("Claude-only signals:")
+    fleet_rows.append(f"claude validation share: {_fmt_number(snapshot.claude_validation_contribution_percent)}%")
+    fleet_rows.append(f"wingman validation share: {_fmt_number(snapshot.wingman_validation_contribution_percent)}%")
+    fleet_rows.append(
+        f"claude last event: {snapshot.claude_latest_lane_event_type or '-'} age={_format_age(_age_s(snapshot.claude_latest_lane_event_time.isoformat() if snapshot.claude_latest_lane_event_time else None))}"
+    )
+    fleet_rows.append(
+        f"wingman last event: {snapshot.wingman_latest_lane_event_type or '-'} age={_format_age(_age_s(snapshot.wingman_latest_lane_event_time.isoformat() if snapshot.wingman_latest_lane_event_time else None))}"
+    )
     
     # Panel 3: Costs & Systems
     cost_rows = [
@@ -1038,6 +1144,8 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
         f"Avg Tokens/Task: {_fmt_number(snapshot.avg_tokens_per_report)}",
         f"LOC net: {snapshot.loc_net_total} (+{snapshot.loc_added_total}/-{snapshot.loc_deleted_total})",
         f"Efficiency: {_fmt_number(snapshot.cost_efficiency_loc_per_k_tokens)} loc/k-tok",
+        f"Claude throughput: {_fmt_number(snapshot.claude_throughput_per_hour)}/h",
+        f"Wingman throughput: {_fmt_number(snapshot.wingman_throughput_per_hour)}/h",
         "-",
         "Processes:",
     ]

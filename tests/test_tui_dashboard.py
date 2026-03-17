@@ -49,6 +49,15 @@ class DashboardTuiTests(unittest.TestCase):
                     "validated_at": "2026-03-17T10:30:00+00:00",
                     "updated_at": "2026-03-17T10:30:00+00:00",
                 },
+                {
+                    "id": "T3",
+                    "project_root": project_root,
+                    "status": "done",
+                    "owner": "claude_code",
+                    "title": "Claude Done",
+                    "team_id": "team-api",
+                    "updated_at": "2099-01-01T00:00:00+00:00",
+                },
                 {"id": "T2", "project_root": project_root, "status": "assigned", "owner": "gemini", "title": "Open", "team_id": "team-web"},
             ]
             (root / "state" / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
@@ -82,7 +91,8 @@ class DashboardTuiTests(unittest.TestCase):
             # Events for project
             (root / "bus" / "events.jsonl").write_text(
                 json.dumps({"timestamp": "2026-03-17T11:00:00+00:00", "type": "validation.passed", "source": "codex", "payload": {"task_id": "T1"}}) + "\n" +
-                json.dumps({"timestamp": "2026-03-17T11:05:00+00:00", "type": "validation.failed", "source": "codex", "payload": {"task_id": "T1"}}) + "\n",
+                json.dumps({"timestamp": "2026-03-17T11:05:00+00:00", "type": "validation.failed", "source": "ccm", "payload": {"task_id": "T1"}}) + "\n" +
+                json.dumps({"timestamp": "2026-03-17T11:07:00+00:00", "type": "validation.passed", "source": "claude_code", "payload": {"task_id": "T3"}}) + "\n",
                 encoding="utf-8"
             )
 
@@ -91,10 +101,10 @@ class DashboardTuiTests(unittest.TestCase):
 
             snap = mod.build_snapshot(project_root=project_root, root=root)
 
-            self.assertEqual(snap.total_tasks, 2)
+            self.assertEqual(snap.total_tasks, 3)
             self.assertEqual(snap.open_tasks, 1)
-            self.assertEqual(snap.done_tasks, 1)
-            self.assertEqual(snap.progress_percent, 50)
+            self.assertEqual(snap.done_tasks, 2)
+            self.assertEqual(snap.progress_percent, 66)
             self.assertEqual(snap.loc_added_total, 100)
             self.assertEqual(snap.loc_deleted_total, 30)
             self.assertEqual(snap.loc_net_total, 70)
@@ -113,9 +123,12 @@ class DashboardTuiTests(unittest.TestCase):
             # 5 New Metrics Verify
             self.assertEqual(snap.avg_blocker_resolution_time_s, 600)
             self.assertEqual(snap.stale_task_percent, 0.0)
-            self.assertEqual(snap.agent_diversity, 1) # codex
-            self.assertEqual(snap.total_validations, 2)
-            self.assertEqual(snap.avg_review_loop_depth, 1.0) # 1 fail / 1 pass
+            self.assertEqual(snap.agent_diversity, 2) # codex + claude_code
+            self.assertEqual(snap.total_validations, 3)
+            self.assertEqual(snap.avg_review_loop_depth, 0.5) # 1 fail / 2 pass
+            self.assertEqual(snap.claude_throughput_per_hour, 1.0)
+            self.assertAlmostEqual(snap.wingman_validation_contribution_percent or 0.0, 33.33333333333333)
+            self.assertAlmostEqual(snap.claude_validation_contribution_percent or 0.0, 33.33333333333333)
 
     def test_render_gemini_v3b(self) -> None:
         # Create a dummy snapshot
@@ -168,6 +181,11 @@ class DashboardTuiTests(unittest.TestCase):
             agent_diversity=2,
             total_validations=5,
             avg_review_loop_depth=0.25,
+            claude_throughput_per_hour=1.0,
+            claude_validation_contribution_percent=40.0,
+            wingman_validation_contribution_percent=20.0,
+            claude_latest_lane_event_type="validation.passed",
+            wingman_latest_lane_event_type="validation.failed",
         )
         
         out = mod._render_gemini_v3b(snap, completed=False, auto_stopped=False, color_enabled=False)
@@ -180,6 +198,8 @@ class DashboardTuiTests(unittest.TestCase):
         self.assertIn("Stale Tasks: 0", out)
         self.assertIn("Blocker Res: 20m", out)
         self.assertIn("Active: 1 (div:2)", out)
+        self.assertIn("claude validation share: 40", out)
+        self.assertIn("wingman validation share: 20", out)
         self.assertIn("style=gemini-v3b", out)
 
 
