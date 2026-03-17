@@ -37,8 +37,8 @@ class DashboardTuiTests(unittest.TestCase):
 
             project_root = "/tmp/my-project"
             tasks = [
-                {"id": "T1", "project_root": project_root, "status": "done", "owner": "codex", "title": "Done"},
-                {"id": "T2", "project_root": project_root, "status": "assigned", "owner": "gemini", "title": "Open"},
+                {"id": "T1", "project_root": project_root, "status": "done", "owner": "codex", "title": "Done", "team_id": "team-api"},
+                {"id": "T2", "project_root": project_root, "status": "assigned", "owner": "gemini", "title": "Open", "team_id": "team-web"},
             ]
             (root / "state" / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
             (root / "state" / "blockers.json").write_text("[]", encoding="utf-8")
@@ -70,6 +70,9 @@ class DashboardTuiTests(unittest.TestCase):
             self.assertEqual(snap.loc_net_total, 70)
             self.assertEqual(snap.budget_calls_today, 17)
             self.assertEqual(snap.token_total, 33)
+            self.assertIn("team-api", snap.team_lane_counts)
+            self.assertIn("team-web", snap.team_lane_counts)
+            self.assertTrue(len(snap.next_actions) >= 1)
 
 
 if __name__ == "__main__":

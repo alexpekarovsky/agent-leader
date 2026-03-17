@@ -13,7 +13,7 @@ from collections import Counter, deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 OPEN_STATUSES = {"assigned", "in_progress", "reported", "needs_review", "blocked", "bug_open"}
 ACTIVE_STATUSES = {"assigned", "in_progress", "reported", "bug_open"}
@@ -78,6 +78,51 @@ def _term_width(default: int = 120) -> int:
         return default
 
 
+def _progress_bar(percent: int, width: int = 30) -> str:
+    pct = max(0, min(100, percent))
+    filled = int((pct / 100) * width)
+    return "[" + ("#" * filled) + ("-" * (width - filled)) + f"] {pct:>3d}%"
+
+
+def _truncate(text: Any, width: int) -> str:
+    s = str(text or "")
+    if width <= 0:
+        return ""
+    if len(s) <= width:
+        return s
+    if width <= 3:
+        return s[:width]
+    return s[: width - 3] + "..."
+
+
+def _panel(title: str, rows: List[str], width: int) -> List[str]:
+    inner = max(10, width - 4)
+    out = [f"+- {_truncate(title, inner - 1)} " + "-" * max(0, inner - len(title) - 2) + "+"]
+    if not rows:
+        rows = ["-"]
+    for row in rows:
+        out.append("| " + _truncate(row, inner).ljust(inner) + " |")
+    out.append("+" + "-" * (width - 2) + "+")
+    return out
+
+
+def _fmt_number(value: Optional[float]) -> str:
+    if value is None:
+        return "-"
+    if abs(value - int(value)) < 1e-9:
+        return str(int(value))
+    return f"{value:.1f}"
+
+
+def _extract_task_id(payload: Dict[str, Any]) -> str:
+    keys = ("task_id", "id", "task")
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
 @dataclass
 class DashboardSnapshot:
     project_root: str
@@ -101,6 +146,14 @@ class DashboardSnapshot:
     token_prompt_total: Optional[int]
     token_completion_total: Optional[int]
     token_total: Optional[int]
+    team_lane_counts: Dict[str, Dict[str, int]]
+    stale_in_progress: int
+    recent_events: List[Dict[str, Any]]
+    supervisor_processes: List[Dict[str, Any]]
+    done_last_hour: int
+    throughput_per_hour: Optional[float]
+    eta_minutes: Optional[int]
+    next_actions: List[str]
 
 
 def _task_matches_project(task: Dict[str, Any], project_root: str) -> bool:
@@ -125,7 +178,85 @@ def _extract_token_usage(report: Dict[str, Any]) -> Tuple[Optional[int], Optiona
     return prompt, completion, total
 
 
-def build_snapshot(project_root: str, root: Path) -> DashboardSnapshot:
+def _read_recent_events(root: Path, limit: int = 12) -> List[Dict[str, Any]]:
+    events_tail = _tail_lines(root / "bus" / "events.jsonl", 600)
+    events: List[Dict[str, Any]] = []
+    for line in reversed(events_tail):
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        et = str(ev.get("type", "")).strip()
+        payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
+        events.append(
+            {
+                "time": str(ev.get("timestamp", "")),
+                "type": et,
+                "source": str(ev.get("source", "")),
+                "task_id": _extract_task_id(payload),
+            }
+        )
+        if len(events) >= limit:
+            break
+    return events
+
+
+def _read_supervisor_processes(root: Path) -> List[Dict[str, Any]]:
+    pid_dir = root / ".autopilot-pids"
+    if not pid_dir.exists():
+        return []
+    rows: List[Dict[str, Any]] = []
+    for pid_file in sorted(pid_dir.glob("*.pid")):
+        try:
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+        except Exception:
+            continue
+        alive = False
+        try:
+            os.kill(pid, 0)
+            alive = True
+        except Exception:
+            alive = False
+        rows.append(
+            {
+                "name": pid_file.stem,
+                "pid": pid,
+                "alive": alive,
+                "age_s": _age_s(datetime.fromtimestamp(pid_file.stat().st_mtime, tz=timezone.utc).isoformat()),
+            }
+        )
+    return rows
+
+
+def _compute_next_actions(
+    open_tasks: int,
+    assigned_count: int,
+    in_progress_count: int,
+    blockers_open: int,
+    bugs_open: int,
+    stale_in_progress: int,
+    supervisor_processes: List[Dict[str, Any]],
+) -> List[str]:
+    actions: List[str] = []
+    if blockers_open > 0:
+        actions.append(f"Resolve blockers: {blockers_open} open blocker(s).")
+    if stale_in_progress > 0:
+        actions.append(f"Investigate stale work: {stale_in_progress} in-progress task(s) exceeded stale threshold.")
+    if bugs_open > 0:
+        actions.append(f"Run bug triage: {bugs_open} bug(s) are still open.")
+    if in_progress_count == 0 and assigned_count > 0:
+        actions.append("Workers appear idle while queue is non-empty; verify claim loop health.")
+    if open_tasks == 0:
+        actions.append("All scoped tasks are complete. Keep dashboard open or stop supervisor.")
+    dead = [p for p in supervisor_processes if not p.get("alive")]
+    if dead:
+        actions.append(f"Supervisor has stale pid files for {len(dead)} process(es); run clean if needed.")
+    if not actions:
+        actions.append("Flow healthy. Continue monitoring throughput and review cadence.")
+    return actions
+
+
+def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> DashboardSnapshot:
     tasks = _load_json(root / "state" / "tasks.json", [])
     blockers = _load_json(root / "state" / "blockers.json", [])
     bugs = _load_json(root / "state" / "bugs.json", [])
@@ -144,6 +275,7 @@ def build_snapshot(project_root: str, root: Path) -> DashboardSnapshot:
 
     in_progress = [t for t in scoped if str(t.get("status", "")).strip().lower() == "in_progress"]
     assigned = [t for t in scoped if str(t.get("status", "")).strip().lower() in {"assigned", "bug_open", "reported"}]
+    stale_in_progress = sum(1 for t in in_progress if (_age_s(t.get("updated_at")) or 0) >= max(1, stale_seconds))
 
     blockers_open = sum(1 for b in blockers if str(b.get("status", "")).lower() == "open")
     bugs_open = sum(1 for b in bugs if str(b.get("status", "")).lower() == "open")
@@ -161,23 +293,12 @@ def build_snapshot(project_root: str, root: Path) -> DashboardSnapshot:
             )
     active_agents.sort(key=lambda a: (a["status"] != "active", a["agent"]))
 
-    events_tail = _tail_lines(root / "bus" / "events.jsonl", 400)
     review_events: List[Dict[str, Any]] = []
-    for line in reversed(events_tail):
-        try:
-            ev = json.loads(line)
-        except Exception:
-            continue
+    recent_events = _read_recent_events(root, limit=12)
+    for ev in recent_events:
         et = str(ev.get("type", ""))
         if et in {"validation.passed", "validation.failed", "task.reported"}:
-            review_events.append(
-                {
-                    "time": ev.get("timestamp", ""),
-                    "type": et,
-                    "source": ev.get("source", ""),
-                    "task_id": (ev.get("payload") or {}).get("task_id", ""),
-                }
-            )
+            review_events.append({"time": ev.get("time", ""), "type": et, "source": ev.get("source", ""), "task_id": ev.get("task_id", "")})
         if len(review_events) >= 8:
             break
 
@@ -234,6 +355,40 @@ def build_snapshot(project_root: str, root: Path) -> DashboardSnapshot:
                 token_present = True
                 token_total += t
 
+    team_lane_counts: Dict[str, Dict[str, int]] = {}
+    for task in scoped:
+        team_id = str(task.get("team_id", "") or "default")
+        status = str(task.get("status", "unknown")).strip().lower()
+        lane = team_lane_counts.setdefault(team_id, {"total": 0, "open": 0, "done": 0, "in_progress": 0, "assigned": 0, "blocked": 0})
+        lane["total"] += 1
+        if status in OPEN_STATUSES:
+            lane["open"] += 1
+        if status == "done":
+            lane["done"] += 1
+        if status == "in_progress":
+            lane["in_progress"] += 1
+        if status == "assigned":
+            lane["assigned"] += 1
+        if status == "blocked":
+            lane["blocked"] += 1
+
+    done_last_hour = sum(1 for t in scoped if str(t.get("status", "")).strip().lower() == "done" and (_age_s(t.get("updated_at")) or 999999) <= 3600)
+    throughput_per_hour: Optional[float] = float(done_last_hour) if done_last_hour > 0 else None
+    eta_minutes: Optional[int] = None
+    if open_tasks > 0 and throughput_per_hour and throughput_per_hour > 0:
+        eta_minutes = int((open_tasks / throughput_per_hour) * 60)
+
+    supervisor_processes = _read_supervisor_processes(root)
+    next_actions = _compute_next_actions(
+        open_tasks=open_tasks,
+        assigned_count=len(assigned),
+        in_progress_count=len(in_progress),
+        blockers_open=blockers_open,
+        bugs_open=bugs_open,
+        stale_in_progress=stale_in_progress,
+        supervisor_processes=supervisor_processes,
+    )
+
     return DashboardSnapshot(
         project_root=project_root,
         total_tasks=total_tasks,
@@ -256,6 +411,14 @@ def build_snapshot(project_root: str, root: Path) -> DashboardSnapshot:
         token_prompt_total=token_prompt_total if token_present else None,
         token_completion_total=token_completion_total if token_present else None,
         token_total=token_total if token_present else None,
+        team_lane_counts=team_lane_counts,
+        stale_in_progress=stale_in_progress,
+        recent_events=recent_events,
+        supervisor_processes=supervisor_processes,
+        done_last_hour=done_last_hour,
+        throughput_per_hour=throughput_per_hour,
+        eta_minutes=eta_minutes,
+        next_actions=next_actions,
     )
 
 
@@ -290,15 +453,12 @@ def _render(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool) ->
     now = _now_utc().strftime("%Y-%m-%d %H:%M:%SZ")
     mode = "COMPLETED (100%)" if completed else "RUNNING"
     lines.append(sep)
-    lines.append(f"Agent Leader Headless TUI | {mode} | {now}")
+    lines.append(f"AGENT LEADER CONTROL TUI | {mode} | {now}")
     lines.append(f"Project: {snapshot.project_root}")
-    lines.append(
-        f"Progress: {snapshot.progress_percent}% | Total={snapshot.total_tasks} Open={snapshot.open_tasks} Done={snapshot.done_tasks} "
-        f"| Blockers(open)={snapshot.blockers_open} Bugs(open)={snapshot.bugs_open}"
-    )
-    lines.append(
-        f"Code Output: reports={snapshot.reports_count} LOC +{snapshot.loc_added_total} -{snapshot.loc_deleted_total} net={snapshot.loc_net_total}"
-    )
+    lines.append(f"Progress: {_progress_bar(snapshot.progress_percent)}")
+    lines.append(f"Pipeline: total={snapshot.total_tasks} open={snapshot.open_tasks} done={snapshot.done_tasks} in_progress={len(snapshot.in_progress)} assigned={len(snapshot.assigned)}")
+    lines.append(f"Quality: blockers(open)={snapshot.blockers_open} bugs(open)={snapshot.bugs_open} stale_in_progress={snapshot.stale_in_progress}")
+    lines.append(f"Code Output: reports={snapshot.reports_count} LOC +{snapshot.loc_added_total} -{snapshot.loc_deleted_total} net={snapshot.loc_net_total}")
     token_line = "Token Usage: n/a (report token fields not present)"
     if snapshot.token_total is not None:
         token_line = (
@@ -306,48 +466,63 @@ def _render(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool) ->
             f"prompt={snapshot.token_prompt_total or 0} completion={snapshot.token_completion_total or 0}"
         )
     lines.append(token_line)
+    eta = f"{snapshot.eta_minutes}m" if snapshot.eta_minutes is not None else "-"
+    lines.append(f"Throughput: done_last_hour={snapshot.done_last_hour} done_per_hour={_fmt_number(snapshot.throughput_per_hour)} ETA={eta}")
     lines.append(f"Headless Call Budget (today): {snapshot.budget_calls_today}")
     if snapshot.budget_by_process:
         budget_parts = [f"{k}={v}" for k, v in sorted(snapshot.budget_by_process.items())[:8]]
         lines.append("  " + " | ".join(budget_parts))
     if auto_stopped:
         lines.append("Supervisor: auto-stopped after completion to prevent token leakage")
+    lines.append(sep)
 
-    lines.append("-")
-    lines.append("Status Counts: " + ", ".join(f"{k}:{v}" for k, v in sorted(snapshot.status_counts.items())))
+    status_rows = ["Status Counts: " + ", ".join(f"{k}:{v}" for k, v in sorted(snapshot.status_counts.items()))]
+    for team_id, c in sorted(snapshot.team_lane_counts.items()):
+        status_rows.append(
+            f"team={team_id:<10} total={c.get('total', 0):<3} open={c.get('open', 0):<3} done={c.get('done', 0):<3} ip={c.get('in_progress', 0):<3} assigned={c.get('assigned', 0):<3} blocked={c.get('blocked', 0):<3}"
+        )
+    lines.extend(_panel("Team Pipeline", status_rows, max(80, width)))
 
-    lines.append("-")
-    lines.append("Active Agents")
-    for a in snapshot.active_agents[:8]:
-        lines.append(f"  {a['agent']:<12} {a['status']:<8} age={_format_age(a['age_s']):>7} instance={a['instance_id']}")
+    agent_rows: List[str] = []
+    for a in snapshot.active_agents[:10]:
+        agent_rows.append(f"{a['agent']:<12} status={a['status']:<8} age={_format_age(a['age_s']):>7} instance={a['instance_id']}")
+    if not agent_rows:
+        agent_rows = ["none"]
+    for proc in snapshot.supervisor_processes[:10]:
+        proc_state = "up" if proc.get("alive") else "dead"
+        agent_rows.append(f"proc:{proc.get('name', '-'):<20} pid={proc.get('pid', '-')} state={proc_state:<4} age={_format_age(proc.get('age_s'))}")
+    lines.extend(_panel("Agents and Supervisor", agent_rows, max(80, width)))
 
-    lines.append("-")
-    lines.append("In Progress Tasks")
+    in_progress_rows: List[str] = []
     if snapshot.in_progress:
         for t in snapshot.in_progress[:10]:
-            lines.append(
-                f"  {t.get('id','-')} | {t.get('owner','-')} | {t.get('title','')[:80]}"
+            in_progress_rows.append(
+                f"{t.get('id','-')} | owner={t.get('owner','-')} | age={_format_age(_age_s(t.get('updated_at')))} | {t.get('title','')}"
             )
     else:
-        lines.append("  none")
-
-    lines.append("-")
-    lines.append("Queued Tasks")
+        in_progress_rows.append("none")
     if snapshot.assigned:
-        for t in snapshot.assigned[:10]:
-            lines.append(
-                f"  {t.get('id','-')} | {t.get('status','-'):>9} | {t.get('owner','-')} | {t.get('title','')[:70]}"
-            )
-    else:
-        lines.append("  none")
+        in_progress_rows.append("-")
+        in_progress_rows.append("Queued:")
+        for t in snapshot.assigned[:8]:
+            in_progress_rows.append(f"{t.get('id','-')} | {t.get('status','-')} | owner={t.get('owner','-')} | {t.get('title','')}")
+    lines.extend(_panel("Work Queue", in_progress_rows, max(80, width)))
 
-    lines.append("-")
-    lines.append("Recent Review / Validation Events")
+    review_rows: List[str] = []
     if snapshot.review_events:
-        for ev in snapshot.review_events:
-            lines.append(f"  {ev.get('type')} | {ev.get('task_id')} | {ev.get('source')}")
-    else:
-        lines.append("  none")
+        review_rows.append("Review/Validation:")
+        for ev in snapshot.review_events[:8]:
+            review_rows.append(f"{ev.get('type')} | {ev.get('task_id') or '-'} | {ev.get('source')}")
+    if snapshot.recent_events:
+        review_rows.append("-")
+        review_rows.append("Timeline:")
+        for ev in snapshot.recent_events[:8]:
+            review_rows.append(f"{ev.get('type')} | {ev.get('task_id') or '-'} | {ev.get('source')}")
+    if not review_rows:
+        review_rows.append("none")
+    lines.extend(_panel("Review and Timeline", review_rows, max(80, width)))
+
+    lines.extend(_panel("Next Actions", snapshot.next_actions[:8], max(80, width)))
 
     lines.append(sep)
     lines.append("Controls: Ctrl+C to exit dashboard")
@@ -360,6 +535,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--refresh-seconds", type=float, default=2.0)
     p.add_argument("--auto-stop-on-complete", action="store_true")
     p.add_argument("--complete-streak", type=int, default=3)
+    p.add_argument("--stale-seconds", type=int, default=1800)
     args = p.parse_args(argv)
 
     root = Path(__file__).resolve().parents[2]
@@ -379,7 +555,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     signal.signal(signal.SIGTERM, _handle_sig)
 
     while not stop:
-        snap = build_snapshot(project_root, root)
+        snap = build_snapshot(project_root, root, stale_seconds=max(1, args.stale_seconds))
         if snap.open_tasks == 0:
             complete_streak += 1
         else:
