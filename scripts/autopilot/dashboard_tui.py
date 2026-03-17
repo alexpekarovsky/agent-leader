@@ -195,6 +195,12 @@ class DashboardSnapshot:
     agent_utilization_percent: Optional[float] = None
     task_failure_rate_percent: Optional[float] = None
     cost_efficiency_loc_per_k_tokens: Optional[float] = None
+    # Add 5 more metrics
+    avg_blocker_resolution_time_s: Optional[int] = None
+    stale_task_percent: Optional[float] = None
+    agent_diversity: int = 0
+    total_validations: int = 0
+    avg_review_loop_depth: Optional[float] = None
 
 
 def _task_matches_project(task: Dict[str, Any], project_root: str) -> bool:
@@ -470,6 +476,34 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
     # Cost Efficiency
     cost_efficiency_loc_per_k_tokens = (loc_added_total + loc_deleted_total) / (token_total / 1000.0) if (token_total and token_total > 0) else None
 
+    # 5 New Metrics
+    # 1. Blocker Resolution Time
+    resolved_blocker_times = []
+    for b in blockers:
+        b_task_id = b.get("task_id")
+        is_scoped = any(t.get("id") == b_task_id for t in scoped)
+        if is_scoped and b.get("status") == "resolved":
+            c_at = _parse_iso(b.get("created_at"))
+            r_at = _parse_iso(b.get("resolved_at"))
+            if c_at and r_at:
+                resolved_blocker_times.append((r_at - c_at).total_seconds())
+    avg_blocker_resolution_time_s = int(sum(resolved_blocker_times) / len(resolved_blocker_times)) if resolved_blocker_times else None
+
+    # 2. Stale Task Percent
+    stale_task_percent = (stale_in_progress / len(in_progress) * 100.0) if in_progress else 0.0
+
+    # 3. Agent Diversity
+    done_owners = {t.get("owner") for t in scoped if t.get("status") == "done" and t.get("owner")}
+    agent_diversity = len(done_owners)
+
+    # 4. Total Validations
+    total_validations = validation_passed + validation_failed
+
+    # 5. Review Loop Depth (Approximated from recent events or task failures if tracked)
+    # Since we only have recent events, we'll use a larger sample for this specific metric if possible,
+    # or just use the ratio of failures to successes as a proxy for depth.
+    avg_review_loop_depth = (validation_failed / validation_passed) if validation_passed > 0 else (float(validation_failed) if validation_failed > 0 else 0.0)
+
     next_actions = _compute_next_actions(
         open_tasks=open_tasks,
         assigned_count=len(assigned),
@@ -525,6 +559,11 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
         agent_utilization_percent=agent_utilization_percent,
         task_failure_rate_percent=task_failure_rate_percent,
         cost_efficiency_loc_per_k_tokens=cost_efficiency_loc_per_k_tokens,
+        avg_blocker_resolution_time_s=avg_blocker_resolution_time_s,
+        stale_task_percent=stale_task_percent,
+        agent_diversity=agent_diversity,
+        total_validations=total_validations,
+        avg_review_loop_depth=avg_review_loop_depth,
     )
 
 
@@ -917,7 +956,7 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
     # Quick Stats Row
     stats = [
         f"Tasks: {snapshot.done_tasks}/{snapshot.total_tasks} ({snapshot.progress_percent}%)",
-        f"Active: {snapshot.active_agent_count}",
+        f"Active: {snapshot.active_agent_count} (div:{snapshot.agent_diversity})",
         f"IP/Assigned: {len(snapshot.in_progress)}/{len(snapshot.assigned)}",
         f"Bugs: {snapshot.bugs_open}",
         f"Blockers: {snapshot.blockers_open}",
@@ -927,20 +966,20 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
 
     panel_w = (width - 2) // 3
     
-    # Panel 1: Efficiency & Costs
-    eff_rows = [
+    # Panel 1: Velocity & Quality
+    vel_rows = [
         f"Throughput: {_fmt_number(snapshot.throughput_per_hour)} done/h",
         f"ETA: {(str(snapshot.eta_minutes) + 'm') if snapshot.eta_minutes is not None else '-'}",
-        f"Avg Lead Time: {_format_age(snapshot.avg_task_lead_time_s)}",
-        f"Avg Validation: {_format_age(snapshot.avg_validation_cycle_time_s)}",
-        f"Agent Utilization: {_fmt_number(snapshot.agent_utilization_percent)}%",
-        f"Task Failure Rate: {_fmt_number(snapshot.task_failure_rate_percent)}%",
+        f"Lead Time: {_format_age(snapshot.avg_task_lead_time_s)}",
+        f"Validation: {_format_age(snapshot.avg_validation_cycle_time_s)}",
+        f"Utilization: {_fmt_number(snapshot.agent_utilization_percent)}%",
         f"Queue Pressure: {_fmt_number(snapshot.queue_pressure)}",
         "-",
-        f"Total Tokens: {snapshot.token_total or '-'}",
-        f"Avg Tokens/Task: {_fmt_number(snapshot.avg_tokens_per_report)}",
-        f"LOC net: {snapshot.loc_net_total} (+{snapshot.loc_added_total}/-{snapshot.loc_deleted_total})",
-        f"Efficiency: {_fmt_number(snapshot.cost_efficiency_loc_per_k_tokens)} loc/k-tok",
+        f"Total Validations: {snapshot.total_validations}",
+        f"Failure Rate: {_fmt_number(snapshot.task_failure_rate_percent)}%",
+        f"Review Depth: {_fmt_number(snapshot.avg_review_loop_depth)}x",
+        f"Stale Tasks: {_fmt_number(snapshot.stale_task_percent)}%",
+        f"Blocker Res: {_format_age(snapshot.avg_blocker_resolution_time_s)}",
     ]
     
     # Panel 2: Fleet Status
@@ -952,20 +991,27 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
     for a in snapshot.active_agents[:10]:
         fleet_rows.append(f"{a['agent']:<11} {a['status']:<8} age={_format_age(a['age_s'])}")
     
-    # Panel 3: Supervisor & Budget
-    sys_rows = ["Processes:"]
-    for proc in snapshot.supervisor_processes:
+    # Panel 3: Costs & Systems
+    cost_rows = [
+        f"Total Tokens: {snapshot.token_total or '-'}",
+        f"Avg Tokens/Task: {_fmt_number(snapshot.avg_tokens_per_report)}",
+        f"LOC net: {snapshot.loc_net_total} (+{snapshot.loc_added_total}/-{snapshot.loc_deleted_total})",
+        f"Efficiency: {_fmt_number(snapshot.cost_efficiency_loc_per_k_tokens)} loc/k-tok",
+        "-",
+        "Processes:",
+    ]
+    for proc in snapshot.supervisor_processes[:5]:
         state = _color(color_enabled, "32", "up") if proc.get("alive") else _color(color_enabled, "31;1", "dead")
-        sys_rows.append(f"{proc.get('name','-'):<14} {state} age={_format_age(proc.get('age_s'))}")
-    sys_rows.append("-")
-    sys_rows.append(f"Budget Today: {snapshot.budget_calls_today} calls")
-    for k, v in sorted(snapshot.budget_by_process.items())[:5]:
-        sys_rows.append(f"  {k:<12} {v}")
+        cost_rows.append(f"{proc.get('name','-'):<14} {state} age={_format_age(proc.get('age_s'))}")
+    cost_rows.append("-")
+    cost_rows.append(f"Budget Today: {snapshot.budget_calls_today} calls")
+    for k, v in sorted(snapshot.budget_by_process.items())[:3]:
+        cost_rows.append(f"  {k:<12} {v}")
 
     # Render Top 3 Panels
-    p1 = _panel_fixed("Efficiency & Costs", eff_rows, panel_w, body_rows=14, color_enabled=color_enabled)
+    p1 = _panel_fixed("Velocity & Quality", vel_rows, panel_w, body_rows=14, color_enabled=color_enabled)
     p2 = _panel_fixed("Fleet Status", fleet_rows, panel_w, body_rows=14, color_enabled=color_enabled)
-    p3 = _panel_fixed("System & Budget", sys_rows, panel_w, body_rows=14, color_enabled=color_enabled)
+    p3 = _panel_fixed("Costs & Systems", cost_rows, panel_w, body_rows=14, color_enabled=color_enabled)
     
     height = max(len(p1), len(p2), len(p3))
     for i in range(height):

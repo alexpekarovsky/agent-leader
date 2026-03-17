@@ -67,6 +67,25 @@ class DashboardTuiTests(unittest.TestCase):
             }
             (root / "bus" / "reports" / "TASK-T1.json").write_text(json.dumps(report), encoding="utf-8")
 
+            # Blockers for project
+            blockers = [
+                {
+                    "id": "B1",
+                    "task_id": "T1",
+                    "status": "resolved",
+                    "created_at": "2026-03-17T11:00:00+00:00",
+                    "resolved_at": "2026-03-17T11:10:00+00:00",
+                }
+            ]
+            (root / "state" / "blockers.json").write_text(json.dumps(blockers), encoding="utf-8")
+
+            # Events for project
+            (root / "bus" / "events.jsonl").write_text(
+                json.dumps({"timestamp": "2026-03-17T11:00:00+00:00", "type": "validation.passed", "source": "codex", "payload": {"task_id": "T1"}}) + "\n" +
+                json.dumps({"timestamp": "2026-03-17T11:05:00+00:00", "type": "validation.failed", "source": "codex", "payload": {"task_id": "T1"}}) + "\n",
+                encoding="utf-8"
+            )
+
             stamp = mod._now_utc().strftime("%Y%m%d")
             (root / ".autopilot-logs" / f".budget-worker-codex-codex-{stamp}.count").write_text("17", encoding="utf-8")
 
@@ -90,6 +109,78 @@ class DashboardTuiTests(unittest.TestCase):
             self.assertEqual(snap.avg_validation_cycle_time_s, 600)
             self.assertEqual(snap.agent_utilization_percent, 0.0) # No in_progress tasks
             self.assertEqual(snap.cost_efficiency_loc_per_k_tokens, 130 / (33 / 1000.0))
+
+            # 5 New Metrics Verify
+            self.assertEqual(snap.avg_blocker_resolution_time_s, 600)
+            self.assertEqual(snap.stale_task_percent, 0.0)
+            self.assertEqual(snap.agent_diversity, 1) # codex
+            self.assertEqual(snap.total_validations, 2)
+            self.assertEqual(snap.avg_review_loop_depth, 1.0) # 1 fail / 1 pass
+
+    def test_render_gemini_v3b(self) -> None:
+        # Create a dummy snapshot
+        snap = mod.DashboardSnapshot(
+            project_root="/tmp/test",
+            total_tasks=10,
+            open_tasks=5,
+            done_tasks=5,
+            progress_percent=50,
+            status_counts={"done": 5, "assigned": 5},
+            in_progress=[],
+            assigned=[],
+            blockers_open=1,
+            bugs_open=2,
+            active_agents=[{"agent": "codex", "status": "active", "age_s": 100, "instance_id": "i1"}],
+            review_events=[],
+            budget_calls_today=100,
+            budget_by_process={"p1": 100},
+            loc_added_total=500,
+            loc_deleted_total=100,
+            loc_net_total=400,
+            reports_count=5,
+            token_prompt_total=1000,
+            token_completion_total=500,
+            token_total=1500,
+            team_lane_counts={"default": {"total": 10, "open": 5, "done": 5, "in_progress": 0, "assigned": 5, "blocked": 0}},
+            stale_in_progress=0,
+            recent_events=[],
+            supervisor_processes=[],
+            done_last_hour=2,
+            throughput_per_hour=2.0,
+            eta_minutes=150,
+            next_actions=["action1"],
+            validation_passed=4,
+            validation_failed=1,
+            review_pass_rate=80.0,
+            oldest_open_task_age_s=3600,
+            queue_pressure=5.0,
+            active_agent_count=1,
+            idle_agent_count=1,
+            avg_loc_per_report=120.0,
+            avg_tokens_per_report=300.0,
+            avg_task_lead_time_s=1800,
+            avg_validation_cycle_time_s=600,
+            agent_utilization_percent=0.0,
+            task_failure_rate_percent=20.0,
+            cost_efficiency_loc_per_k_tokens=400.0,
+            avg_blocker_resolution_time_s=1200,
+            stale_task_percent=0.0,
+            agent_diversity=2,
+            total_validations=5,
+            avg_review_loop_depth=0.25,
+        )
+        
+        out = mod._render_gemini_v3b(snap, completed=False, auto_stopped=False, color_enabled=False)
+        
+        # Check for new metrics in output
+        self.assertIn("Velocity & Quality", out)
+        self.assertIn("Total Validations: 5", out)
+        self.assertIn("Failure Rate: 20", out)
+        self.assertIn("Review Depth: 0.2x", out)
+        self.assertIn("Stale Tasks: 0", out)
+        self.assertIn("Blocker Res: 20m", out)
+        self.assertIn("Active: 1 (div:2)", out)
+        self.assertIn("style=gemini-v3b", out)
 
 
 if __name__ == "__main__":
