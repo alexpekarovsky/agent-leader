@@ -113,6 +113,13 @@ def _panel(title: str, rows: List[str], width: int, color_enabled: bool = True) 
     return out
 
 
+def _panel_fixed(title: str, rows: List[str], width: int, body_rows: int, color_enabled: bool = True) -> List[str]:
+    clipped = rows[: max(0, body_rows)]
+    if len(clipped) < body_rows:
+        clipped = clipped + [""] * (body_rows - len(clipped))
+    return _panel(title, clipped, width, color_enabled=color_enabled)
+
+
 def _fmt_number(value: Optional[float]) -> str:
     if value is None:
         return "-"
@@ -524,8 +531,8 @@ def _render(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, co
         state = _color(color_enabled, "32", "up") if proc.get("alive") else _color(color_enabled, "31;1", "dead")
         agent_rows.append(f"{proc.get('name','-'):<14} pid={proc.get('pid','-'):<7} {state}")
 
-    left_top = _panel("Team/Pipeline", team_rows, panel_w, color_enabled=color_enabled)
-    right_top = _panel("Agents/Processes", agent_rows, panel_w, color_enabled=color_enabled)
+    left_top = _panel_fixed("Team/Pipeline", team_rows, panel_w, body_rows=8, color_enabled=color_enabled)
+    right_top = _panel_fixed("Agents/Processes", agent_rows, panel_w, body_rows=8, color_enabled=color_enabled)
     lines.extend(_merge_columns(left_top, right_top, width))
 
     queue_rows: List[str] = []
@@ -555,12 +562,12 @@ def _render(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, co
     if not snapshot.recent_events:
         review_rows.append("none")
 
-    left_bottom = _panel("Work Queue", queue_rows, panel_w, color_enabled=color_enabled)
-    right_bottom = _panel("Reviews/Timeline", review_rows, panel_w, color_enabled=color_enabled)
+    left_bottom = _panel_fixed("Work Queue", queue_rows, panel_w, body_rows=14, color_enabled=color_enabled)
+    right_bottom = _panel_fixed("Reviews/Timeline", review_rows, panel_w, body_rows=14, color_enabled=color_enabled)
     lines.extend(_merge_columns(left_bottom, right_bottom, width))
 
     action_rows = snapshot.next_actions[:8] or ["none"]
-    lines.extend(_panel("Next Actions", action_rows, width, color_enabled=color_enabled))
+    lines.extend(_panel_fixed("Next Actions", action_rows, width, body_rows=4, color_enabled=color_enabled))
     lines.append(sep)
     lines.append("controls: Ctrl+C exit | this is btop-inspired (layout/theme), adapted for agent-leader ops")
     return "\n".join(lines)
@@ -573,6 +580,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--auto-stop-on-complete", action="store_true")
     p.add_argument("--complete-streak", type=int, default=3)
     p.add_argument("--stale-seconds", type=int, default=1800)
+    p.add_argument("--full-clear", action="store_true", help="Use full screen clear each refresh (default is static top-style redraw)")
     args = p.parse_args(argv)
 
     root = Path(__file__).resolve().parents[2]
@@ -581,6 +589,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     completed = False
     auto_stopped = False
     complete_streak = 0
+    last_lines = 0
 
     stop = False
 
@@ -605,8 +614,17 @@ def main(argv: Optional[List[str]] = None) -> int:
                 auto_stopped = True
 
         out = _render(snap, completed=completed, auto_stopped=auto_stopped)
-        sys.stdout.write("\x1b[2J\x1b[H")
-        sys.stdout.write(out + "\n")
+        out_lines = out.splitlines()
+        if args.full_clear:
+            sys.stdout.write("\x1b[2J\x1b[H")
+            sys.stdout.write(out + "\n")
+        else:
+            # top-like static redraw: move cursor home and overwrite old content.
+            sys.stdout.write("\x1b[H")
+            sys.stdout.write("\n".join(out_lines) + "\n")
+            if last_lines > len(out_lines):
+                sys.stdout.write(("\n" * (last_lines - len(out_lines))))
+        last_lines = len(out_lines)
         sys.stdout.flush()
 
         time.sleep(max(0.5, args.refresh_seconds))
