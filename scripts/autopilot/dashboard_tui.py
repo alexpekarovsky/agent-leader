@@ -95,14 +95,21 @@ def _truncate(text: Any, width: int) -> str:
     return s[: width - 3] + "..."
 
 
-def _panel(title: str, rows: List[str], width: int) -> List[str]:
+def _color(enabled: bool, code: str, text: str) -> str:
+    if not enabled:
+        return text
+    return f"\033[{code}m{text}\033[0m"
+
+
+def _panel(title: str, rows: List[str], width: int, color_enabled: bool = True) -> List[str]:
     inner = max(10, width - 4)
-    out = [f"+- {_truncate(title, inner - 1)} " + "-" * max(0, inner - len(title) - 2) + "+"]
+    header = f"+- {_truncate(title, inner - 1)} " + "-" * max(0, inner - len(title) - 2) + "+"
+    out = [_color(color_enabled, "36;1", header)]
     if not rows:
         rows = ["-"]
     for row in rows:
         out.append("| " + _truncate(row, inner).ljust(inner) + " |")
-    out.append("+" + "-" * (width - 2) + "+")
+    out.append(_color(color_enabled, "36;1", "+" + "-" * (width - 2) + "+"))
     return out
 
 
@@ -121,6 +128,18 @@ def _extract_task_id(payload: Dict[str, Any]) -> str:
         if isinstance(value, str) and value:
             return value
     return ""
+
+
+def _merge_columns(left: List[str], right: List[str], total_width: int, gap: int = 2) -> List[str]:
+    left_w = max(38, (total_width - gap) // 2)
+    right_w = max(38, total_width - gap - left_w)
+    height = max(len(left), len(right))
+    out: List[str] = []
+    for i in range(height):
+        l = left[i] if i < len(left) else ""
+        r = right[i] if i < len(right) else ""
+        out.append(l.ljust(left_w) + (" " * gap) + r.ljust(right_w))
+    return out
 
 
 @dataclass
@@ -446,86 +465,104 @@ def _stop_supervisor(project_root: str, root: Path) -> None:
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
 
-def _render(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool) -> str:
-    width = _term_width()
-    sep = "=" * max(80, width)
+def _render(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, color_enabled: bool = True) -> str:
+    width = max(100, _term_width())
+    sep = "=" * width
     lines: List[str] = []
     now = _now_utc().strftime("%Y-%m-%d %H:%M:%SZ")
-    mode = "COMPLETED (100%)" if completed else "RUNNING"
+    mode = "COMPLETED" if completed else "RUNNING"
+    mode_color = "32;1" if completed else "33;1"
+    title = _color(color_enabled, "35;1", "AGENT LEADER // BTOP STYLE DASHBOARD")
     lines.append(sep)
-    lines.append(f"AGENT LEADER CONTROL TUI | {mode} | {now}")
-    lines.append(f"Project: {snapshot.project_root}")
-    lines.append(f"Progress: {_progress_bar(snapshot.progress_percent)}")
-    lines.append(f"Pipeline: total={snapshot.total_tasks} open={snapshot.open_tasks} done={snapshot.done_tasks} in_progress={len(snapshot.in_progress)} assigned={len(snapshot.assigned)}")
-    lines.append(f"Quality: blockers(open)={snapshot.blockers_open} bugs(open)={snapshot.bugs_open} stale_in_progress={snapshot.stale_in_progress}")
-    lines.append(f"Code Output: reports={snapshot.reports_count} LOC +{snapshot.loc_added_total} -{snapshot.loc_deleted_total} net={snapshot.loc_net_total}")
-    token_line = "Token Usage: n/a (report token fields not present)"
-    if snapshot.token_total is not None:
-        token_line = (
-            f"Token Usage: total={snapshot.token_total} "
-            f"prompt={snapshot.token_prompt_total or 0} completion={snapshot.token_completion_total or 0}"
-        )
-    lines.append(token_line)
+    lines.append(f"{title}  {_color(color_enabled, mode_color, mode)}  {now}")
+    lines.append(f"Project: {_truncate(snapshot.project_root, width - 9)}")
+
+    top_stats = [
+        f"tasks:{snapshot.total_tasks}",
+        f"open:{snapshot.open_tasks}",
+        f"done:{snapshot.done_tasks}",
+        f"in_progress:{len(snapshot.in_progress)}",
+        f"queued:{len(snapshot.assigned)}",
+        f"blockers:{snapshot.blockers_open}",
+        f"bugs:{snapshot.bugs_open}",
+    ]
+    lines.append(" | ".join(top_stats))
+    lines.append(f"progress {_progress_bar(snapshot.progress_percent, width=40)}")
     eta = f"{snapshot.eta_minutes}m" if snapshot.eta_minutes is not None else "-"
-    lines.append(f"Throughput: done_last_hour={snapshot.done_last_hour} done_per_hour={_fmt_number(snapshot.throughput_per_hour)} ETA={eta}")
-    lines.append(f"Headless Call Budget (today): {snapshot.budget_calls_today}")
+    lines.append(
+        f"throughput done_last_hour={snapshot.done_last_hour} done_per_hour={_fmt_number(snapshot.throughput_per_hour)} eta={eta} "
+        f"| loc +{snapshot.loc_added_total} -{snapshot.loc_deleted_total} net={snapshot.loc_net_total}"
+    )
+    if snapshot.token_total is None:
+        lines.append("tokens total=- prompt=- completion=-")
+    else:
+        lines.append(
+            f"tokens total={snapshot.token_total} prompt={snapshot.token_prompt_total or 0} completion={snapshot.token_completion_total or 0}"
+        )
+    lines.append(f"budget_calls_today={snapshot.budget_calls_today}")
     if snapshot.budget_by_process:
-        budget_parts = [f"{k}={v}" for k, v in sorted(snapshot.budget_by_process.items())[:8]]
-        lines.append("  " + " | ".join(budget_parts))
+        lines.append("budget_by_proc: " + " | ".join(f"{k}:{v}" for k, v in sorted(snapshot.budget_by_process.items())[:6]))
     if auto_stopped:
-        lines.append("Supervisor: auto-stopped after completion to prevent token leakage")
+        lines.append(_color(color_enabled, "32;1", "auto-stop engaged: supervisor stopped after completion"))
     lines.append(sep)
 
-    status_rows = ["Status Counts: " + ", ".join(f"{k}:{v}" for k, v in sorted(snapshot.status_counts.items()))]
+    panel_w = (width - 2) // 2
+    team_rows = ["status_counts: " + ", ".join(f"{k}:{v}" for k, v in sorted(snapshot.status_counts.items()))]
     for team_id, c in sorted(snapshot.team_lane_counts.items()):
-        status_rows.append(
-            f"team={team_id:<10} total={c.get('total', 0):<3} open={c.get('open', 0):<3} done={c.get('done', 0):<3} ip={c.get('in_progress', 0):<3} assigned={c.get('assigned', 0):<3} blocked={c.get('blocked', 0):<3}"
+        team_rows.append(
+            f"{team_id:<12} total={c.get('total',0):<3} open={c.get('open',0):<3} done={c.get('done',0):<3} ip={c.get('in_progress',0):<3} blocked={c.get('blocked',0):<3}"
         )
-    lines.extend(_panel("Team Pipeline", status_rows, max(80, width)))
+    if not snapshot.team_lane_counts:
+        team_rows.append("no team lanes for current scope")
 
     agent_rows: List[str] = []
-    for a in snapshot.active_agents[:10]:
-        agent_rows.append(f"{a['agent']:<12} status={a['status']:<8} age={_format_age(a['age_s']):>7} instance={a['instance_id']}")
+    for a in snapshot.active_agents[:8]:
+        agent_rows.append(f"{a['agent']:<11} {a['status']:<8} age={_format_age(a['age_s']):>7}")
     if not agent_rows:
         agent_rows = ["none"]
-    for proc in snapshot.supervisor_processes[:10]:
-        proc_state = "up" if proc.get("alive") else "dead"
-        agent_rows.append(f"proc:{proc.get('name', '-'):<20} pid={proc.get('pid', '-')} state={proc_state:<4} age={_format_age(proc.get('age_s'))}")
-    lines.extend(_panel("Agents and Supervisor", agent_rows, max(80, width)))
+    for proc in snapshot.supervisor_processes[:8]:
+        state = _color(color_enabled, "32", "up") if proc.get("alive") else _color(color_enabled, "31;1", "dead")
+        agent_rows.append(f"{proc.get('name','-'):<14} pid={proc.get('pid','-'):<7} {state}")
 
-    in_progress_rows: List[str] = []
+    left_top = _panel("Team/Pipeline", team_rows, panel_w, color_enabled=color_enabled)
+    right_top = _panel("Agents/Processes", agent_rows, panel_w, color_enabled=color_enabled)
+    lines.extend(_merge_columns(left_top, right_top, width))
+
+    queue_rows: List[str] = []
     if snapshot.in_progress:
-        for t in snapshot.in_progress[:10]:
-            in_progress_rows.append(
-                f"{t.get('id','-')} | owner={t.get('owner','-')} | age={_format_age(_age_s(t.get('updated_at')))} | {t.get('title','')}"
-            )
+        queue_rows.append("in-progress:")
+        for t in snapshot.in_progress[:8]:
+            queue_rows.append(f"{t.get('id','-')} {t.get('owner','-')} age={_format_age(_age_s(t.get('updated_at')))}")
+            queue_rows.append("  " + str(t.get("title", "")))
     else:
-        in_progress_rows.append("none")
+        queue_rows.append("in-progress: none")
     if snapshot.assigned:
-        in_progress_rows.append("-")
-        in_progress_rows.append("Queued:")
-        for t in snapshot.assigned[:8]:
-            in_progress_rows.append(f"{t.get('id','-')} | {t.get('status','-')} | owner={t.get('owner','-')} | {t.get('title','')}")
-    lines.extend(_panel("Work Queue", in_progress_rows, max(80, width)))
+        queue_rows.append("queued:")
+        for t in snapshot.assigned[:6]:
+            queue_rows.append(f"{t.get('id','-')} {t.get('status','-')} {t.get('owner','-')}")
+            queue_rows.append("  " + str(t.get("title", "")))
 
     review_rows: List[str] = []
+    review_rows.append("review/validation:")
     if snapshot.review_events:
-        review_rows.append("Review/Validation:")
-        for ev in snapshot.review_events[:8]:
-            review_rows.append(f"{ev.get('type')} | {ev.get('task_id') or '-'} | {ev.get('source')}")
-    if snapshot.recent_events:
-        review_rows.append("-")
-        review_rows.append("Timeline:")
-        for ev in snapshot.recent_events[:8]:
-            review_rows.append(f"{ev.get('type')} | {ev.get('task_id') or '-'} | {ev.get('source')}")
-    if not review_rows:
+        for ev in snapshot.review_events[:6]:
+            review_rows.append(f"{ev.get('type')} {ev.get('task_id') or '-'} by {ev.get('source')}")
+    else:
         review_rows.append("none")
-    lines.extend(_panel("Review and Timeline", review_rows, max(80, width)))
+    review_rows.append("timeline:")
+    for ev in snapshot.recent_events[:6]:
+        review_rows.append(f"{ev.get('type')} {ev.get('task_id') or '-'} by {ev.get('source')}")
+    if not snapshot.recent_events:
+        review_rows.append("none")
 
-    lines.extend(_panel("Next Actions", snapshot.next_actions[:8], max(80, width)))
+    left_bottom = _panel("Work Queue", queue_rows, panel_w, color_enabled=color_enabled)
+    right_bottom = _panel("Reviews/Timeline", review_rows, panel_w, color_enabled=color_enabled)
+    lines.extend(_merge_columns(left_bottom, right_bottom, width))
 
+    action_rows = snapshot.next_actions[:8] or ["none"]
+    lines.extend(_panel("Next Actions", action_rows, width, color_enabled=color_enabled))
     lines.append(sep)
-    lines.append("Controls: Ctrl+C to exit dashboard")
+    lines.append("controls: Ctrl+C exit | this is btop-inspired (layout/theme), adapted for agent-leader ops")
     return "\n".join(lines)
 
 
