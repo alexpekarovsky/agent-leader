@@ -143,6 +143,12 @@ version:
       depends_on: [ci-github-integrations]
       inspiration: ralph
 
+    - id: consult-only-team-review
+      title: "Add consult-only MCP workflow to request team feedback on feature, bug, or architecture without starting execution"
+      effort: M
+      status: planned
+      tags: [orchestration, mcp-only, collaboration, ux]
+
 roadmap:
   - version: v0.3.0
     name: "UX and Operator Experience"
