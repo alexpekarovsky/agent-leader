@@ -21,6 +21,7 @@
 #   --idle-backoff CSV        Idle backoff seconds list for loops (default: 30,60,120,300,900)
 #   --max-idle-cycles N       Auto-exit loop after N idle cycles (0 disables)
 #   --daily-call-budget N     Per-process daily LLM call budget (0 disables)
+#   --event-driven            Enable worker event-driven wakeups (file signal based)
 #   --low-burn                Apply conservative low-burn defaults (default)
 #   --high-throughput         Disable low-burn defaults and run legacy cadence
 #   --leader-agent AGENT      Leader agent id (default: codex)

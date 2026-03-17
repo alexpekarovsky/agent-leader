@@ -95,6 +95,12 @@ version:
       status: done
       tags: [qa, benchmark, cost-control]
 
+    - id: headless-tui-dashboard
+      title: Add live terminal dashboard + auto-stop headless runner for end-to-end feature tracking
+      effort: M
+      status: done
+      tags: [headless, tui, operator-experience]
+
     - id: policy-bundle-presets
       title: Add policy bundles for strict QA, prototype, and balanced modes
       effort: M

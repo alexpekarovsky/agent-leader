@@ -558,6 +558,7 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> Tuple[str, Supe
     parser.add_argument("--idle-backoff", default="30,60,120,300,900")
     parser.add_argument("--max-idle-cycles", type=int, default=0)
     parser.add_argument("--daily-call-budget", type=int, default=0)
+    parser.add_argument("--event-driven", action="store_true")
     parser.add_argument("--low-burn", dest="low_burn", action="store_true")
     parser.add_argument("--high-throughput", dest="low_burn", action="store_false")
     parser.set_defaults(low_burn=True)
@@ -591,6 +592,7 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> Tuple[str, Supe
         idle_backoff=args.idle_backoff,
         max_idle_cycles=args.max_idle_cycles,
         daily_call_budget=args.daily_call_budget,
+        event_driven=args.event_driven,
         low_burn=args.low_burn,
         leader_agent=args.leader_agent,
         leader_cli=args.leader_cli,

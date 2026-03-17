@@ -343,6 +343,31 @@ Use MCP tools instead of shell wrappers when driving runtime directly from Codex
 
 `orchestrator_headless_start` accepts the same topology knobs as the supervisor path (`leader_agent`, team ids, per-agent project roots, intervals/timeouts, optional extra workers).
 
+### Quick start (Headless + Live TUI Dashboard)
+Run headless team with a terminal dashboard that tracks tasks/agents/reviews/LOC in real time and auto-stops processes at completion:
+
+```bash
+./scripts/autopilot/headless_tui_run.py \
+  --project-root /Users/alex/Projects/agent-leader \
+  --feature "my-feature" \
+  --seed \
+  --task "Implement API endpoint" \
+  --task "Add tests" \
+  --task "Run review gate"
+```
+
+What this does:
+- seeds tasks (optional `--seed`)
+- starts supervisor with low-burn + event-driven settings
+- opens `scripts/autopilot/dashboard_tui.py` in foreground
+- when project open-tasks reach zero, dashboard shows `100%` and auto-runs `stop` + `clean` to avoid token leakage
+
+Useful flags:
+- `--leader-agent claude_code|codex|gemini`
+- `--daily-call-budget 120`
+- `--max-idle-cycles 30`
+- `--refresh-seconds 2.0`
+
 ### Policy bundles
 Preset policies are available under `config/`:
 
