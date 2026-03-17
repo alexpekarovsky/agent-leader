@@ -65,6 +65,7 @@ class SupervisorConfig:
     gemini_project_root: str = ""
     codex_project_root: str = ""
     wingman_project_root: str = ""
+    gemini_model: str = "gemini-2.5-flash"
     claude_team_id: str = ""
     gemini_team_id: str = ""
     codex_team_id: str = ""
@@ -226,8 +227,9 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             f"{_event_driven_arg()}"
         )
     if name == "gemini":
+        model_env = f"ORCHESTRATOR_GEMINI_MODEL={cfg.gemini_model} " if cfg.gemini_model else ""
         return (
-            f"{scripts}/worker_loop.sh"
+            f"{model_env}{scripts}/worker_loop.sh"
             f" --cli gemini --agent gemini{_team_arg(cfg.gemini_team_id)}"
             f" --project-root {cfg.gemini_project_root}"
             f" --interval {cfg.worker_interval}"
@@ -570,6 +572,7 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> Tuple[str, Supe
     parser.add_argument("--gemini-project-root", default="")
     parser.add_argument("--codex-project-root", default="")
     parser.add_argument("--wingman-project-root", default="")
+    parser.add_argument("--gemini-model", default="gemini-2.5-flash")
     parser.add_argument("--claude-team-id", default="")
     parser.add_argument("--gemini-team-id", default="")
     parser.add_argument("--codex-team-id", default="")
@@ -602,6 +605,7 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> Tuple[str, Supe
         gemini_project_root=args.gemini_project_root,
         codex_project_root=args.codex_project_root,
         wingman_project_root=args.wingman_project_root,
+        gemini_model=args.gemini_model,
         claude_team_id=args.claude_team_id,
         gemini_team_id=args.gemini_team_id,
         codex_team_id=args.codex_team_id,

@@ -105,7 +105,11 @@ if cli == "codex":
 elif cli == "claude":
     cmd = ["claude", "--dangerously-skip-permissions", "-p", ""]
 elif cli == "gemini":
-    cmd = ["gemini", "--approval-mode", "yolo", "-p", ""]
+    cmd = ["gemini", "--approval-mode", "yolo"]
+    gemini_model = env.get("ORCHESTRATOR_GEMINI_MODEL", "").strip() or env.get("GEMINI_MODEL", "").strip()
+    if gemini_model:
+        cmd.extend(["-m", gemini_model])
+    cmd.extend(["-p", ""])
 else:
     print(f"Unsupported CLI: {cli}", file=sys.stderr)
     sys.exit(2)

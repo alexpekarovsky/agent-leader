@@ -30,6 +30,7 @@
 #   --wingman-cli CLI         Wingman CLI (default: claude)
 #   --claude-project-root DIR Worker project root for claude_code (default: --project-root)
 #   --gemini-project-root DIR Worker project root for gemini (default: --project-root)
+#   --gemini-model MODEL      Gemini model for headless gemini worker (default: gemini-2.5-flash)
 #   --codex-project-root DIR  Worker project root for codex worker (default: --project-root)
 #   --wingman-project-root DIR Worker project root for wingman (default: --project-root)
 #   --claude-team-id ID       Team id for claude_code worker lane
