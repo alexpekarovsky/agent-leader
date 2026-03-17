@@ -78,6 +78,28 @@ def _term_width(default: int = 120) -> int:
         return default
 
 
+def _term_height(default: int = 40) -> int:
+    try:
+        return shutil.get_terminal_size((120, default)).lines
+    except Exception:
+        return default
+
+
+def _split_rows(total: int, mins: List[int], weights: List[int]) -> List[int]:
+    if len(mins) != len(weights):
+        raise ValueError("mins and weights length mismatch")
+    rows = mins[:]
+    remaining = max(0, total - sum(rows))
+    wsum = max(1, sum(weights))
+    for i, w in enumerate(weights):
+        rows[i] += (remaining * w) // wsum
+    i = 0
+    while sum(rows) < total:
+        rows[i % len(rows)] += 1
+        i += 1
+    return rows
+
+
 def _progress_bar(percent: int, width: int = 30) -> str:
     pct = max(0, min(100, percent))
     filled = int((pct / 100) * width)
@@ -613,7 +635,8 @@ def _health_score(snap: DashboardSnapshot) -> int:
 
 
 def _render_claude_v3a(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, color_enabled: bool = True) -> str:
-    width = max(100, _term_width())
+    width = max(72, _term_width())
+    height = max(24, _term_height())
     sep = _color(color_enabled, "35;1", "=" * width)
     lines: List[str] = []
     now = _now_utc().strftime("%Y-%m-%d %H:%M:%SZ")
@@ -661,6 +684,10 @@ def _render_claude_v3a(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
 
     # ── Two-column: Progress & Throughput | Cost & Efficiency ──
     panel_w = (width - 2) // 2
+    narrow = width < 120
+    fixed_lines = 8
+    remaining = max(12, height - fixed_lines)
+    top_rows, mid_rows, bot_rows = _split_rows(remaining, [4, 6, 2], [2, 3, 1])
     eta = f"{snapshot.eta_minutes}m" if snapshot.eta_minutes is not None else "-"
     prog_rows = [
         f"Done: {snapshot.done_tasks}/{snapshot.total_tasks} ({snapshot.progress_percent}%)",
@@ -684,9 +711,13 @@ def _render_claude_v3a(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
         for k, v in sorted(snapshot.budget_by_process.items())[:3]:
             cost_rows.append(f"  {k}: {v}")
 
-    left = _panel_fixed("Progress & Throughput", prog_rows, panel_w, body_rows=7, color_enabled=color_enabled)
-    right = _panel_fixed("Cost & Efficiency", cost_rows, panel_w, body_rows=7, color_enabled=color_enabled)
-    lines.extend(_merge_columns(left, right, width))
+    if narrow:
+        lines.extend(_panel_fixed("Progress & Throughput", prog_rows, width, body_rows=top_rows, color_enabled=color_enabled))
+        lines.extend(_panel_fixed("Cost & Efficiency", cost_rows, width, body_rows=max(2, top_rows), color_enabled=color_enabled))
+    else:
+        left = _panel_fixed("Progress & Throughput", prog_rows, panel_w, body_rows=top_rows, color_enabled=color_enabled)
+        right = _panel_fixed("Cost & Efficiency", cost_rows, panel_w, body_rows=top_rows, color_enabled=color_enabled)
+        lines.extend(_merge_columns(left, right, width))
 
     # ── Two-column: Fleet | Active Work ──
     fleet_rows: List[str] = []
@@ -720,9 +751,13 @@ def _render_claude_v3a(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
     work_rows.append("-")
     work_rows.append(f"Failure Rate: {_fmt_number(snapshot.task_failure_rate_percent)}%  |  Stale IP: {snapshot.stale_in_progress}")
 
-    left2 = _panel_fixed("Fleet", fleet_rows, panel_w, body_rows=12, color_enabled=color_enabled)
-    right2 = _panel_fixed("Active Work", work_rows, panel_w, body_rows=12, color_enabled=color_enabled)
-    lines.extend(_merge_columns(left2, right2, width))
+    if narrow:
+        lines.extend(_panel_fixed("Fleet", fleet_rows, width, body_rows=mid_rows, color_enabled=color_enabled))
+        lines.extend(_panel_fixed("Active Work", work_rows, width, body_rows=mid_rows, color_enabled=color_enabled))
+    else:
+        left2 = _panel_fixed("Fleet", fleet_rows, panel_w, body_rows=mid_rows, color_enabled=color_enabled)
+        right2 = _panel_fixed("Active Work", work_rows, panel_w, body_rows=mid_rows, color_enabled=color_enabled)
+        lines.extend(_merge_columns(left2, right2, width))
 
     # ── Full-width: Alerts & Actions ──
     alert_rows: List[str] = []
@@ -730,7 +765,7 @@ def _render_claude_v3a(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
         alert_rows.append(f">> {action}")
     if not alert_rows:
         alert_rows.append(">> No actions required.")
-    lines.extend(_panel_fixed("Alerts & Actions", alert_rows, width, body_rows=4, color_enabled=color_enabled))
+    lines.extend(_panel_fixed("Alerts & Actions", alert_rows, width, body_rows=bot_rows, color_enabled=color_enabled))
 
     lines.append(sep)
     lines.append("controls: Ctrl+C exit | style=claude-v3a")
@@ -942,7 +977,8 @@ def _render_gemini(snapshot: DashboardSnapshot, completed: bool, auto_stopped: b
 
 
 def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, color_enabled: bool = True) -> str:
-    width = max(110, _term_width())
+    width = max(72, _term_width())
+    height = max(24, _term_height())
     sep = _color(color_enabled, "34;1", "=" * width)
     lines: List[str] = []
     now = _now_utc().strftime("%Y-%m-%d %H:%M:%SZ")
@@ -964,7 +1000,12 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
     lines.append("  |  ".join(stats))
     lines.append(sep)
 
-    panel_w = (width - 2) // 3
+    three_col = width >= 165
+    two_col = 120 <= width < 165
+    panel_w = (width - 2) // 3 if three_col else (width - 2) // 2
+    fixed_lines = 7
+    remaining = max(12, height - fixed_lines)
+    top_rows, bottom_rows, action_rows_n = _split_rows(remaining, [7, 6, 2], [3, 3, 1])
     
     # Panel 1: Velocity & Quality
     vel_rows = [
@@ -1008,17 +1049,25 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
     for k, v in sorted(snapshot.budget_by_process.items())[:3]:
         cost_rows.append(f"  {k:<12} {v}")
 
-    # Render Top 3 Panels
-    p1 = _panel_fixed("Velocity & Quality", vel_rows, panel_w, body_rows=14, color_enabled=color_enabled)
-    p2 = _panel_fixed("Fleet Status", fleet_rows, panel_w, body_rows=14, color_enabled=color_enabled)
-    p3 = _panel_fixed("Costs & Systems", cost_rows, panel_w, body_rows=14, color_enabled=color_enabled)
-    
-    height = max(len(p1), len(p2), len(p3))
-    for i in range(height):
-        l1 = p1[i] if i < len(p1) else " " * panel_w
-        l2 = p2[i] if i < len(p2) else " " * panel_w
-        l3 = p3[i] if i < len(p3) else " " * panel_w
-        lines.append(l1 + " " + l2 + " " + l3)
+    # Render top panels (responsive)
+    p1 = _panel_fixed("Velocity & Quality", vel_rows, panel_w, body_rows=top_rows, color_enabled=color_enabled)
+    p2 = _panel_fixed("Fleet Status", fleet_rows, panel_w, body_rows=top_rows, color_enabled=color_enabled)
+    p3 = _panel_fixed("Costs & Systems", cost_rows, panel_w, body_rows=top_rows, color_enabled=color_enabled)
+
+    if three_col:
+        h = max(len(p1), len(p2), len(p3))
+        for i in range(h):
+            l1 = p1[i] if i < len(p1) else " " * panel_w
+            l2 = p2[i] if i < len(p2) else " " * panel_w
+            l3 = p3[i] if i < len(p3) else " " * panel_w
+            lines.append(l1 + " " + l2 + " " + l3)
+    elif two_col:
+        lines.extend(_merge_columns(p1, p2, width))
+        lines.extend(_panel_fixed("Costs & Systems", cost_rows, width, body_rows=max(3, top_rows // 2), color_enabled=color_enabled))
+    else:
+        lines.extend(_panel_fixed("Velocity & Quality", vel_rows, width, body_rows=top_rows, color_enabled=color_enabled))
+        lines.extend(_panel_fixed("Fleet Status", fleet_rows, width, body_rows=top_rows, color_enabled=color_enabled))
+        lines.extend(_panel_fixed("Costs & Systems", cost_rows, width, body_rows=max(3, top_rows // 2), color_enabled=color_enabled))
 
     lines.append(sep)
 
@@ -1037,11 +1086,15 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
     for ev in snapshot.recent_events[:10]:
         timeline_rows.append(f"{ev.get('time')[11:16]} {ev.get('type'):<20} {ev.get('task_id') or '-':<10} {ev.get('source')}")
 
-    p_queue = _panel_fixed("Work Queue", queue_rows, bot_w, body_rows=12, color_enabled=color_enabled)
-    p_time = _panel_fixed("Timeline", timeline_rows, bot_w, body_rows=12, color_enabled=color_enabled)
-    lines.extend(_merge_columns(p_queue, p_time, width))
+    if width >= 120:
+        p_queue = _panel_fixed("Work Queue", queue_rows, bot_w, body_rows=bottom_rows, color_enabled=color_enabled)
+        p_time = _panel_fixed("Timeline", timeline_rows, bot_w, body_rows=bottom_rows, color_enabled=color_enabled)
+        lines.extend(_merge_columns(p_queue, p_time, width))
+    else:
+        lines.extend(_panel_fixed("Work Queue", queue_rows, width, body_rows=bottom_rows, color_enabled=color_enabled))
+        lines.extend(_panel_fixed("Timeline", timeline_rows, width, body_rows=bottom_rows, color_enabled=color_enabled))
 
-    lines.extend(_panel_fixed("Recommended Actions", snapshot.next_actions[:4] or ["none"], width, body_rows=3, color_enabled=color_enabled))
+    lines.extend(_panel_fixed("Recommended Actions", snapshot.next_actions[:4] or ["none"], width, body_rows=action_rows_n, color_enabled=color_enabled))
     lines.append(sep)
     lines.append("controls: Ctrl+C exit | style=gemini-v3b")
     return "\n".join(lines)
@@ -1100,9 +1153,14 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         out = _render(snap, completed=completed, auto_stopped=auto_stopped, style=args.style)
         out_lines = out.splitlines()
+        term_rows = max(10, _term_height())
+        if len(out_lines) > term_rows:
+            out_lines = out_lines[:term_rows]
+        elif len(out_lines) < term_rows:
+            out_lines = out_lines + ([""] * (term_rows - len(out_lines)))
         if args.full_clear:
             sys.stdout.write("\x1b[2J\x1b[H")
-            sys.stdout.write(out + "\n")
+            sys.stdout.write("\n".join(out_lines) + "\n")
         else:
             # top-like static redraw: move cursor home and overwrite old content.
             sys.stdout.write("\x1b[H")
