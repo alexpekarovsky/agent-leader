@@ -91,7 +91,7 @@
 <body>
   <div class="wrap">
     <h1>Agent Leader Feature / Capability Matrix</h1>
-    <div class="meta">Mode comparison: Interactive (MCP tools) vs Headless (scripts/runtime). Snapshot date: 2026-03-07 (post smoke 177/177 + parity close).</div>
+    <div class="meta">Mode comparison: Interactive (MCP tools) vs Headless (scripts/runtime). Snapshot date: 2026-03-08 (post parity lifecycle + CI normalization).</div>
 
     <div class="card">
       <table>
@@ -134,6 +134,8 @@
           <tr><td>Headless runtime status</td><td><code>orchestrator_headless_status</code></td><td><code>supervisor.sh status</code></td><td><span class="tag t-parity">Parity</span></td><td>Machine-readable MCP status available.</td></tr>
           <tr><td>Headless runtime restart</td><td><code>orchestrator_headless_restart</code></td><td><code>supervisor.sh restart</code></td><td><span class="tag t-parity">Parity</span></td><td>MCP lifecycle parity completed.</td></tr>
           <tr><td>Headless runtime clean</td><td><code>orchestrator_headless_clean</code></td><td><code>supervisor.sh clean</code></td><td><span class="tag t-parity">Parity</span></td><td>MCP lifecycle parity completed.</td></tr>
+          <tr><td>Operational parity smoke diagnostics</td><td><code>orchestrator_parity_smoke</code></td><td>Manual smoke scripts + log triage</td><td><span class="tag t-partial">Partial</span></td><td>MCP provides structured diagnostic bundle; headless path remains script-driven.</td></tr>
+          <tr><td>GitHub CI result normalization</td><td><code>orchestrator_normalize_github_ci</code></td><td>No direct shell/runtime equivalent</td><td><span class="tag t-io">Interactive-only</span></td><td>CI ingestion utility for issue/PR handoff groundwork.</td></tr>
           <tr><td>tmux multi-pane UX</td><td>Not required in MCP flow</td><td><code>team_tmux.sh</code></td><td><span class="tag t-io">Headless-only</span></td><td>Convenience orchestration shell UX.</td></tr>
         </tbody>
       </table>
