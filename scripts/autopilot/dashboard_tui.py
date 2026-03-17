@@ -180,6 +180,15 @@ class DashboardSnapshot:
     throughput_per_hour: Optional[float]
     eta_minutes: Optional[int]
     next_actions: List[str]
+    validation_passed: int
+    validation_failed: int
+    review_pass_rate: Optional[float]
+    oldest_open_task_age_s: Optional[int]
+    queue_pressure: Optional[float]
+    active_agent_count: int
+    idle_agent_count: int
+    avg_loc_per_report: Optional[float]
+    avg_tokens_per_report: Optional[float]
 
 
 def _task_matches_project(task: Dict[str, Any], project_root: str) -> bool:
@@ -302,6 +311,9 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
     in_progress = [t for t in scoped if str(t.get("status", "")).strip().lower() == "in_progress"]
     assigned = [t for t in scoped if str(t.get("status", "")).strip().lower() in {"assigned", "bug_open", "reported"}]
     stale_in_progress = sum(1 for t in in_progress if (_age_s(t.get("updated_at")) or 0) >= max(1, stale_seconds))
+    open_ages = [_age_s(t.get("updated_at")) for t in scoped if str(t.get("status", "")).strip().lower() in OPEN_STATUSES]
+    open_ages = [a for a in open_ages if isinstance(a, int)]
+    oldest_open_task_age_s = max(open_ages) if open_ages else None
 
     blockers_open = sum(1 for b in blockers if str(b.get("status", "")).lower() == "open")
     bugs_open = sum(1 for b in bugs if str(b.get("status", "")).lower() == "open")
@@ -321,12 +333,21 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
 
     review_events: List[Dict[str, Any]] = []
     recent_events = _read_recent_events(root, limit=12)
+    validation_passed = 0
+    validation_failed = 0
     for ev in recent_events:
         et = str(ev.get("type", ""))
         if et in {"validation.passed", "validation.failed", "task.reported"}:
             review_events.append({"time": ev.get("time", ""), "type": et, "source": ev.get("source", ""), "task_id": ev.get("task_id", "")})
+        if et == "validation.passed":
+            validation_passed += 1
+        elif et == "validation.failed":
+            validation_failed += 1
         if len(review_events) >= 8:
             break
+    review_pass_rate: Optional[float] = None
+    if (validation_passed + validation_failed) > 0:
+        review_pass_rate = (validation_passed / (validation_passed + validation_failed)) * 100.0
 
     budget_by_process: Dict[str, int] = {}
     stamp = _now_utc().strftime("%Y%m%d")
@@ -405,6 +426,17 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
         eta_minutes = int((open_tasks / throughput_per_hour) * 60)
 
     supervisor_processes = _read_supervisor_processes(root)
+    active_agent_count = sum(1 for a in active_agents if str(a.get("status", "")).lower() == "active")
+    idle_agent_count = max(0, active_agent_count - len(in_progress))
+    queue_pressure: Optional[float] = None
+    if active_agent_count > 0:
+        queue_pressure = open_tasks / active_agent_count
+    avg_loc_per_report: Optional[float] = None
+    if reports_count > 0:
+        avg_loc_per_report = (loc_added_total + loc_deleted_total) / reports_count
+    avg_tokens_per_report: Optional[float] = None
+    if reports_count > 0 and token_present:
+        avg_tokens_per_report = token_total / reports_count
     next_actions = _compute_next_actions(
         open_tasks=open_tasks,
         assigned_count=len(assigned),
@@ -445,6 +477,15 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
         throughput_per_hour=throughput_per_hour,
         eta_minutes=eta_minutes,
         next_actions=next_actions,
+        validation_passed=validation_passed,
+        validation_failed=validation_failed,
+        review_pass_rate=review_pass_rate,
+        oldest_open_task_age_s=oldest_open_task_age_s,
+        queue_pressure=queue_pressure,
+        active_agent_count=active_agent_count,
+        idle_agent_count=idle_agent_count,
+        avg_loc_per_report=avg_loc_per_report,
+        avg_tokens_per_report=avg_tokens_per_report,
     )
 
 
@@ -472,14 +513,14 @@ def _stop_supervisor(project_root: str, root: Path) -> None:
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
 
-def _render(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, color_enabled: bool = True) -> str:
+def _render_claude(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, color_enabled: bool = True) -> str:
     width = max(100, _term_width())
     sep = "=" * width
     lines: List[str] = []
     now = _now_utc().strftime("%Y-%m-%d %H:%M:%SZ")
     mode = "COMPLETED" if completed else "RUNNING"
     mode_color = "32;1" if completed else "33;1"
-    title = _color(color_enabled, "35;1", "AGENT LEADER // BTOP STYLE DASHBOARD")
+    title = _color(color_enabled, "35;1", "AGENT LEADER // CLAUDE STYLE")
     lines.append(sep)
     lines.append(f"{title}  {_color(color_enabled, mode_color, mode)}  {now}")
     lines.append(f"Project: {_truncate(snapshot.project_root, width - 9)}")
@@ -499,6 +540,10 @@ def _render(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, co
     lines.append(
         f"throughput done_last_hour={snapshot.done_last_hour} done_per_hour={_fmt_number(snapshot.throughput_per_hour)} eta={eta} "
         f"| loc +{snapshot.loc_added_total} -{snapshot.loc_deleted_total} net={snapshot.loc_net_total}"
+    )
+    lines.append(
+        f"review pass={_fmt_number(snapshot.review_pass_rate)}% ({snapshot.validation_passed}/{snapshot.validation_passed + snapshot.validation_failed}) "
+        f"| queue_pressure={_fmt_number(snapshot.queue_pressure)} | oldest_open_age={_format_age(snapshot.oldest_open_task_age_s)}"
     )
     if snapshot.token_total is None:
         lines.append("tokens total=- prompt=- completion=-")
@@ -569,8 +614,113 @@ def _render(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, co
     action_rows = snapshot.next_actions[:8] or ["none"]
     lines.extend(_panel_fixed("Next Actions", action_rows, width, body_rows=4, color_enabled=color_enabled))
     lines.append(sep)
-    lines.append("controls: Ctrl+C exit | this is btop-inspired (layout/theme), adapted for agent-leader ops")
+    lines.append("controls: Ctrl+C exit | style=claude")
     return "\n".join(lines)
+
+
+def _render_gemini(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, color_enabled: bool = True) -> str:
+    width = max(100, _term_width())
+    sep = _color(color_enabled, "34;1", "=" * width)
+    lines: List[str] = []
+    now = _now_utc().strftime("%Y-%m-%d %H:%M:%SZ")
+    mode = _color(color_enabled, "32;1" if completed else "33;1", "COMPLETED" if completed else "RUNNING")
+    lines.append(sep)
+    lines.append(_color(color_enabled, "34;1", f"AGENT LEADER // GEMINI STYLE // {now} // {mode}"))
+    lines.append(f"project={snapshot.project_root}")
+    lines.append(
+        " | ".join(
+            [
+                f"tasks:{snapshot.total_tasks}",
+                f"open:{snapshot.open_tasks}",
+                f"done:{snapshot.done_tasks}",
+                f"ip:{len(snapshot.in_progress)}",
+                f"assigned:{len(snapshot.assigned)}",
+                f"active_agents:{snapshot.active_agent_count}",
+                f"idle_agents:{snapshot.idle_agent_count}",
+            ]
+        )
+    )
+    lines.append(
+        " | ".join(
+            [
+                f"progress:{snapshot.progress_percent}%",
+                f"queue_pressure:{_fmt_number(snapshot.queue_pressure)}",
+                f"done/h:{_fmt_number(snapshot.throughput_per_hour)}",
+                f"eta:{(str(snapshot.eta_minutes) + 'm') if snapshot.eta_minutes is not None else '-'}",
+                f"oldest_open:{_format_age(snapshot.oldest_open_task_age_s)}",
+                f"stale_ip:{snapshot.stale_in_progress}",
+            ]
+        )
+    )
+    lines.append(
+        " | ".join(
+            [
+                f"loc:+{snapshot.loc_added_total}/-{snapshot.loc_deleted_total}/net{snapshot.loc_net_total}",
+                f"reports:{snapshot.reports_count}",
+                f"avg_loc/report:{_fmt_number(snapshot.avg_loc_per_report)}",
+                f"avg_tokens/report:{_fmt_number(snapshot.avg_tokens_per_report)}",
+                f"review_pass:{_fmt_number(snapshot.review_pass_rate)}%",
+            ]
+        )
+    )
+    lines.append(
+        " | ".join(
+            [
+                f"token_total:{snapshot.token_total if snapshot.token_total is not None else '-'}",
+                f"prompt:{snapshot.token_prompt_total if snapshot.token_prompt_total is not None else '-'}",
+                f"completion:{snapshot.token_completion_total if snapshot.token_completion_total is not None else '-'}",
+                f"budget_today:{snapshot.budget_calls_today}",
+            ]
+        )
+    )
+    lines.append(sep)
+
+    panel_w = (width - 2) // 2
+    left_rows: List[str] = ["team lanes:"]
+    for team_id, c in sorted(snapshot.team_lane_counts.items()):
+        left_rows.append(
+            f"{team_id:<12} total={c.get('total',0):<3} open={c.get('open',0):<3} ip={c.get('in_progress',0):<3} done={c.get('done',0):<3} blocked={c.get('blocked',0):<3}"
+        )
+    if not snapshot.team_lane_counts:
+        left_rows.append("none")
+    left_rows.append("-")
+    left_rows.append("status counts:")
+    for k, v in sorted(snapshot.status_counts.items()):
+        left_rows.append(f"{k:<14} {v}")
+    left_rows.append("-")
+    left_rows.append("agents:")
+    for a in snapshot.active_agents[:8]:
+        left_rows.append(f"{a['agent']:<11} {a['status']:<8} age={_format_age(a['age_s'])}")
+
+    right_rows: List[str] = ["queue/in-progress:"]
+    if snapshot.in_progress:
+        for t in snapshot.in_progress[:6]:
+            right_rows.append(f"{t.get('id','-')} | {t.get('owner','-')} | age={_format_age(_age_s(t.get('updated_at')))}")
+            right_rows.append("  " + str(t.get("title", "")))
+    else:
+        right_rows.append("none")
+    right_rows.append("-")
+    right_rows.append("assigned/review:")
+    for t in snapshot.assigned[:6]:
+        right_rows.append(f"{t.get('id','-')} | {t.get('status','-')} | {t.get('owner','-')}")
+        right_rows.append("  " + str(t.get("title", "")))
+    right_rows.append("-")
+    for ev in snapshot.recent_events[:6]:
+        right_rows.append(f"{ev.get('type')} | {ev.get('task_id') or '-'} | {ev.get('source')}")
+
+    left_panel = _panel_fixed("Fleet/Pipeline", left_rows, panel_w, body_rows=24, color_enabled=color_enabled)
+    right_panel = _panel_fixed("Queue/Timeline", right_rows, panel_w, body_rows=24, color_enabled=color_enabled)
+    lines.extend(_merge_columns(left_panel, right_panel, width))
+    lines.extend(_panel_fixed("Actions", snapshot.next_actions[:6] or ["none"], width, body_rows=4, color_enabled=color_enabled))
+    lines.append(sep)
+    lines.append("controls: Ctrl+C exit | style=gemini")
+    return "\n".join(lines)
+
+
+def _render(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, style: str, color_enabled: bool = True) -> str:
+    if style == "gemini":
+        return _render_gemini(snapshot, completed=completed, auto_stopped=auto_stopped, color_enabled=color_enabled)
+    return _render_claude(snapshot, completed=completed, auto_stopped=auto_stopped, color_enabled=color_enabled)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -580,6 +730,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--auto-stop-on-complete", action="store_true")
     p.add_argument("--complete-streak", type=int, default=3)
     p.add_argument("--stale-seconds", type=int, default=1800)
+    p.add_argument("--style", choices=["claude", "gemini"], default="claude")
     p.add_argument("--full-clear", action="store_true", help="Use full screen clear each refresh (default is static top-style redraw)")
     args = p.parse_args(argv)
 
@@ -613,7 +764,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 _stop_supervisor(project_root, root)
                 auto_stopped = True
 
-        out = _render(snap, completed=completed, auto_stopped=auto_stopped)
+        out = _render(snap, completed=completed, auto_stopped=auto_stopped, style=args.style)
         out_lines = out.splitlines()
         if args.full_clear:
             sys.stdout.write("\x1b[2J\x1b[H")
