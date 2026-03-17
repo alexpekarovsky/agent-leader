@@ -552,6 +552,152 @@ def _stop_supervisor(project_root: str, root: Path) -> None:
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
 
+def _health_score(snap: DashboardSnapshot) -> int:
+    """Composite operational health 0-100 for executive dashboard."""
+    score = 0.0
+    # Progress: 0-20 pts
+    score += (snap.progress_percent / 100.0) * 20
+    # Review pass rate: 0-20 pts
+    rpr = snap.review_pass_rate if snap.review_pass_rate is not None else 75.0
+    score += (rpr / 100.0) * 20
+    # Agent utilization: 0-15 pts
+    util = snap.agent_utilization_percent if snap.agent_utilization_percent is not None else 50.0
+    score += min(1.0, util / 100.0) * 15
+    # Low failure rate: 0-15 pts
+    fail = snap.task_failure_rate_percent if snap.task_failure_rate_percent is not None else 0.0
+    score += (1.0 - fail / 100.0) * 15
+    # No blockers: 0-15 pts
+    score += 15 if snap.blockers_open == 0 else (8 if snap.blockers_open <= 2 else 0)
+    # No stale work: 0-15 pts
+    score += 15 if snap.stale_in_progress == 0 else (8 if snap.stale_in_progress <= 2 else 0)
+    return max(0, min(100, int(score)))
+
+
+def _render_claude_v3a(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, color_enabled: bool = True) -> str:
+    width = max(100, _term_width())
+    sep = _color(color_enabled, "35;1", "=" * width)
+    lines: List[str] = []
+    now = _now_utc().strftime("%Y-%m-%d %H:%M:%SZ")
+    mode = "COMPLETED" if completed else "RUNNING"
+    mode_color = "32;1" if completed else "33;1"
+
+    # ── Header ──
+    lines.append(sep)
+    title = _color(color_enabled, "35;1", "AGENT LEADER // CLAUDE V3A EXECUTIVE")
+    lines.append(f"{title}  {_color(color_enabled, mode_color, mode)}  {now}")
+    lines.append(f"Project: {_truncate(snapshot.project_root, width - 9)}")
+    lines.append(sep)
+
+    # ── Health Pulse ──
+    score = _health_score(snapshot)
+    bar_w = 20
+    filled = int((score / 100) * bar_w)
+    bar_str = "#" * filled + "-" * (bar_w - filled)
+    if score >= 70:
+        score_color = "32;1"
+    elif score >= 40:
+        score_color = "33;1"
+    else:
+        score_color = "31;1"
+    health_bar = _color(color_enabled, score_color, f"[{bar_str}] {score}/100")
+
+    indicators = []
+    if snapshot.blockers_open > 0:
+        indicators.append(_color(color_enabled, "31;1", f"BLOCKERS:{snapshot.blockers_open}"))
+    else:
+        indicators.append(_color(color_enabled, "32", "BLOCKERS:0"))
+    if snapshot.bugs_open > 0:
+        indicators.append(_color(color_enabled, "33;1", f"BUGS:{snapshot.bugs_open}"))
+    else:
+        indicators.append(_color(color_enabled, "32", "BUGS:0"))
+    if snapshot.stale_in_progress > 0:
+        indicators.append(_color(color_enabled, "31;1", f"STALE:{snapshot.stale_in_progress}"))
+    else:
+        indicators.append(_color(color_enabled, "32", "STALE:0"))
+
+    lines.append(f"HEALTH {health_bar}  {' | '.join(indicators)}")
+    if auto_stopped:
+        lines.append(_color(color_enabled, "32;1", ">> AUTO-STOP: supervisor stopped after completion"))
+    lines.append("")
+
+    # ── Two-column: Progress & Throughput | Cost & Efficiency ──
+    panel_w = (width - 2) // 2
+    eta = f"{snapshot.eta_minutes}m" if snapshot.eta_minutes is not None else "-"
+    prog_rows = [
+        f"Done: {snapshot.done_tasks}/{snapshot.total_tasks} ({snapshot.progress_percent}%)",
+        f"{_progress_bar(snapshot.progress_percent, width=max(10, panel_w - 4))}",
+        f"Rate: {_fmt_number(snapshot.throughput_per_hour)} done/h  |  ETA: {eta}",
+        f"Avg Lead Time: {_format_age(snapshot.avg_task_lead_time_s)}  |  Avg Validation: {_format_age(snapshot.avg_validation_cycle_time_s)}",
+        f"Queue Pressure: {_fmt_number(snapshot.queue_pressure)}  |  Oldest Open: {_format_age(snapshot.oldest_open_task_age_s)}",
+        f"Review Pass: {_fmt_number(snapshot.review_pass_rate)}% ({snapshot.validation_passed}/{snapshot.validation_passed + snapshot.validation_failed})",
+    ]
+
+    cost_rows = [
+        f"Tokens: {snapshot.token_total if snapshot.token_total is not None else '-'} total",
+        f"  Prompt: {snapshot.token_prompt_total or '-'}  Completion: {snapshot.token_completion_total or '-'}",
+        f"Avg Tokens/Report: {_fmt_number(snapshot.avg_tokens_per_report)}",
+        f"LOC: +{snapshot.loc_added_total} / -{snapshot.loc_deleted_total} (net {snapshot.loc_net_total})",
+        f"Avg LOC/Report: {_fmt_number(snapshot.avg_loc_per_report)}",
+        f"Efficiency: {_fmt_number(snapshot.cost_efficiency_loc_per_k_tokens)} LOC/k-tok",
+        f"Budget Today: {snapshot.budget_calls_today} calls",
+    ]
+    if snapshot.budget_by_process:
+        for k, v in sorted(snapshot.budget_by_process.items())[:3]:
+            cost_rows.append(f"  {k}: {v}")
+
+    left = _panel_fixed("Progress & Throughput", prog_rows, panel_w, body_rows=7, color_enabled=color_enabled)
+    right = _panel_fixed("Cost & Efficiency", cost_rows, panel_w, body_rows=7, color_enabled=color_enabled)
+    lines.extend(_merge_columns(left, right, width))
+
+    # ── Two-column: Fleet | Active Work ──
+    fleet_rows: List[str] = []
+    for a in snapshot.active_agents[:6]:
+        fleet_rows.append(f"{a['agent']:<12} {a['status']:<8} age={_format_age(a['age_s']):>7}")
+    if not fleet_rows:
+        fleet_rows.append("no agents connected")
+    fleet_rows.append(
+        f"[{snapshot.active_agent_count} active / {snapshot.idle_agent_count} idle / util={_fmt_number(snapshot.agent_utilization_percent)}%]"
+    )
+    for proc in snapshot.supervisor_processes[:4]:
+        state = _color(color_enabled, "32", "UP") if proc.get("alive") else _color(color_enabled, "31;1", "DEAD")
+        fleet_rows.append(f"{proc.get('name','-'):<14} pid={proc.get('pid','-'):<7} {state}")
+    fleet_rows.append("-")
+    for team_id, c in sorted(snapshot.team_lane_counts.items()):
+        fleet_rows.append(f"{team_id:<12} {c.get('done',0)}/{c.get('total',0)} done  ip={c.get('in_progress',0)}")
+
+    work_rows: List[str] = []
+    if snapshot.in_progress:
+        for t in snapshot.in_progress[:5]:
+            age = _format_age(_age_s(t.get("updated_at")))
+            work_rows.append(f"> {t.get('id','-')} {t.get('owner','-')} age={age}")
+            work_rows.append(f"  {_truncate(t.get('title',''), panel_w - 6)}")
+    else:
+        work_rows.append("(no in-progress work)")
+    if snapshot.assigned:
+        work_rows.append("-")
+        work_rows.append("queued:")
+        for t in snapshot.assigned[:4]:
+            work_rows.append(f"  {t.get('id','-')} {t.get('status','-')} {t.get('owner','-')}")
+    work_rows.append("-")
+    work_rows.append(f"Failure Rate: {_fmt_number(snapshot.task_failure_rate_percent)}%  |  Stale IP: {snapshot.stale_in_progress}")
+
+    left2 = _panel_fixed("Fleet", fleet_rows, panel_w, body_rows=12, color_enabled=color_enabled)
+    right2 = _panel_fixed("Active Work", work_rows, panel_w, body_rows=12, color_enabled=color_enabled)
+    lines.extend(_merge_columns(left2, right2, width))
+
+    # ── Full-width: Alerts & Actions ──
+    alert_rows: List[str] = []
+    for action in snapshot.next_actions[:6]:
+        alert_rows.append(f">> {action}")
+    if not alert_rows:
+        alert_rows.append(">> No actions required.")
+    lines.extend(_panel_fixed("Alerts & Actions", alert_rows, width, body_rows=4, color_enabled=color_enabled))
+
+    lines.append(sep)
+    lines.append("controls: Ctrl+C exit | style=claude-v3a")
+    return "\n".join(lines)
+
+
 def _render_claude(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, color_enabled: bool = True) -> str:
     width = max(100, _term_width())
     sep = "=" * width
@@ -860,6 +1006,8 @@ def _render(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, st
         return _render_gemini(snapshot, completed=completed, auto_stopped=auto_stopped, color_enabled=color_enabled)
     if style == "gemini-v3b":
         return _render_gemini_v3b(snapshot, completed=completed, auto_stopped=auto_stopped, color_enabled=color_enabled)
+    if style == "claude-v3a":
+        return _render_claude_v3a(snapshot, completed=completed, auto_stopped=auto_stopped, color_enabled=color_enabled)
     return _render_claude(snapshot, completed=completed, auto_stopped=auto_stopped, color_enabled=color_enabled)
 
 
@@ -870,7 +1018,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--auto-stop-on-complete", action="store_true")
     p.add_argument("--complete-streak", type=int, default=3)
     p.add_argument("--stale-seconds", type=int, default=1800)
-    p.add_argument("--style", choices=["claude", "gemini", "gemini-v3b"], default="claude")
+    p.add_argument("--style", choices=["claude", "claude-v3a", "gemini", "gemini-v3b"], default="claude")
     p.add_argument("--full-clear", action="store_true", help="Use full screen clear each refresh (default is static top-style redraw)")
     args = p.parse_args(argv)
 
