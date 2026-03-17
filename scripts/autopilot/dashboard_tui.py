@@ -605,7 +605,6 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
         claude_validation_contribution_percent = (validation_by_source.get("claude_code", 0) / validation_total) * 100.0
         wingman_validation_contribution_percent = (validation_by_source.get("ccm", 0) / validation_total) * 100.0
 
-
     claude_events = _read_agent_events(root, "claude_code", limit=1)
     wingman_events = _read_agent_events(root, "ccm", limit=1)
     claude_latest_lane_event_time = _parse_iso(claude_events[0]["time"]) if claude_events else None
@@ -1094,6 +1093,30 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
         f"Claude/h: {_fmt_number(snapshot.claude_throughput_per_hour)}",
     ]
     lines.append("  |  ".join(stats))
+    # Human-readable state summary to reduce operator confusion.
+    now_rows: List[str] = []
+    if snapshot.in_progress:
+        t = snapshot.in_progress[0]
+        now_rows.append(
+            f"STATE: WORKING | owner={t.get('owner','-')} | task={t.get('id','-')} | age={_format_age(_age_s(t.get('updated_at')))}"
+        )
+        now_rows.append(f"NOW: {_truncate(t.get('title','-'), max(20, width - 10))}")
+    elif snapshot.blockers_open > 0:
+        now_rows.append(f"STATE: BLOCKED | blockers_open={snapshot.blockers_open} | bugs_open={snapshot.bugs_open}")
+        now_rows.append("NOW: waiting for blocker resolution before new execution can continue")
+    elif snapshot.assigned:
+        t = snapshot.assigned[0]
+        now_rows.append(f"STATE: QUEUED | next_owner={t.get('owner','-')} | next_task={t.get('id','-')}")
+        now_rows.append(f"NOW: {_truncate(t.get('title','-'), max(20, width - 10))}")
+    else:
+        now_rows.append("STATE: IDLE | no open work in current project scope")
+        now_rows.append("NOW: waiting for manager assignment")
+    if snapshot.recent_events:
+        ev = snapshot.recent_events[0]
+        now_rows.append(f"LATEST EVENT: {ev.get('type','-')} | source={ev.get('source','-')} | task={ev.get('task_id') or '-'}")
+    if snapshot.next_actions:
+        now_rows.append(f"NEXT ACTION: {snapshot.next_actions[0]}")
+    lines.extend(_panel_fixed("NOW (Operator Summary)", now_rows, width, body_rows=4, color_enabled=color_enabled))
     lines.append(sep)
 
     three_col = width >= 165
