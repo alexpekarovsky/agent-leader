@@ -189,6 +189,12 @@ class DashboardSnapshot:
     idle_agent_count: int
     avg_loc_per_report: Optional[float]
     avg_tokens_per_report: Optional[float]
+    # V3B Dense Telemetry
+    avg_task_lead_time_s: Optional[int] = None
+    avg_validation_cycle_time_s: Optional[int] = None
+    agent_utilization_percent: Optional[float] = None
+    task_failure_rate_percent: Optional[float] = None
+    cost_efficiency_loc_per_k_tokens: Optional[float] = None
 
 
 def _task_matches_project(task: Dict[str, Any], project_root: str) -> bool:
@@ -437,6 +443,33 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
     avg_tokens_per_report: Optional[float] = None
     if reports_count > 0 and token_present:
         avg_tokens_per_report = token_total / reports_count
+
+    # Lead time and validation cycle time
+    lead_times = []
+    validation_cycle_times = []
+    for t in scoped:
+        if str(t.get("status", "")).strip().lower() == "done":
+            created = _parse_iso(t.get("created_at"))
+            validated = _parse_iso(t.get("validated_at") or t.get("updated_at"))
+            reported = _parse_iso(t.get("reported_at"))
+            if created and validated:
+                lead_times.append((validated - created).total_seconds())
+            if reported and validated:
+                validation_cycle_times.append((validated - reported).total_seconds())
+
+    avg_task_lead_time_s = int(sum(lead_times) / len(lead_times)) if lead_times else None
+    avg_validation_cycle_time_s = int(sum(validation_cycle_times) / len(validation_cycle_times)) if validation_cycle_times else None
+
+    # Agent Utilization
+    active_agent_count = sum(1 for a in active_agents if str(a.get("status", "")).lower() == "active")
+    agent_utilization_percent = (len(in_progress) / active_agent_count * 100.0) if active_agent_count > 0 else 0.0
+
+    # Task Failure Rate
+    task_failure_rate_percent = (validation_failed / (validation_passed + validation_failed) * 100.0) if (validation_passed + validation_failed) > 0 else 0.0
+
+    # Cost Efficiency
+    cost_efficiency_loc_per_k_tokens = (loc_added_total + loc_deleted_total) / (token_total / 1000.0) if (token_total and token_total > 0) else None
+
     next_actions = _compute_next_actions(
         open_tasks=open_tasks,
         assigned_count=len(assigned),
@@ -483,9 +516,15 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
         oldest_open_task_age_s=oldest_open_task_age_s,
         queue_pressure=queue_pressure,
         active_agent_count=active_agent_count,
-        idle_agent_count=idle_agent_count,
+        idle_agent_count=max(0, active_agent_count - len(in_progress)),
         avg_loc_per_report=avg_loc_per_report,
         avg_tokens_per_report=avg_tokens_per_report,
+        # V3B
+        avg_task_lead_time_s=avg_task_lead_time_s,
+        avg_validation_cycle_time_s=avg_validation_cycle_time_s,
+        agent_utilization_percent=agent_utilization_percent,
+        task_failure_rate_percent=task_failure_rate_percent,
+        cost_efficiency_loc_per_k_tokens=cost_efficiency_loc_per_k_tokens,
     )
 
 
@@ -717,9 +756,110 @@ def _render_gemini(snapshot: DashboardSnapshot, completed: bool, auto_stopped: b
     return "\n".join(lines)
 
 
+def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, color_enabled: bool = True) -> str:
+    width = max(110, _term_width())
+    sep = _color(color_enabled, "34;1", "=" * width)
+    lines: List[str] = []
+    now = _now_utc().strftime("%Y-%m-%d %H:%M:%SZ")
+    mode = _color(color_enabled, "32;1" if completed else "33;1", "COMPLETED" if completed else "RUNNING")
+    
+    # Header
+    lines.append(sep)
+    lines.append(_color(color_enabled, "34;1", f"AGENT LEADER // GEMINI V3B DENSE TELEMETRY // {now} // {mode}"))
+    lines.append(f"Project: {snapshot.project_root}")
+    
+    # Quick Stats Row
+    stats = [
+        f"Tasks: {snapshot.done_tasks}/{snapshot.total_tasks} ({snapshot.progress_percent}%)",
+        f"Active: {snapshot.active_agent_count}",
+        f"IP/Assigned: {len(snapshot.in_progress)}/{len(snapshot.assigned)}",
+        f"Bugs: {snapshot.bugs_open}",
+        f"Blockers: {snapshot.blockers_open}",
+    ]
+    lines.append("  |  ".join(stats))
+    lines.append(sep)
+
+    panel_w = (width - 2) // 3
+    
+    # Panel 1: Efficiency & Costs
+    eff_rows = [
+        f"Throughput: {_fmt_number(snapshot.throughput_per_hour)} done/h",
+        f"ETA: {(str(snapshot.eta_minutes) + 'm') if snapshot.eta_minutes is not None else '-'}",
+        f"Avg Lead Time: {_format_age(snapshot.avg_task_lead_time_s)}",
+        f"Avg Validation: {_format_age(snapshot.avg_validation_cycle_time_s)}",
+        f"Agent Utilization: {_fmt_number(snapshot.agent_utilization_percent)}%",
+        f"Task Failure Rate: {_fmt_number(snapshot.task_failure_rate_percent)}%",
+        f"Queue Pressure: {_fmt_number(snapshot.queue_pressure)}",
+        "-",
+        f"Total Tokens: {snapshot.token_total or '-'}",
+        f"Avg Tokens/Task: {_fmt_number(snapshot.avg_tokens_per_report)}",
+        f"LOC net: {snapshot.loc_net_total} (+{snapshot.loc_added_total}/-{snapshot.loc_deleted_total})",
+        f"Efficiency: {_fmt_number(snapshot.cost_efficiency_loc_per_k_tokens)} loc/k-tok",
+    ]
+    
+    # Panel 2: Fleet Status
+    fleet_rows = ["Team Lanes:"]
+    for tid, c in sorted(snapshot.team_lane_counts.items()):
+        fleet_rows.append(f"{tid:<12} {c.get('done',0)}/{c.get('total',0)} done (ip={c.get('in_progress',0)})")
+    fleet_rows.append("-")
+    fleet_rows.append("Agents:")
+    for a in snapshot.active_agents[:10]:
+        fleet_rows.append(f"{a['agent']:<11} {a['status']:<8} age={_format_age(a['age_s'])}")
+    
+    # Panel 3: Supervisor & Budget
+    sys_rows = ["Processes:"]
+    for proc in snapshot.supervisor_processes:
+        state = _color(color_enabled, "32", "up") if proc.get("alive") else _color(color_enabled, "31;1", "dead")
+        sys_rows.append(f"{proc.get('name','-'):<14} {state} age={_format_age(proc.get('age_s'))}")
+    sys_rows.append("-")
+    sys_rows.append(f"Budget Today: {snapshot.budget_calls_today} calls")
+    for k, v in sorted(snapshot.budget_by_process.items())[:5]:
+        sys_rows.append(f"  {k:<12} {v}")
+
+    # Render Top 3 Panels
+    p1 = _panel_fixed("Efficiency & Costs", eff_rows, panel_w, body_rows=14, color_enabled=color_enabled)
+    p2 = _panel_fixed("Fleet Status", fleet_rows, panel_w, body_rows=14, color_enabled=color_enabled)
+    p3 = _panel_fixed("System & Budget", sys_rows, panel_w, body_rows=14, color_enabled=color_enabled)
+    
+    height = max(len(p1), len(p2), len(p3))
+    for i in range(height):
+        l1 = p1[i] if i < len(p1) else " " * panel_w
+        l2 = p2[i] if i < len(p2) else " " * panel_w
+        l3 = p3[i] if i < len(p3) else " " * panel_w
+        lines.append(l1 + " " + l2 + " " + l3)
+
+    lines.append(sep)
+
+    # Bottom Panels: Queue and Timeline (2 columns)
+    bot_w = (width - 2) // 2
+    queue_rows = ["In-Progress:"]
+    for t in snapshot.in_progress[:5]:
+        queue_rows.append(f"{t.get('id','-')} {t.get('owner','-')} age={_format_age(_age_s(t.get('updated_at')))}")
+        queue_rows.append("  " + _truncate(t.get("title", ""), bot_w - 4))
+    queue_rows.append("-")
+    queue_rows.append("Recently Assigned/Blocked:")
+    for t in snapshot.assigned[:5]:
+        queue_rows.append(f"{t.get('id','-')} {t.get('status','-')} {t.get('owner','-')}")
+    
+    timeline_rows = ["Activity:"]
+    for ev in snapshot.recent_events[:10]:
+        timeline_rows.append(f"{ev.get('time')[11:16]} {ev.get('type'):<20} {ev.get('task_id') or '-':<10} {ev.get('source')}")
+
+    p_queue = _panel_fixed("Work Queue", queue_rows, bot_w, body_rows=12, color_enabled=color_enabled)
+    p_time = _panel_fixed("Timeline", timeline_rows, bot_w, body_rows=12, color_enabled=color_enabled)
+    lines.extend(_merge_columns(p_queue, p_time, width))
+
+    lines.extend(_panel_fixed("Recommended Actions", snapshot.next_actions[:4] or ["none"], width, body_rows=3, color_enabled=color_enabled))
+    lines.append(sep)
+    lines.append("controls: Ctrl+C exit | style=gemini-v3b")
+    return "\n".join(lines)
+
+
 def _render(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, style: str, color_enabled: bool = True) -> str:
     if style == "gemini":
         return _render_gemini(snapshot, completed=completed, auto_stopped=auto_stopped, color_enabled=color_enabled)
+    if style == "gemini-v3b":
+        return _render_gemini_v3b(snapshot, completed=completed, auto_stopped=auto_stopped, color_enabled=color_enabled)
     return _render_claude(snapshot, completed=completed, auto_stopped=auto_stopped, color_enabled=color_enabled)
 
 
@@ -730,7 +870,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--auto-stop-on-complete", action="store_true")
     p.add_argument("--complete-streak", type=int, default=3)
     p.add_argument("--stale-seconds", type=int, default=1800)
-    p.add_argument("--style", choices=["claude", "gemini"], default="claude")
+    p.add_argument("--style", choices=["claude", "gemini", "gemini-v3b"], default="claude")
     p.add_argument("--full-clear", action="store_true", help="Use full screen clear each refresh (default is static top-style redraw)")
     args = p.parse_args(argv)
 
