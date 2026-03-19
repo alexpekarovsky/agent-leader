@@ -400,31 +400,29 @@ class Supervisor:
         info: Dict[str, str] = {"role": "N/A", "type": "N/A", "model": "N/A"}
 
         if name == "manager":
-            info["role"] = "leader/manager"
+            info["role"] = "Leader/Manager"
             info["type"] = self.cfg.leader_agent
         elif name == "claude":
-            info["role"] = "main Claude implementation worker"
-            info["type"] = "claude_code"
-            # Assuming a default model if not explicitly configured in the future
-            info["model"] = "claude-v3" 
+            info["role"] = "Main Claude implementation worker"
+            info["type"] = "claude"
+            info["model"] = "claude-v3"
         elif name == "gemini":
             info["role"] = "Gemini worker"
             info["type"] = "gemini"
             info["model"] = self.cfg.gemini_model
         elif name == "wingman":
-            info["role"] = "Claude-backed wingman/reviewer lane"
+            info["role"] = "Claude-backed wingman/reviewer"
             info["type"] = self.cfg.wingman_agent
-            info["model"] = "claude-v3" # Assuming a default model
+            info["model"] = "claude-v3"
         elif name == "codex_worker":
-            info["role"] = "codex worker"
+            info["role"] = "Codex worker"
             info["type"] = "codex"
         else:
             # Check for extra workers
             for ew in self.cfg.extra_workers:
                 if ew.name == name:
-                    info["role"] = f"extra worker ({ew.lane} lane)"
+                    info["role"] = f"Extra worker (lane: {ew.lane}, cli: {ew.cli})"
                     info["type"] = ew.agent
-                    # Model not typically specified for extra workers via current config
                     break
         return info
 
