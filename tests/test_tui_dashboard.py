@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -106,10 +107,20 @@ class DashboardTuiTests(unittest.TestCase):
 
             report = {
                 "project_root": project_root,
+                "task_id": "T1",
+                "commit_sha": "abc123",
                 "commit_metrics": {"lines_added": 100, "lines_deleted": 30},
                 "token_usage": {"prompt_tokens": 11, "completion_tokens": 22, "total_tokens": 33},
             }
-            (root / "bus" / "reports" / "TASK-T1.json").write_text(json.dumps(report), encoding="utf-8")
+            report_path = root / "bus" / "reports" / "TASK-T1.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            now_ts = mod._now_utc().timestamp()
+            os.utime(report_path, (now_ts, now_ts))
+            pid_dir = root / ".autopilot-pids"
+            pid_dir.mkdir(parents=True, exist_ok=True)
+            pid_file = pid_dir / "manager.pid"
+            pid_file.write_text(str(os.getpid()), encoding="utf-8")
+            os.utime(pid_file, (now_ts, now_ts))
 
             # Blockers for project
             blockers = [
@@ -164,6 +175,18 @@ class DashboardTuiTests(unittest.TestCase):
             self.assertEqual(snap.claude_throughput_per_hour, 1.0)
             self.assertAlmostEqual(snap.wingman_validation_contribution_percent or 0.0, 33.33333333333333)
             self.assertAlmostEqual(snap.claude_validation_contribution_percent or 0.0, 33.33333333333333)
+            self.assertEqual(snap.commits_today, 1)
+            self.assertEqual(snap.commits_session, 1)
+            self.assertEqual(snap.tasks_done_today, 1)
+            self.assertEqual(snap.tasks_done_session, 1)
+            self.assertEqual(snap.reports_today, 1)
+            self.assertEqual(snap.reports_session, 1)
+            self.assertEqual(snap.loc_added_today, 100)
+            self.assertEqual(snap.loc_deleted_today, 30)
+            self.assertEqual(snap.loc_added_session, 100)
+            self.assertEqual(snap.loc_deleted_session, 30)
+            self.assertEqual(snap.token_total_today, 33)
+            self.assertEqual(snap.token_total_session, 33)
 
     def test_render_gemini_v3b(self) -> None:
         # Create a dummy snapshot
@@ -174,11 +197,14 @@ class DashboardTuiTests(unittest.TestCase):
             done_tasks=5,
             progress_percent=50,
             status_counts={"done": 5, "assigned": 5},
-            in_progress=[],
-            assigned=[],
+            in_progress=[{"id": "TASK-7", "owner": "gemini", "updated_at": "2026-03-17T12:00:00+00:00", "title": "Milestone: CI/GitHub Integrations - phase execution", "description": "Implement CI result ingestion + GitHub PR/issue handoff integration path and validation hooks."}],
+            assigned=[{"id": "TASK-8", "status": "assigned", "owner": "claude_code", "title": "Planned Next: Iterative Self-Review loop scaffold", "description": "Design and scaffold multi-round self-review loop before manager/wingman handoff."}],
             blockers_open=1,
             bugs_open=2,
-            active_agents=[{"agent": "codex", "status": "active", "age_s": 100, "instance_id": "i1", "display_name": "Codex", "role_label": "Leader/Manager", "provider": "OpenAI", "client": "Codex CLI", "model": "-"}],
+            active_agents=[
+                {"agent": "codex", "status": "active", "age_s": 100, "instance_id": "i1", "display_name": "Codex", "role_label": "Leader/Manager", "provider": "OpenAI", "client": "Codex CLI", "model": "-"},
+                {"agent": "gemini", "status": "active", "age_s": 80, "instance_id": "i2", "display_name": "Gemini", "role_label": "Worker", "provider": "Google", "client": "Gemini CLI", "model": "gemini-2.5-flash"},
+            ],
             review_events=[],
             budget_calls_today=100,
             budget_by_process={"p1": 100},
@@ -225,6 +251,24 @@ class DashboardTuiTests(unittest.TestCase):
             version_current="v0.2.0",
             version_name="Stability + Multi-Project Foundation",
             active_milestones=["CI/GitHub Integrations", "Codebase Comprehension Phase"],
+            session_started_at=mod._now_utc(),
+            session_duration_s=420,
+            commits_today=3,
+            commits_session=2,
+            tasks_done_today=4,
+            tasks_done_session=2,
+            reports_today=4,
+            reports_session=2,
+            files_changed_today=12,
+            files_changed_session=7,
+            loc_added_today=220,
+            loc_deleted_today=40,
+            loc_added_session=90,
+            loc_deleted_session=10,
+            token_total_today=700,
+            token_total_session=250,
+            validations_today=4,
+            validations_session=2,
         )
         
         out = mod._render_gemini_v3b(snap, completed=False, auto_stopped=False, color_enabled=False)
@@ -236,6 +280,14 @@ class DashboardTuiTests(unittest.TestCase):
         self.assertIn("Version focus: CI/GitHub Integrations | Codebase Comprehension Phase", out)
         self.assertIn("Team Topology", out)
         self.assertIn("Codex (codex) | Leader/Manager", out)
+        self.assertIn("Done this session: 2", out)
+        self.assertIn("Today: tasks=4 commits=3 files=12", out)
+        self.assertIn("Session: tasks=2 commits=2 files=7", out)
+        self.assertIn("Today LOC: +220/-40 net=180", out)
+        self.assertIn("Session LOC: +90/-10 net=80", out)
+        self.assertIn("Validations Today/Session: 4/2", out)
+        self.assertIn("CI/GitHub Integrations", out)
+        self.assertIn("CI result ingestion + GitHub PR/issue handoff integration path and validation hooks", out)
         self.assertIn("Total Validations: 5", out)
         self.assertIn("Failure Rate: 20", out)
         self.assertIn("Review Depth: 0.2x", out)

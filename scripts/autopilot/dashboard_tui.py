@@ -74,6 +74,16 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _now_local() -> datetime:
+    return datetime.now().astimezone()
+
+
+def _day_start_utc() -> datetime:
+    local_now = _now_local()
+    local_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return local_start.astimezone(timezone.utc)
+
+
 def _parse_iso(value: Any) -> Optional[datetime]:
     if not isinstance(value, str) or not value.strip():
         return None
@@ -340,6 +350,12 @@ def _fmt_number(value: Optional[float]) -> str:
     return f"{value:.1f}"
 
 
+def _fmt_int(value: Optional[int]) -> str:
+    if value is None:
+        return "-"
+    return str(int(value))
+
+
 def _extract_task_id(payload: Dict[str, Any]) -> str:
     keys = ("task_id", "id", "task")
     for key in keys:
@@ -426,6 +442,24 @@ class DashboardSnapshot:
     version_current: Optional[str] = None
     version_name: Optional[str] = None
     active_milestones: Optional[List[str]] = None
+    session_started_at: Optional[datetime] = None
+    session_duration_s: Optional[int] = None
+    commits_today: int = 0
+    commits_session: int = 0
+    tasks_done_today: int = 0
+    tasks_done_session: int = 0
+    reports_today: int = 0
+    reports_session: int = 0
+    files_changed_today: int = 0
+    files_changed_session: int = 0
+    loc_added_today: int = 0
+    loc_deleted_today: int = 0
+    loc_added_session: int = 0
+    loc_deleted_session: int = 0
+    token_total_today: Optional[int] = None
+    token_total_session: Optional[int] = None
+    validations_today: int = 0
+    validations_session: int = 0
 
 
 def _task_matches_project(task: Dict[str, Any], project_root: str) -> bool:
@@ -520,6 +554,7 @@ def _read_supervisor_processes(root: Path) -> List[Dict[str, Any]]:
                 "pid": pid,
                 "alive": alive,
                 "age_s": _age_s(datetime.fromtimestamp(pid_file.stat().st_mtime, tz=timezone.utc).isoformat()),
+                "started_at": datetime.fromtimestamp(pid_file.stat().st_mtime, tz=timezone.utc).isoformat(),
             }
         )
     return rows
@@ -580,6 +615,7 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
     open_ages = [_age_s(t.get("updated_at")) for t in scoped if str(t.get("status", "")).strip().lower() in OPEN_STATUSES]
     open_ages = [a for a in open_ages if isinstance(a, int)]
     oldest_open_task_age_s = max(open_ages) if open_ages else None
+    tasks_by_id = {str(t.get("id")): t for t in scoped if isinstance(t.get("id"), str)}
 
     blockers_open = sum(1 for b in blockers if str(b.get("status", "")).lower() == "open")
     bugs_open = sum(1 for b in bugs if str(b.get("status", "")).lower() == "open")
@@ -653,6 +689,48 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
     token_completion_total = 0
     token_total = 0
     token_present = False
+    local_day_start = _day_start_utc()
+    supervisor_processes = _read_supervisor_processes(root)
+    session_start_candidates = [
+        _parse_iso(proc.get("started_at"))
+        for proc in supervisor_processes
+        if proc.get("alive")
+    ]
+    session_start_candidates = [dt for dt in session_start_candidates if dt is not None]
+    session_started_at = min(session_start_candidates) if session_start_candidates else None
+    session_duration_s = int((_now_utc() - session_started_at).total_seconds()) if session_started_at else None
+    commits_today: set[str] = set()
+    commits_session: set[str] = set()
+    reports_today = 0
+    reports_session = 0
+    files_changed_today = 0
+    files_changed_session = 0
+    loc_added_today = 0
+    loc_deleted_today = 0
+    loc_added_session = 0
+    loc_deleted_session = 0
+    token_total_today = 0
+    token_total_session = 0
+    token_today_present = False
+    token_session_present = False
+
+    def _report_timestamp(report: Dict[str, Any], path: Path) -> Optional[datetime]:
+        for key in ("reported_at", "validated_at", "updated_at", "created_at"):
+            parsed = _parse_iso(report.get(key))
+            if parsed is not None:
+                return parsed
+        try:
+            return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        except Exception:
+            pass
+        task = tasks_by_id.get(str(report.get("task_id", "")))
+        if isinstance(task, dict):
+            for key in ("reported_at", "validated_at", "updated_at", "created_at"):
+                parsed = _parse_iso(task.get(key))
+                if parsed is not None:
+                    return parsed
+        return None
+
     if reports_dir.exists():
         for path in reports_dir.glob("*.json"):
             try:
@@ -663,13 +741,29 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
                 continue
             reports_count += 1
             cm = r.get("commit_metrics")
+            report_ts = _report_timestamp(r, path)
             if isinstance(cm, dict):
                 la = cm.get("lines_added")
                 ld = cm.get("lines_deleted")
+                fc = cm.get("files_changed")
                 if isinstance(la, int):
                     loc_added_total += la
                 if isinstance(ld, int):
                     loc_deleted_total += ld
+                if report_ts is not None and report_ts >= local_day_start:
+                    if isinstance(fc, int):
+                        files_changed_today += fc
+                    if isinstance(la, int):
+                        loc_added_today += la
+                    if isinstance(ld, int):
+                        loc_deleted_today += ld
+                if report_ts is not None and session_started_at is not None and report_ts >= session_started_at:
+                    if isinstance(fc, int):
+                        files_changed_session += fc
+                    if isinstance(la, int):
+                        loc_added_session += la
+                    if isinstance(ld, int):
+                        loc_deleted_session += ld
             p, c, t = _extract_token_usage(r)
             if isinstance(p, int):
                 token_present = True
@@ -680,6 +774,20 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
             if isinstance(t, int):
                 token_present = True
                 token_total += t
+            if report_ts is not None and report_ts >= local_day_start:
+                reports_today += 1
+                if isinstance(r.get("commit_sha"), str) and r.get("commit_sha", "").strip():
+                    commits_today.add(r["commit_sha"].strip())
+                if isinstance(t, int):
+                    token_today_present = True
+                    token_total_today += t
+            if report_ts is not None and session_started_at is not None and report_ts >= session_started_at:
+                reports_session += 1
+                if isinstance(r.get("commit_sha"), str) and r.get("commit_sha", "").strip():
+                    commits_session.add(r["commit_sha"].strip())
+                if isinstance(t, int):
+                    token_session_present = True
+                    token_total_session += t
 
     team_lane_counts: Dict[str, Dict[str, int]] = {}
     for task in scoped:
@@ -708,7 +816,6 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
     if open_tasks > 0 and throughput_per_hour and throughput_per_hour > 0:
         eta_minutes = int((open_tasks / throughput_per_hour) * 60)
 
-    supervisor_processes = _read_supervisor_processes(root)
     active_agent_count = sum(1 for a in active_agents if str(a.get("status", "")).lower() == "active")
     idle_agent_count = max(0, active_agent_count - len(in_progress))
     queue_pressure: Optional[float] = None
@@ -775,6 +882,26 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
     # or just use the ratio of failures to successes as a proxy for depth.
     avg_review_loop_depth = (validation_failed / validation_passed) if validation_passed > 0 else (float(validation_failed) if validation_failed > 0 else 0.0)
 
+    tasks_done_today = 0
+    tasks_done_session = 0
+    for task in scoped:
+        if str(task.get("status", "")).strip().lower() != "done":
+            continue
+        task_ts = None
+        for key in ("validated_at", "reported_at", "updated_at", "created_at"):
+            task_ts = _parse_iso(task.get(key))
+            if task_ts is not None:
+                break
+        if task_ts is None:
+            continue
+        if task_ts >= local_day_start:
+            tasks_done_today += 1
+        if session_started_at is not None and task_ts >= session_started_at:
+            tasks_done_session += 1
+
+    validations_today = 0
+    validations_session = 0
+
     # Claude-only telemetry (claude_code + ccm lanes)
     claude_done_last_hour = sum(
         1
@@ -803,9 +930,14 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
         et = str(ev.get("type", "")).strip()
         if et not in {"validation.passed", "validation.failed"}:
             continue
+        ev_time = _parse_iso(ev.get("timestamp"))
         validation_total += 1
         src = str(ev.get("source", "")).strip() or "unknown"
         validation_by_source[src] = validation_by_source.get(src, 0) + 1
+        if ev_time is not None and ev_time >= local_day_start:
+            validations_today += 1
+        if ev_time is not None and session_started_at is not None and ev_time >= session_started_at:
+            validations_session += 1
 
     claude_validation_contribution_percent: Optional[float] = None
     wingman_validation_contribution_percent: Optional[float] = None
@@ -892,6 +1024,24 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
         version_current=project_meta.get("version_current"),
         version_name=project_meta.get("version_name"),
         active_milestones=project_meta.get("active_milestones") or [],
+        session_started_at=session_started_at,
+        session_duration_s=session_duration_s,
+        commits_today=len(commits_today),
+        commits_session=len(commits_session),
+        tasks_done_today=tasks_done_today,
+        tasks_done_session=tasks_done_session,
+        reports_today=reports_today,
+        reports_session=reports_session,
+        files_changed_today=files_changed_today,
+        files_changed_session=files_changed_session,
+        loc_added_today=loc_added_today,
+        loc_deleted_today=loc_deleted_today,
+        loc_added_session=loc_added_session,
+        loc_deleted_session=loc_deleted_session,
+        token_total_today=token_total_today if token_today_present else None,
+        token_total_session=token_total_session if token_session_present else None,
+        validations_today=validations_today,
+        validations_session=validations_session,
     )
 
 
@@ -1309,7 +1459,7 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
         f"IP/Assigned: {len(snapshot.in_progress)}/{len(snapshot.assigned)}",
         f"Bugs: {snapshot.bugs_open}",
         f"Blockers: {snapshot.blockers_open}",
-        f"Claude/h: {_fmt_number(snapshot.claude_throughput_per_hour)}",
+        f"Done this session: {snapshot.tasks_done_session}",
     ]
     lines.append("  |  ".join(stats))
     # Human-readable state summary to reduce operator confusion.
@@ -1357,6 +1507,7 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
         f"Queue Pressure: {_fmt_number(snapshot.queue_pressure)}",
         "-",
         f"Total Validations: {snapshot.total_validations}",
+        f"Validations Today/Session: {snapshot.validations_today}/{snapshot.validations_session}",
         f"Failure Rate: {_fmt_number(snapshot.task_failure_rate_percent)}%",
         f"Review Depth: {_fmt_number(snapshot.avg_review_loop_depth)}x",
         f"Stale Tasks: {_fmt_number(snapshot.stale_task_percent)}%",
@@ -1388,6 +1539,14 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
     
     # Panel 3: Costs & Systems
     cost_rows = [
+        f"Today: tasks={snapshot.tasks_done_today} commits={snapshot.commits_today} files={snapshot.files_changed_today}",
+        f"Today LOC: +{snapshot.loc_added_today}/-{snapshot.loc_deleted_today} net={snapshot.loc_added_today - snapshot.loc_deleted_today}",
+        f"Today Tokens: {_fmt_int(snapshot.token_total_today)} | Reports: {snapshot.reports_today}",
+        f"Session Start: {_format_age(snapshot.session_duration_s)} ago" if snapshot.session_duration_s is not None else "Session Start: -",
+        f"Session: tasks={snapshot.tasks_done_session} commits={snapshot.commits_session} files={snapshot.files_changed_session}",
+        f"Session LOC: +{snapshot.loc_added_session}/-{snapshot.loc_deleted_session} net={snapshot.loc_added_session - snapshot.loc_deleted_session}",
+        f"Session Tokens: {_fmt_int(snapshot.token_total_session)} | Reports: {snapshot.reports_session}",
+        "-",
         f"Total Tokens: {snapshot.token_total or '-'}",
         f"Avg Tokens/Task: {_fmt_number(snapshot.avg_tokens_per_report)}",
         f"LOC net: {snapshot.loc_net_total} (+{snapshot.loc_added_total}/-{snapshot.loc_deleted_total})",
@@ -1443,6 +1602,7 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
         owner_profile = _agent_profile(str(t.get("owner", "")))
         queue_rows.append(f"{owner_profile['display_name']} | {t.get('status','-')} | {t.get('id','-')}")
         queue_rows.append("  " + _truncate(_clean_task_title(t.get("title", "")), bot_w - 4))
+        queue_rows.append("  " + _truncate(_clean_task_description(t.get("description", "")), bot_w - 4))
     
     timeline_rows = ["Activity:"]
     for ev in snapshot.recent_events[:10]:
