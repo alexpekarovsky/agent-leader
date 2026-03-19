@@ -356,6 +356,26 @@ def _fmt_int(value: Optional[int]) -> str:
     return str(int(value))
 
 
+def _compact_role_label(label: str) -> str:
+    mapping = {
+        "Leader/Manager": "Leader",
+        "Wingman/Reviewer": "Wingman",
+        "Implementation Worker": "Builder",
+        "Worker": "Worker",
+    }
+    return mapping.get(label, label)
+
+
+def _compact_type(provider: str, type_label: str) -> str:
+    if provider == "OpenAI":
+        return "OpenAI/Codex"
+    if provider == "Anthropic":
+        return "Anthropic/Claude"
+    if provider == "Google":
+        return "Google/Gemini"
+    return f"{provider}/{type_label}"
+
+
 def _extract_task_id(payload: Dict[str, Any]) -> str:
     keys = ("task_id", "id", "task")
     for key in keys:
@@ -444,12 +464,14 @@ class DashboardSnapshot:
     active_milestones: Optional[List[str]] = None
     session_started_at: Optional[datetime] = None
     session_duration_s: Optional[int] = None
+    commits_total: int = 0
     commits_today: int = 0
     commits_session: int = 0
     tasks_done_today: int = 0
     tasks_done_session: int = 0
     reports_today: int = 0
     reports_session: int = 0
+    files_changed_total: int = 0
     files_changed_today: int = 0
     files_changed_session: int = 0
     loc_added_today: int = 0
@@ -460,6 +482,10 @@ class DashboardSnapshot:
     token_total_session: Optional[int] = None
     validations_today: int = 0
     validations_session: int = 0
+    queued_tasks: Optional[List[Dict[str, Any]]] = None
+    blocked_tasks: Optional[List[Dict[str, Any]]] = None
+    attention_tasks: Optional[List[Dict[str, Any]]] = None
+    agent_delivery_stats: Optional[List[Dict[str, Any]]] = None
 
 
 def _task_matches_project(task: Dict[str, Any], project_root: str) -> bool:
@@ -608,6 +634,9 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
 
     in_progress = [t for t in scoped if str(t.get("status", "")).strip().lower() == "in_progress"]
     assigned = [t for t in scoped if str(t.get("status", "")).strip().lower() in {"assigned", "bug_open", "reported"}]
+    queued_tasks = [t for t in scoped if str(t.get("status", "")).strip().lower() == "assigned"]
+    blocked_tasks = [t for t in scoped if str(t.get("status", "")).strip().lower() == "blocked"]
+    attention_tasks = [t for t in scoped if str(t.get("status", "")).strip().lower() in {"reported", "bug_open"}]
     stale_in_progress = sum(
         1 for t in in_progress
         if (lambda a: a is not None and a >= max(1, stale_seconds))(_age_s(t.get("updated_at")))
@@ -701,8 +730,10 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
     session_duration_s = int((_now_utc() - session_started_at).total_seconds()) if session_started_at else None
     commits_today: set[str] = set()
     commits_session: set[str] = set()
+    commits_total: set[str] = set()
     reports_today = 0
     reports_session = 0
+    files_changed_total = 0
     files_changed_today = 0
     files_changed_session = 0
     loc_added_today = 0
@@ -713,6 +744,24 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
     token_total_session = 0
     token_today_present = False
     token_session_present = False
+    agent_stats_acc: Dict[str, Dict[str, Any]] = {}
+
+    def _agent_bucket(agent_name: str) -> Dict[str, Any]:
+        bucket = agent_stats_acc.setdefault(
+            agent_name,
+            {
+                "agent": agent_name,
+                "commits_total": set(),
+                "commits_session": set(),
+                "tasks_done_total": 0,
+                "tasks_done_session": 0,
+                "loc_net_total": 0,
+                "loc_net_session": 0,
+                "files_total": 0,
+                "files_session": 0,
+            },
+        )
+        return bucket
 
     def _report_timestamp(report: Dict[str, Any], path: Path) -> Optional[datetime]:
         for key in ("reported_at", "validated_at", "updated_at", "created_at"):
@@ -746,6 +795,8 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
                 la = cm.get("lines_added")
                 ld = cm.get("lines_deleted")
                 fc = cm.get("files_changed")
+                if isinstance(fc, int):
+                    files_changed_total += fc
                 if isinstance(la, int):
                     loc_added_total += la
                 if isinstance(ld, int):
@@ -788,6 +839,28 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
                 if isinstance(t, int):
                     token_session_present = True
                     token_total_session += t
+            agent_name = str(r.get("agent", "")).strip()
+            if agent_name:
+                bucket = _agent_bucket(agent_name)
+                commit_sha = str(r.get("commit_sha", "")).strip()
+                if commit_sha:
+                    bucket["commits_total"].add(commit_sha)
+                    commits_total.add(commit_sha)
+                    if report_ts is not None and session_started_at is not None and report_ts >= session_started_at:
+                        bucket["commits_session"].add(commit_sha)
+                if isinstance(cm, dict):
+                    net = cm.get("net_lines")
+                    if not isinstance(net, int):
+                        la = cm.get("lines_added") if isinstance(cm.get("lines_added"), int) else 0
+                        ld = cm.get("lines_deleted") if isinstance(cm.get("lines_deleted"), int) else 0
+                        net = la - ld
+                    bucket["loc_net_total"] += int(net)
+                    if report_ts is not None and session_started_at is not None and report_ts >= session_started_at:
+                        bucket["loc_net_session"] += int(net)
+                    if isinstance(cm.get("files_changed"), int):
+                        bucket["files_total"] += int(cm["files_changed"])
+                        if report_ts is not None and session_started_at is not None and report_ts >= session_started_at:
+                            bucket["files_session"] += int(cm["files_changed"])
 
     team_lane_counts: Dict[str, Dict[str, int]] = {}
     for task in scoped:
@@ -898,6 +971,12 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
             tasks_done_today += 1
         if session_started_at is not None and task_ts >= session_started_at:
             tasks_done_session += 1
+        agent_name = str(task.get("owner", "")).strip()
+        if agent_name:
+            bucket = _agent_bucket(agent_name)
+            bucket["tasks_done_total"] += 1
+            if session_started_at is not None and task_ts >= session_started_at:
+                bucket["tasks_done_session"] += 1
 
     validations_today = 0
     validations_session = 0
@@ -960,6 +1039,33 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
         bugs_open=bugs_open,
         stale_in_progress=stale_in_progress,
         supervisor_processes=supervisor_processes,
+    )
+
+    agent_delivery_stats: List[Dict[str, Any]] = []
+    for agent_name, bucket in agent_stats_acc.items():
+        profile = _agent_profile(agent_name)
+        agent_delivery_stats.append(
+            {
+                "agent": agent_name,
+                "display_name": profile["display_name"],
+                "role_label": profile["role_label"],
+                "commits_total": len(bucket["commits_total"]),
+                "commits_session": len(bucket["commits_session"]),
+                "tasks_done_total": int(bucket["tasks_done_total"]),
+                "tasks_done_session": int(bucket["tasks_done_session"]),
+                "loc_net_total": int(bucket["loc_net_total"]),
+                "loc_net_session": int(bucket["loc_net_session"]),
+                "files_total": int(bucket["files_total"]),
+                "files_session": int(bucket["files_session"]),
+            }
+        )
+    agent_delivery_stats.sort(
+        key=lambda row: (
+            -int(row.get("tasks_done_session", 0)),
+            -int(row.get("commits_session", 0)),
+            -int(row.get("loc_net_session", 0)),
+            str(row.get("agent", "")),
+        )
     )
 
     return DashboardSnapshot(
@@ -1026,12 +1132,14 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
         active_milestones=project_meta.get("active_milestones") or [],
         session_started_at=session_started_at,
         session_duration_s=session_duration_s,
+        commits_total=len(commits_total),
         commits_today=len(commits_today),
         commits_session=len(commits_session),
         tasks_done_today=tasks_done_today,
         tasks_done_session=tasks_done_session,
         reports_today=reports_today,
         reports_session=reports_session,
+        files_changed_total=files_changed_total,
         files_changed_today=files_changed_today,
         files_changed_session=files_changed_session,
         loc_added_today=loc_added_today,
@@ -1042,6 +1150,10 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
         token_total_session=token_total_session if token_session_present else None,
         validations_today=validations_today,
         validations_session=validations_session,
+        queued_tasks=queued_tasks,
+        blocked_tasks=blocked_tasks,
+        attention_tasks=attention_tasks,
+        agent_delivery_stats=agent_delivery_stats,
     )
 
 
@@ -1462,6 +1574,12 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
         f"Done this session: {snapshot.tasks_done_session}",
     ]
     lines.append("  |  ".join(stats))
+    lines.append(
+        "Delivery: "
+        f"today t{snapshot.tasks_done_today}/c{snapshot.commits_today}/loc{snapshot.loc_added_today - snapshot.loc_deleted_today}  |  "
+        f"session t{snapshot.tasks_done_session}/c{snapshot.commits_session}/loc{snapshot.loc_added_session - snapshot.loc_deleted_session}  |  "
+        f"total t{snapshot.done_tasks}/c{snapshot.commits_total}/loc{snapshot.loc_net_total}"
+    )
     # Human-readable state summary to reduce operator confusion.
     now_rows: List[str] = []
     if snapshot.in_progress:
@@ -1490,8 +1608,8 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
     lines.extend(_panel_fixed("NOW (Operator Summary)", now_rows, width, body_rows=5, color_enabled=color_enabled))
     lines.append(sep)
 
-    three_col = width >= 165
-    two_col = 120 <= width < 165
+    three_col = width >= 195
+    two_col = 128 <= width < 195
     panel_w = (width - 2) // 3 if three_col else (width - 2) // 2
     fixed_lines = 7
     remaining = max(12, height - fixed_lines)
@@ -1518,9 +1636,18 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
     fleet_rows = ["Operator Topology:"]
     for a in snapshot.active_agents[:10]:
         fleet_rows.append(
-            f"{a.get('display_name', a['agent'])} ({a['agent']}) | {a.get('role_label','-')} | "
-            f"{a.get('provider','-')} {a.get('client','-')} | model:{a.get('model','-')} | "
-            f"{a['status']} age={_format_age(a['age_s'])}"
+            f"{a.get('display_name', a['agent'])} | {_compact_role_label(str(a.get('role_label','-')))} | "
+            f"{a.get('model','-')} | {a['status']} {_format_age(a['age_s'])}"
+        )
+        fleet_rows.append(
+            f"  {a['agent']} / {_compact_type(str(a.get('provider','-')), str(a.get('client','-')))}"
+        )
+    fleet_rows.append("-")
+    fleet_rows.append("Agent Session Stats:")
+    for row in (snapshot.agent_delivery_stats or [])[:4]:
+        fleet_rows.append(
+            f"{row.get('display_name')} t={row.get('tasks_done_session',0)} "
+            f"c={row.get('commits_session',0)} loc={row.get('loc_net_session',0)}"
         )
     fleet_rows.append("-")
     fleet_rows.append("Team Lanes:")
@@ -1588,7 +1715,7 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
 
     # Bottom Panels: Queue and Timeline (2 columns)
     bot_w = (width - 2) // 2
-    queue_rows = ["In-Progress:"]
+    queue_rows = ["Current Work:"]
     for t in snapshot.in_progress[:5]:
         owner_profile = _agent_profile(str(t.get("owner", "")))
         queue_rows.append(
@@ -1597,10 +1724,17 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
         queue_rows.append("  " + _truncate(_clean_task_title(t.get("title", "")), bot_w - 4))
         queue_rows.append("  " + _truncate(_clean_task_description(t.get("description", "")), bot_w - 4))
     queue_rows.append("-")
-    queue_rows.append("Recently Assigned/Blocked:")
-    for t in snapshot.assigned[:5]:
+    queue_rows.append("Queued Next:")
+    for t in (snapshot.queued_tasks or [])[:4]:
         owner_profile = _agent_profile(str(t.get("owner", "")))
         queue_rows.append(f"{owner_profile['display_name']} | {t.get('status','-')} | {t.get('id','-')}")
+        queue_rows.append("  " + _truncate(_clean_task_title(t.get("title", "")), bot_w - 4))
+        queue_rows.append("  " + _truncate(_clean_task_description(t.get("description", "")), bot_w - 4))
+    queue_rows.append("-")
+    queue_rows.append("Blocked:")
+    for t in (snapshot.blocked_tasks or [])[:4]:
+        owner_profile = _agent_profile(str(t.get("owner", "")))
+        queue_rows.append(f"{owner_profile['display_name']} | blocked | {t.get('id','-')}")
         queue_rows.append("  " + _truncate(_clean_task_title(t.get("title", "")), bot_w - 4))
         queue_rows.append("  " + _truncate(_clean_task_description(t.get("description", "")), bot_w - 4))
     
