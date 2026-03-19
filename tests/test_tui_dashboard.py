@@ -18,6 +18,41 @@ spec.loader.exec_module(mod)  # type: ignore[arg-type]
 
 
 class DashboardTuiTests(unittest.TestCase):
+    def test_agent_profile_operator_labels(self) -> None:
+        profile = mod._agent_profile("ccm", {"model": "claude-sonnet"})
+        self.assertEqual(profile["display_name"], "Claude Wingman")
+        self.assertEqual(profile["role_label"], "Wingman/Reviewer")
+        self.assertEqual(profile["type_label"], "Claude Code")
+        self.assertEqual(profile["model_label"], "claude-sonnet")
+
+    def test_project_meta_reads_name_version_and_active_milestones(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "project.yaml").write_text(
+                "\n".join(
+                    [
+                        "name: Agent Leader Orchestrator",
+                        "version:",
+                        "  current: v0.2.0",
+                        '  name: "Stability + Multi-Project Foundation"',
+                        "  milestones:",
+                        "    - id: ci-github-integrations",
+                        "      title: Integrate GitHub issue/PR handoff and CI result ingestion into validation loop",
+                        "      status: in_progress",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            meta = mod._read_project_meta(root)
+            self.assertEqual(meta["project_name"], "Agent Leader Orchestrator")
+            self.assertEqual(meta["version_current"], "v0.2.0")
+            self.assertEqual(meta["version_name"], "Stability + Multi-Project Foundation")
+            self.assertEqual(meta["active_milestones"], ["Integrate GitHub issue/PR handoff and CI result ingestion into validation loop"])
+
+    def test_clean_task_title_and_description(self) -> None:
+        self.assertEqual(mod._clean_task_title("Milestone: Codebase Comprehension Phase - task type rollout"), "Codebase Comprehension Phase")
+        self.assertEqual(mod._clean_task_description("Implement comprehend_project task type and structured summary artifacts before planning begins."), "comprehend_project task type and structured summary artifacts before planning begins")
+
     def test_extract_token_usage_variants(self) -> None:
         p, c, t = mod._extract_token_usage({"token_usage": {"prompt_tokens": 10, "completion_tokens": 5}})
         self.assertEqual((p, c, t), (10, 5, 15))
@@ -143,7 +178,7 @@ class DashboardTuiTests(unittest.TestCase):
             assigned=[],
             blockers_open=1,
             bugs_open=2,
-            active_agents=[{"agent": "codex", "status": "active", "age_s": 100, "instance_id": "i1"}],
+            active_agents=[{"agent": "codex", "status": "active", "age_s": 100, "instance_id": "i1", "display_name": "Codex", "role_label": "Leader/Manager", "provider": "OpenAI", "client": "Codex CLI", "model": "-"}],
             review_events=[],
             budget_calls_today=100,
             budget_by_process={"p1": 100},
@@ -186,12 +221,21 @@ class DashboardTuiTests(unittest.TestCase):
             wingman_validation_contribution_percent=20.0,
             claude_latest_lane_event_type="validation.passed",
             wingman_latest_lane_event_type="validation.failed",
+            project_name_display="Agent Leader Orchestrator",
+            version_current="v0.2.0",
+            version_name="Stability + Multi-Project Foundation",
+            active_milestones=["CI/GitHub Integrations", "Codebase Comprehension Phase"],
         )
         
         out = mod._render_gemini_v3b(snap, completed=False, auto_stopped=False, color_enabled=False)
         
         # Check for new metrics in output
         self.assertIn("Velocity & Quality", out)
+        self.assertIn("Agent Leader Orchestrator", out)
+        self.assertIn("Version: v0.2.0 - Stability + Multi-Project Foundation", out)
+        self.assertIn("Version focus: CI/GitHub Integrations | Codebase Comprehension Phase", out)
+        self.assertIn("Team Topology", out)
+        self.assertIn("Codex (codex) | Leader/Manager", out)
         self.assertIn("Total Validations: 5", out)
         self.assertIn("Failure Rate: 20", out)
         self.assertIn("Review Depth: 0.2x", out)

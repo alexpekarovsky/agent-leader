@@ -146,8 +146,14 @@ version:
     - id: consult-only-team-review
       title: "Add consult-only MCP workflow to request team feedback on feature, bug, or architecture without starting execution"
       effort: M
-      status: planned
+      status: done
       tags: [orchestration, mcp-only, collaboration, ux]
+
+    - id: agent-identity-role-visibility
+      title: "Show agent name, provider/model, and role clearly in TUI and operator status"
+      effort: S
+      status: in_progress
+      tags: [ux, tui, status, operator-experience]
 
 roadmap:
   - version: v0.3.0
@@ -155,6 +161,7 @@ roadmap:
     items:
       - Slash-command bundles for manager/team workflows
       - Cleaner live status summaries and next-action guidance
+      - Human-readable agent identity and role labels in TUI/status
       - Prompt/template startup polish
 
   - version: v0.4.0

@@ -396,6 +396,38 @@ class Supervisor:
             return ProcessStatus(name, "running", pid, restarts)
         return ProcessStatus(name, "dead", pid, restarts)
 
+    def _get_agent_display_info(self, name: str) -> Dict[str, str]:
+        info: Dict[str, str] = {"role": "N/A", "type": "N/A", "model": "N/A"}
+
+        if name == "manager":
+            info["role"] = "leader/manager"
+            info["type"] = self.cfg.leader_agent
+        elif name == "claude":
+            info["role"] = "main Claude implementation worker"
+            info["type"] = "claude_code"
+            # Assuming a default model if not explicitly configured in the future
+            info["model"] = "claude-v3" 
+        elif name == "gemini":
+            info["role"] = "Gemini worker"
+            info["type"] = "gemini"
+            info["model"] = self.cfg.gemini_model
+        elif name == "wingman":
+            info["role"] = "Claude-backed wingman/reviewer lane"
+            info["type"] = self.cfg.wingman_agent
+            info["model"] = "claude-v3" # Assuming a default model
+        elif name == "codex_worker":
+            info["role"] = "codex worker"
+            info["type"] = "codex"
+        else:
+            # Check for extra workers
+            for ew in self.cfg.extra_workers:
+                if ew.name == name:
+                    info["role"] = f"extra worker ({ew.lane} lane)"
+                    info["type"] = ew.agent
+                    # Model not typically specified for extra workers via current config
+                    break
+        return info
+
     # -- public actions -----------------------------------------------------
 
     def start(self) -> None:
@@ -425,12 +457,18 @@ class Supervisor:
         print(f"PID dir: {self.cfg.pid_dir}")
         print(f"Log dir: {self.cfg.log_dir}")
         print()
+        print(f"{'Process':<15} {'State':<10} {'PID':<8} {'Restarts':<10} {'Role':<30} {'Type':<15} {'Model':<20}")
+        print("-" * 110) # Separator line
         results = []
         for name in self._procs:
             ps = self._status_proc(name)
+            display_info = self._get_agent_display_info(name)
             results.append(ps)
             pid_str = str(ps.pid) if ps.pid is not None else "-"
-            print(f"  {ps.name:<10}  {ps.state:<8}  pid={pid_str:<8}  restarts={ps.restarts}")
+            print(
+                f"{ps.name:<15} {ps.state:<10} {pid_str:<8} {ps.restarts:<10} "
+                f"{display_info['role']:<30} {display_info['type']:<15} {display_info['model']:<20}"
+            )
         return results
 
     def restart(self) -> None:

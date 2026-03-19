@@ -73,22 +73,25 @@ class SupervisorStatusFormatTests(unittest.TestCase):
         """Before start, all should show 'stopped' with pid='-'."""
         proc = _run("status", self.pid_dir, self.log_dir, self.env)
         for name in _PROCS:
-            # Match: name  stopped  pid=-  restarts=N
             expected_status = "disabled" if name == "codex_worker" else "stopped"
-            pattern = rf"{name}\s+{expected_status}\s+pid=-"
+            # Updated regex to account for new columns: Process, State, PID, Restarts, Role, Type, Model
+            # We are looking for the process name, its status, and pid=- and restarts=0
+            pattern = rf"\s*{name}\s+{expected_status}\s+-\s+0\s+.*"
             self.assertRegex(proc.stdout, pattern, f"expected stopped format for {name}")
 
     def test_running_status_has_numeric_pid(self) -> None:
         _run("start", self.pid_dir, self.log_dir, self.env)
         time.sleep(0.5)
         proc = _run("status", self.pid_dir, self.log_dir, self.env)
-        # At least some processes should show running with numeric pid
-        running_pids = re.findall(r"(\w+)\s+running\s+pid=(\d+)", proc.stdout)
+        # Updated regex to capture process name and PID from the new format
+        running_pids = re.findall(r"(\w+)\s+running\s+(\d+)\s+", proc.stdout)
         self.assertGreaterEqual(len(running_pids), 1, "expected at least one running process with pid")
 
     def test_status_includes_restart_count(self) -> None:
         proc = _run("status", self.pid_dir, self.log_dir, self.env)
-        restart_fields = re.findall(r"restarts=(\d+)", proc.stdout)
+        # Updated regex to capture restart count from the new format
+        # It looks for a line starting with a process name, then skips State and PID, and captures the restart count
+        restart_fields = re.findall(r"^\w+\s+\w+\s+[\d\-]+\s+(\d+)\s+.*", proc.stdout, re.MULTILINE)
         self.assertEqual(len(restart_fields), len(_PROCS),
                          f"expected restarts field for each of {len(_PROCS)} processes")
 

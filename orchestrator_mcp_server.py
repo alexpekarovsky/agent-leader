@@ -2001,24 +2001,86 @@ def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
     if not frontend_task_id:
         frontend_task_id = "n/a"
 
+    def _project_identity() -> Dict[str, str]:
+        meta = {"project_name": ROOT_DIR.name, "version_current": "-", "version_name": "-"}
+        project_yaml = ROOT_DIR / "project.yaml"
+        if not project_yaml.exists():
+            return meta
+        try:
+            import yaml  # type: ignore
+
+            data = yaml.safe_load(project_yaml.read_text(encoding="utf-8")) or {}
+            if isinstance(data, dict):
+                if isinstance(data.get("name"), str) and data["name"].strip():
+                    meta["project_name"] = data["name"].strip()
+                version = data.get("version")
+                if isinstance(version, dict):
+                    if isinstance(version.get("current"), str) and version["current"].strip():
+                        meta["version_current"] = version["current"].strip()
+                    if isinstance(version.get("name"), str) and version["name"].strip():
+                        meta["version_name"] = version["name"].strip()
+        except Exception:
+            text = project_yaml.read_text(encoding="utf-8", errors="ignore")
+            name_match = re.search(r"^name:\s*(.+)$", text, flags=re.MULTILINE)
+            current_match = re.search(r"^\s*current:\s*(.+)$", text, flags=re.MULTILINE)
+            version_name_match = re.search(r'^\s{2}name:\s*"?(.*?)"?\s*$', text, flags=re.MULTILINE)
+            if name_match:
+                meta["project_name"] = name_match.group(1).strip().strip('"')
+            if current_match:
+                meta["version_current"] = current_match.group(1).strip().strip('"')
+            if version_name_match:
+                meta["version_name"] = version_name_match.group(1).strip().strip('"')
+        return meta
+
+    def _agent_identity(agent: str, info: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+        metadata = info.get("metadata") if isinstance(info, dict) and isinstance(info.get("metadata"), dict) else {}
+        profiles = {
+            "codex": ("Codex", "Leader/Manager", "OpenAI", "Codex CLI"),
+            "claude_code": ("Claude Code", "Implementation Worker", "Anthropic", "Claude Code"),
+            "ccm": ("Claude Wingman", "Wingman/Reviewer", "Anthropic", "Claude Code"),
+            "gemini": ("Gemini", "Worker", "Google", "Gemini CLI"),
+        }
+        display_name, role_label, provider, type_label = profiles.get(agent, (agent, "Worker", "Unknown", "Unknown"))
+        model = metadata.get("model") if isinstance(metadata.get("model"), str) and metadata.get("model", "").strip() else "-"
+        return {
+            "display_name": display_name,
+            "role_label": role_label,
+            "provider": provider,
+            "type_label": type_label,
+            "model": model,
+        }
+
+    project_identity = _project_identity()
+
     # Unified Header for both Interactive and Headless
     leader = str(roles.get("leader", "codex"))
-    team = ", ".join(sorted(roles.get("team_members", []) or []))
+    leader_identity = _agent_identity(leader, by_agent.get(leader, {}))
+    team_agents = sorted(roles.get("team_members", []) or [])
+    team = ", ".join(_agent_identity(agent).get("display_name", agent) for agent in team_agents)
     status_state = "Active" if any(a.get("status") == "active" for a in agents_all) else "Idle"
     in_progress_count = len([t for t in tasks if t.get("status") == "in_progress"])
     assigned_count = len([t for t in tasks if t.get("status") == "assigned"])
 
     lines = [
         f"ORCHESTRATOR STATUS: {status_state}",
-        f"PROJECT: {ROOT_DIR}",
-        f"LEADER: {leader} | TEAM: {team or 'none'}",
+        f"PROJECT: {project_identity['project_name']} ({ROOT_DIR.name})",
+        f"VERSION: {project_identity['version_current']} | {project_identity['version_name']}",
+        f"LEADER: {leader_identity['display_name']} ({leader}) | {leader_identity['role_label']} | TEAM: {team or 'none'}",
         f"PIPELINE: {total_tasks} Tasks | {assigned_count} Assigned | {in_progress_count} IP | {reported_count} Review | {done_tasks} Done",
         f"BLOCKERS: {len(blockers_open)} Open | BUGS: {len(bugs_open)} Open",
     ]
     if wingman_count > 0 or "ccm" in by_agent or "wingman" in team.lower():
         wingman_agent = "ccm" if "ccm" in by_agent else "none"
         wingman_status = by_agent.get(wingman_agent, {}).get("status", "offline") if wingman_agent != "none" else "n/a"
-        lines.append(f"WINGMAN LANE: {wingman_agent} [{wingman_status}] | {wingman_count} Tasks Awaiting Review")
+        wingman_identity = _agent_identity(wingman_agent, by_agent.get(wingman_agent, {})) if wingman_agent != "none" else {
+            "display_name": "none",
+            "type_label": "-",
+            "model": "-",
+        }
+        lines.append(
+            f"WINGMAN LANE: {wingman_identity['display_name']} ({wingman_agent}) [{wingman_status}] | "
+            f"{wingman_identity['type_label']} | model: {wingman_identity['model']} | {wingman_count} Tasks Awaiting Review"
+        )
     
     lines.extend([
         "",
@@ -2039,6 +2101,9 @@ def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
 
     # Team member operational summary for manager-friendly status checks.
     lines.extend(["", "Team members:"])
+    lines.append(f"{'Agent':<15} {'Status':<10} {'Role':<30} {'Type':<15} {'Model':<20} {'Current Activity'}")
+    lines.append("-" * 110)
+
     role_by_agent: Dict[str, str] = {}
     leader = str(roles.get("leader", ""))
     if leader:
@@ -2052,17 +2117,26 @@ def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
     for agent in all_agent_names:
         info = by_agent.get(agent, {})
         status = str(info.get("status", "unknown"))
-        role = role_by_agent.get(agent, "team member")
+        identity = _agent_identity(agent, info)
+        role = role_by_agent.get(agent, identity["role_label"])
 
         in_progress_ids = [t.get("id") for t in tasks if t.get("owner") == agent and t.get("status") == "in_progress"]
         reported_ids = [t.get("id") for t in tasks if t.get("owner") == agent and t.get("status") == "reported"]
-        chunks: List[str] = []
+        
+        activity = []
         if in_progress_ids:
-            chunks.append("in_progress on " + ", ".join(in_progress_ids))
+            activity.append("IP on " + ", ".join(in_progress_ids))
         if reported_ids:
-            chunks.append("reported: " + ", ".join(reported_ids))
-        tail = "; " + "; ".join(chunks) if chunks else ""
-        lines.append(f"- {agent} ({role}): {status}{tail}")
+            activity.append("Reported: " + ", ".join(reported_ids))
+        activity_str = "; ".join(activity)
+
+        line = (
+            f"- {identity['display_name']} ({agent}) | {role} | "
+            f"{identity['provider']} {identity['type_label']} | model: {identity['model']} | {status}"
+        )
+        if activity_str:
+            line += f" | {activity_str}"
+        lines.append(line)
 
     # Per-team lane snapshot
     team_lanes = _aggregate_team_lanes(tasks)

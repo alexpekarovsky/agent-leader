@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -17,6 +18,56 @@ from typing import Any, Dict, List, Optional, Tuple
 
 OPEN_STATUSES = {"assigned", "in_progress", "reported", "needs_review", "blocked", "bug_open"}
 ACTIVE_STATUSES = {"assigned", "in_progress", "reported", "bug_open"}
+AGENT_ROLE_ORDER = {
+    "Leader/Manager": 0,
+    "Wingman/Reviewer": 1,
+    "Implementation Worker": 2,
+    "Worker": 3,
+}
+AGENT_OPERATOR_PROFILES: Dict[str, Dict[str, str]] = {
+    "codex": {
+        "display_name": "Codex",
+        "role_label": "Leader/Manager",
+        "provider": "OpenAI",
+        "type_label": "Codex CLI",
+        "default_model": "-",
+    },
+    "claude_code": {
+        "display_name": "Claude Code",
+        "role_label": "Implementation Worker",
+        "provider": "Anthropic",
+        "type_label": "Claude Code",
+        "default_model": "-",
+    },
+    "ccm": {
+        "display_name": "Claude Wingman",
+        "role_label": "Wingman/Reviewer",
+        "provider": "Anthropic",
+        "type_label": "Claude Code",
+        "default_model": "-",
+    },
+    "gemini": {
+        "display_name": "Gemini",
+        "role_label": "Worker",
+        "provider": "Google",
+        "type_label": "Gemini CLI",
+        "default_model": "-",
+    },
+}
+TASK_PREFIX_PATTERNS = (
+    "Milestone:",
+    "Planned Next:",
+    "Backlog Feature Live:",
+    "Wingman QA pass:",
+)
+GENERIC_TASK_SUFFIXES = (
+    " - phase execution",
+    " - policy enforcement phase",
+    " - task type rollout",
+    " loop scaffold",
+    " design gated on CI/GitHub integration",
+    " MCP workflow",
+)
 
 
 def _now_utc() -> datetime:
@@ -121,6 +172,145 @@ def _color(enabled: bool, code: str, text: str) -> str:
     if not enabled:
         return text
     return f"\033[{code}m{text}\033[0m"
+
+
+def _normalize_model_label(value: Any) -> str:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return "-"
+
+
+def _normalize_type_label(value: Any, fallback: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return fallback
+    lower = value.strip().lower()
+    if "claude" in lower:
+        return "Claude Code"
+    if "gemini" in lower:
+        return "Gemini CLI"
+    if "codex" in lower or "openai" in lower:
+        return "Codex CLI"
+    return value.strip()
+
+
+def _agent_profile(agent: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    base = dict(
+        AGENT_OPERATOR_PROFILES.get(
+            str(agent).strip(),
+            {
+                "display_name": str(agent).strip() or "Unknown Agent",
+                "role_label": "Worker",
+                "provider": "Unknown",
+                "type_label": "Unknown",
+                "default_model": "-",
+            },
+        )
+    )
+    md = metadata if isinstance(metadata, dict) else {}
+    base["type_label"] = _normalize_type_label(md.get("client"), base["type_label"])
+    base["model_label"] = _normalize_model_label(md.get("model") or base.get("default_model"))
+    return base
+
+
+def _clean_task_title(title: Any) -> str:
+    raw = str(title or "").strip()
+    if not raw:
+        return "-"
+    cleaned = raw
+    for prefix in TASK_PREFIX_PATTERNS:
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix):].strip()
+            break
+    for suffix in GENERIC_TASK_SUFFIXES:
+        if cleaned.lower().endswith(suffix.lower()):
+            cleaned = cleaned[: -len(suffix)].rstrip(" -:")
+            break
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -:")
+    return cleaned or raw
+
+
+def _clean_task_description(description: Any) -> str:
+    desc = str(description or "").strip()
+    if not desc:
+        return "-"
+    desc = desc.split(".", 1)[0].strip()
+    replacements = (
+        ("Implement ", ""),
+        ("Design and scaffold ", ""),
+        ("Define ", ""),
+        ("Run QA/validation review for ", "QA review for "),
+        ("Add ", ""),
+    )
+    for old, new in replacements:
+        if desc.startswith(old):
+            desc = new + desc[len(old):]
+            break
+    return re.sub(r"\s+", " ", desc).strip()
+
+
+def _read_project_meta(root: Path) -> Dict[str, Any]:
+    meta: Dict[str, Any] = {
+        "project_name": root.name,
+        "version_current": None,
+        "version_name": None,
+        "active_milestones": [],
+    }
+    path = root / "project.yaml"
+    if not path.exists():
+        return meta
+    try:
+        import yaml  # type: ignore
+
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if isinstance(data, dict):
+            if isinstance(data.get("name"), str) and data.get("name", "").strip():
+                meta["project_name"] = data["name"].strip()
+            version = data.get("version")
+            if isinstance(version, dict):
+                current = version.get("current")
+                if isinstance(current, str) and current.strip():
+                    meta["version_current"] = current.strip()
+                version_name = version.get("name")
+                if isinstance(version_name, str) and version_name.strip():
+                    meta["version_name"] = version_name.strip()
+                milestones = version.get("milestones")
+                if isinstance(milestones, list):
+                    meta["active_milestones"] = [
+                        _clean_task_title(m.get("title") or m.get("id"))
+                        for m in milestones
+                        if isinstance(m, dict) and str(m.get("status", "")).strip() == "in_progress"
+                    ]
+        return meta
+    except Exception:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        name_match = re.search(r"^name:\s*(.+)$", text, flags=re.MULTILINE)
+        current_match = re.search(r"^\s*current:\s*(.+)$", text, flags=re.MULTILINE)
+        version_name_match = re.search(r'^\s{2}name:\s*"?(.*?)"?\s*$', text, flags=re.MULTILINE)
+        if name_match:
+            meta["project_name"] = name_match.group(1).strip().strip('"')
+        if current_match:
+            meta["version_current"] = current_match.group(1).strip().strip('"')
+        if version_name_match:
+            meta["version_name"] = version_name_match.group(1).strip().strip('"')
+        lines = text.splitlines()
+        active: List[str] = []
+        for idx, line in enumerate(lines):
+            if re.match(r"^\s*-\s+id:\s+", line):
+                title = None
+                status = None
+                for look_ahead in lines[idx + 1 : idx + 8]:
+                    if re.match(r"^\s*-\s+id:\s+", look_ahead):
+                        break
+                    title_match = re.match(r'^\s*title:\s*"?(.*?)"?\s*$', look_ahead)
+                    status_match = re.match(r"^\s*status:\s*(\S+)\s*$", look_ahead)
+                    if title_match:
+                        title = title_match.group(1)
+                    if status_match:
+                        status = status_match.group(1)
+                if title and status == "in_progress":
+                    active.append(_clean_task_title(title))
+        meta["active_milestones"] = active
+        return meta
 
 
 def _panel(title: str, rows: List[str], width: int, color_enabled: bool = True) -> List[str]:
@@ -232,6 +422,10 @@ class DashboardSnapshot:
     wingman_validation_contribution_percent: Optional[float] = None
     wingman_latest_lane_event_time: Optional[datetime] = None
     wingman_latest_lane_event_type: Optional[str] = None
+    project_name_display: str = ""
+    version_current: Optional[str] = None
+    version_name: Optional[str] = None
+    active_milestones: Optional[List[str]] = None
 
 
 def _task_matches_project(task: Dict[str, Any], project_root: str) -> bool:
@@ -364,6 +558,7 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
     blockers = _load_json(root / "state" / "blockers.json", [])
     bugs = _load_json(root / "state" / "bugs.json", [])
     agents_map = _load_json(root / "state" / "agents.json", {})
+    project_meta = _read_project_meta(root)
 
     scoped = [t for t in tasks if _task_matches_project(t, project_root)]
     if not scoped:
@@ -392,15 +587,28 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
     active_agents: List[Dict[str, Any]] = []
     if isinstance(agents_map, dict):
         for agent, entry in agents_map.items():
+            metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
+            profile = _agent_profile(agent, metadata)
             active_agents.append(
                 {
                     "agent": agent,
                     "status": str(entry.get("status", "unknown")),
                     "age_s": _age_s(entry.get("last_seen")),
-                    "instance_id": (entry.get("metadata") or {}).get("instance_id", "-") if isinstance(entry.get("metadata"), dict) else "-",
+                    "instance_id": metadata.get("instance_id", "-"),
+                    "client": profile["type_label"],
+                    "model": profile["model_label"],
+                    "display_name": profile["display_name"],
+                    "role_label": profile["role_label"],
+                    "provider": profile["provider"],
                 }
             )
-    active_agents.sort(key=lambda a: (a["status"] != "active", a["agent"]))
+    active_agents.sort(
+        key=lambda a: (
+            a["status"] != "active",
+            AGENT_ROLE_ORDER.get(str(a.get("role_label", "")), 99),
+            str(a["agent"]),
+        )
+    )
 
     review_events: List[Dict[str, Any]] = []
     recent_events = _read_recent_events(root, limit=12)
@@ -680,6 +888,10 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
         wingman_validation_contribution_percent=wingman_validation_contribution_percent,
         wingman_latest_lane_event_time=wingman_latest_lane_event_time,
         wingman_latest_lane_event_type=wingman_latest_lane_event_type,
+        project_name_display=str(project_meta.get("project_name") or root.name),
+        version_current=project_meta.get("version_current"),
+        version_name=project_meta.get("version_name"),
+        active_milestones=project_meta.get("active_milestones") or [],
     )
 
 
@@ -1081,7 +1293,14 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
     # Header
     lines.append(sep)
     lines.append(_color(color_enabled, "34;1", f"AGENT LEADER // GEMINI V3B DENSE TELEMETRY // {now} // {mode}"))
-    lines.append(f"Project: {snapshot.project_root}")
+    project_line = f"Project: {snapshot.project_name_display} ({Path(snapshot.project_root).name})"
+    if snapshot.version_current or snapshot.version_name:
+        project_line += f" | Version: {snapshot.version_current or '-'} - {snapshot.version_name or '-'}"
+    lines.append(_truncate(project_line, width))
+    if snapshot.active_milestones:
+        lines.append(_truncate("Version focus: " + " | ".join((snapshot.active_milestones or [])[:3]), width))
+    else:
+        lines.append(_truncate(f"Project root: {snapshot.project_root}", width))
     
     # Quick Stats Row
     stats = [
@@ -1097,10 +1316,12 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
     now_rows: List[str] = []
     if snapshot.in_progress:
         t = snapshot.in_progress[0]
+        owner_profile = _agent_profile(str(t.get("owner", "")))
         now_rows.append(
-            f"STATE: WORKING | owner={t.get('owner','-')} | task={t.get('id','-')} | age={_format_age(_age_s(t.get('updated_at')))}"
+            f"STATE: WORKING | {owner_profile['display_name']} | {owner_profile['role_label']} | task={t.get('id','-')} | age={_format_age(_age_s(t.get('updated_at')))}"
         )
-        now_rows.append(f"NOW: {_truncate(t.get('title','-'), max(20, width - 10))}")
+        now_rows.append(f"NOW: {_truncate(_clean_task_title(t.get('title','-')), max(20, width - 10))}")
+        now_rows.append(f"GOAL: {_truncate(_clean_task_description(t.get('description','-')), max(20, width - 11))}")
     elif snapshot.blockers_open > 0:
         now_rows.append(f"STATE: BLOCKED | blockers_open={snapshot.blockers_open} | bugs_open={snapshot.bugs_open}")
         now_rows.append("NOW: waiting for blocker resolution before new execution can continue")
@@ -1116,7 +1337,7 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
         now_rows.append(f"LATEST EVENT: {ev.get('type','-')} | source={ev.get('source','-')} | task={ev.get('task_id') or '-'}")
     if snapshot.next_actions:
         now_rows.append(f"NEXT ACTION: {snapshot.next_actions[0]}")
-    lines.extend(_panel_fixed("NOW (Operator Summary)", now_rows, width, body_rows=4, color_enabled=color_enabled))
+    lines.extend(_panel_fixed("NOW (Operator Summary)", now_rows, width, body_rows=5, color_enabled=color_enabled))
     lines.append(sep)
 
     three_col = width >= 165
@@ -1142,14 +1363,18 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
         f"Blocker Res: {_format_age(snapshot.avg_blocker_resolution_time_s)}",
     ]
     
-    # Panel 2: Fleet Status
-    fleet_rows = ["Team Lanes:"]
+    # Panel 2: Team Topology
+    fleet_rows = ["Operator Topology:"]
+    for a in snapshot.active_agents[:10]:
+        fleet_rows.append(
+            f"{a.get('display_name', a['agent'])} ({a['agent']}) | {a.get('role_label','-')} | "
+            f"{a.get('provider','-')} {a.get('client','-')} | model:{a.get('model','-')} | "
+            f"{a['status']} age={_format_age(a['age_s'])}"
+        )
+    fleet_rows.append("-")
+    fleet_rows.append("Team Lanes:")
     for tid, c in sorted(snapshot.team_lane_counts.items()):
         fleet_rows.append(f"{tid:<12} {c.get('done',0)}/{c.get('total',0)} done (ip={c.get('in_progress',0)})")
-    fleet_rows.append("-")
-    fleet_rows.append("Agents:")
-    for a in snapshot.active_agents[:10]:
-        fleet_rows.append(f"{a['agent']:<11} {a['status']:<8} age={_format_age(a['age_s'])}")
     fleet_rows.append("-")
     fleet_rows.append("Claude-only signals:")
     fleet_rows.append(f"claude validation share: {_fmt_number(snapshot.claude_validation_contribution_percent)}%")
@@ -1182,7 +1407,7 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
 
     # Render top panels (responsive)
     p1 = _panel_fixed("Velocity & Quality", vel_rows, panel_w, body_rows=top_rows, color_enabled=color_enabled)
-    p2 = _panel_fixed("Fleet Status", fleet_rows, panel_w, body_rows=top_rows, color_enabled=color_enabled)
+    p2 = _panel_fixed("Team Topology", fleet_rows, panel_w, body_rows=top_rows, color_enabled=color_enabled)
     p3 = _panel_fixed("Costs & Systems", cost_rows, panel_w, body_rows=top_rows, color_enabled=color_enabled)
 
     if three_col:
@@ -1197,7 +1422,7 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
         lines.extend(_panel_fixed("Costs & Systems", cost_rows, width, body_rows=max(3, top_rows // 2), color_enabled=color_enabled))
     else:
         lines.extend(_panel_fixed("Velocity & Quality", vel_rows, width, body_rows=top_rows, color_enabled=color_enabled))
-        lines.extend(_panel_fixed("Fleet Status", fleet_rows, width, body_rows=top_rows, color_enabled=color_enabled))
+        lines.extend(_panel_fixed("Team Topology", fleet_rows, width, body_rows=top_rows, color_enabled=color_enabled))
         lines.extend(_panel_fixed("Costs & Systems", cost_rows, width, body_rows=max(3, top_rows // 2), color_enabled=color_enabled))
 
     lines.append(sep)
@@ -1206,12 +1431,18 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
     bot_w = (width - 2) // 2
     queue_rows = ["In-Progress:"]
     for t in snapshot.in_progress[:5]:
-        queue_rows.append(f"{t.get('id','-')} {t.get('owner','-')} age={_format_age(_age_s(t.get('updated_at')))}")
-        queue_rows.append("  " + _truncate(t.get("title", ""), bot_w - 4))
+        owner_profile = _agent_profile(str(t.get("owner", "")))
+        queue_rows.append(
+            f"{owner_profile['display_name']} | {owner_profile['role_label']} | {t.get('id','-')} | age={_format_age(_age_s(t.get('updated_at')))}"
+        )
+        queue_rows.append("  " + _truncate(_clean_task_title(t.get("title", "")), bot_w - 4))
+        queue_rows.append("  " + _truncate(_clean_task_description(t.get("description", "")), bot_w - 4))
     queue_rows.append("-")
     queue_rows.append("Recently Assigned/Blocked:")
     for t in snapshot.assigned[:5]:
-        queue_rows.append(f"{t.get('id','-')} {t.get('status','-')} {t.get('owner','-')}")
+        owner_profile = _agent_profile(str(t.get("owner", "")))
+        queue_rows.append(f"{owner_profile['display_name']} | {t.get('status','-')} | {t.get('id','-')}")
+        queue_rows.append("  " + _truncate(_clean_task_title(t.get("title", "")), bot_w - 4))
     
     timeline_rows = ["Activity:"]
     for ev in snapshot.recent_events[:10]:
