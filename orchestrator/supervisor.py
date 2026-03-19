@@ -69,6 +69,9 @@ class SupervisorConfig:
     codex_project_root: str = ""
     wingman_project_root: str = ""
     gemini_model: str = "gemini-2.5-flash"
+    gemini_fallback_model: str = ""
+    gemini_capacity_retries: int = 2
+    gemini_capacity_backoff: int = 15
     claude_team_id: str = ""
     gemini_team_id: str = ""
     codex_team_id: str = ""
@@ -230,9 +233,16 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             f"{_event_driven_arg()}"
         )
     if name == "gemini":
-        model_env = f"ORCHESTRATOR_GEMINI_MODEL={cfg.gemini_model} " if cfg.gemini_model else ""
+        env_parts = []
+        if cfg.gemini_model:
+            env_parts.append(f"ORCHESTRATOR_GEMINI_MODEL={cfg.gemini_model}")
+        if cfg.gemini_fallback_model:
+            env_parts.append(f"ORCHESTRATOR_GEMINI_FALLBACK_MODEL={cfg.gemini_fallback_model}")
+        env_parts.append(f"ORCHESTRATOR_GEMINI_CAPACITY_RETRIES={cfg.gemini_capacity_retries}")
+        env_parts.append(f"ORCHESTRATOR_GEMINI_CAPACITY_BACKOFF_SECONDS={cfg.gemini_capacity_backoff}")
+        env_prefix = " ".join(env_parts) + " " if env_parts else ""
         return (
-            f"{model_env}{scripts}/worker_loop.sh"
+            f"{env_prefix}{scripts}/worker_loop.sh"
             f" --cli gemini --agent gemini{_team_arg(cfg.gemini_team_id)}"
             f" --project-root {cfg.gemini_project_root}"
             f" --interval {cfg.worker_interval}"
@@ -270,6 +280,10 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
 # Supervisor
 # ---------------------------------------------------------------------------
 
+def _capacity_error_file(pid_dir: str, name: str) -> Path:
+    return Path(pid_dir) / f"{name}.capacity_errors"
+
+
 @dataclass
 class ProcessStatus:
     name: str
@@ -278,6 +292,7 @@ class ProcessStatus:
     restarts: int
     heartbeat_status: str # active | stale | unknown
     task_activity: str # idle | working | blocked | reporting | no_tasks
+    capacity_errors: int = 0  # gemini capacity error streak count
 
 
 class Supervisor:
@@ -422,11 +437,23 @@ class Supervisor:
                     task_activity = "idle"
 
 
+        # Read capacity error streak for gemini workers
+        capacity_errors = 0
+        if name == "gemini":
+            cef = _capacity_error_file(self.cfg.pid_dir, name)
+            if cef.exists():
+                try:
+                    capacity_errors = int(cef.read_text().strip())
+                except (ValueError, OSError):
+                    pass
+            if capacity_errors > 0 and task_activity not in ("working", "blocked"):
+                task_activity = "capacity_degraded"
+
         if pid is None:
-            return ProcessStatus(name, "stopped", None, restarts, heartbeat_status, task_activity)
+            return ProcessStatus(name, "stopped", None, restarts, heartbeat_status, task_activity, capacity_errors)
         if _is_alive(pid):
-            return ProcessStatus(name, "running", pid, restarts, heartbeat_status, task_activity)
-        return ProcessStatus(name, "dead", pid, restarts, heartbeat_status, task_activity)
+            return ProcessStatus(name, "running", pid, restarts, heartbeat_status, task_activity, capacity_errors)
+        return ProcessStatus(name, "dead", pid, restarts, heartbeat_status, task_activity, capacity_errors)
 
     def _get_agent_display_info(self, name: str) -> Dict[str, str]:
         info: Dict[str, str] = {"role": "N/A", "type": "N/A", "model": "N/A"}
@@ -488,19 +515,20 @@ class Supervisor:
         print(f"Log dir: {self.cfg.log_dir}")
         print()
         print(
-            f"{'Process':<15} {'State':<10} {'PID':<8} {'Restarts':<10} {'Heartbeat':<10} {'Activity':<15} "
-            f"{'Role':<30} {'Type':<15} {'Model':<20}"
+            f"{'Process':<15} {'State':<10} {'PID':<8} {'Restarts':<10} {'Heartbeat':<10} {'Activity':<18} "
+            f"{'CapErr':<7} {'Role':<30} {'Type':<15} {'Model':<20}"
         )
-        print("-" * 140) # Separator line
+        print("-" * 150) # Separator line
         results = []
         for name in self._procs:
             ps = self._status_proc(name)
             display_info = self._get_agent_display_info(name)
             results.append(ps)
             pid_str = str(ps.pid) if ps.pid is not None else "-"
+            cap_str = str(ps.capacity_errors) if ps.capacity_errors > 0 else "-"
             print(
-                f"{ps.name:<15} {ps.state:<10} {pid_str:<8} {ps.restarts:<10} {ps.heartbeat_status:<10} {ps.task_activity:<15} "
-                f"{display_info['role']:<30} {display_info['type']:<15} {display_info['model']:<20}"
+                f"{ps.name:<15} {ps.state:<10} {pid_str:<8} {ps.restarts:<10} {ps.heartbeat_status:<10} {ps.task_activity:<18} "
+                f"{cap_str:<7} {display_info['role']:<30} {display_info['type']:<15} {display_info['model']:<20}"
             )
         return results
 
@@ -585,14 +613,17 @@ class Supervisor:
         results = []
         for name in self._procs:
             ps = self._status_proc(name)
-            results.append({
+            entry = {
                 "name": ps.name,
                 "state": ps.state,
                 "pid": ps.pid,
                 "restarts": ps.restarts,
                 "heartbeat_status": ps.heartbeat_status,
                 "task_activity": ps.task_activity,
-            })
+            }
+            if ps.capacity_errors > 0:
+                entry["capacity_errors"] = ps.capacity_errors
+            results.append(entry)
         return results
 
 
@@ -646,6 +677,9 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> Tuple[str, Supe
     parser.add_argument("--codex-project-root", default="")
     parser.add_argument("--wingman-project-root", default="")
     parser.add_argument("--gemini-model", default="gemini-2.5-flash")
+    parser.add_argument("--gemini-fallback-model", default="")
+    parser.add_argument("--gemini-capacity-retries", type=int, default=2)
+    parser.add_argument("--gemini-capacity-backoff", type=int, default=15)
     parser.add_argument("--claude-team-id", default="")
     parser.add_argument("--gemini-team-id", default="")
     parser.add_argument("--codex-team-id", default="")
@@ -679,6 +713,9 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> Tuple[str, Supe
         codex_project_root=args.codex_project_root,
         wingman_project_root=args.wingman_project_root,
         gemini_model=args.gemini_model,
+        gemini_fallback_model=args.gemini_fallback_model,
+        gemini_capacity_retries=args.gemini_capacity_retries,
+        gemini_capacity_backoff=args.gemini_capacity_backoff,
         claude_team_id=args.claude_team_id,
         gemini_team_id=args.gemini_team_id,
         codex_team_id=args.codex_team_id,

@@ -83,6 +83,7 @@ run_cli_prompt() {
 import os
 import subprocess
 import sys
+import time
 
 cli, cwd, prompt_file, output_file, timeout_seconds, agent, role, instance_id = sys.argv[1:]
 timeout_seconds = int(timeout_seconds)
@@ -119,24 +120,117 @@ if agent: env["ORCHESTRATOR_AGENT"] = agent
 if role: env["ORCHESTRATOR_ROLE"] = role
 if instance_id: env["ORCHESTRATOR_INSTANCE_ID"] = instance_id
 
-with open(prompt_file, "rb") as stdin_f, open(output_file, "wb") as out_f:
+gemini_retry_limit = 0
+gemini_retry_backoff = 15.0
+gemini_fallback_model = env.get("ORCHESTRATOR_GEMINI_FALLBACK_MODEL", "").strip()
+if cli == "gemini":
     try:
-        result = subprocess.run(
-            cmd,
-            cwd=cwd,
-            stdin=stdin_f,
-            stdout=out_f,
-            stderr=subprocess.STDOUT,
-            timeout=timeout_seconds,
-            env=env,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        out_f.write(
-            f"\n[AUTOPILOT] CLI timeout after {timeout_seconds}s for {cli}\n".encode("utf-8")
-        )
-        sys.exit(124)
-    sys.exit(result.returncode)
+        gemini_retry_limit = max(0, int(env.get("ORCHESTRATOR_GEMINI_CAPACITY_RETRIES", "2").strip() or "2"))
+    except Exception:
+        gemini_retry_limit = 2
+    try:
+        gemini_retry_backoff = max(0.0, float(env.get("ORCHESTRATOR_GEMINI_CAPACITY_BACKOFF_SECONDS", "15").strip() or "15"))
+    except Exception:
+        gemini_retry_backoff = 15.0
+
+def _read_output_text() -> str:
+    try:
+        return open(output_file, "r", encoding="utf-8", errors="ignore").read()
+    except Exception:
+        return ""
+
+def _is_gemini_capacity_error() -> bool:
+    if cli != "gemini":
+        return False
+    text = _read_output_text()
+    markers = (
+        "MODEL_CAPACITY_EXHAUSTED",
+        "No capacity available for model",
+        '"status": "RESOURCE_EXHAUSTED"',
+        "rateLimitExceeded",
+    )
+    return any(marker in text for marker in markers)
+
+def _run_once(command: list[str], append: bool = False) -> int:
+    mode = "ab" if append else "wb"
+    with open(prompt_file, "rb") as stdin_f, open(output_file, mode) as out_f:
+        try:
+            result = subprocess.run(
+                command,
+                cwd=cwd,
+                stdin=stdin_f,
+                stdout=out_f,
+                stderr=subprocess.STDOUT,
+                timeout=timeout_seconds,
+                env=env,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            out_f.write(
+                f"\n[AUTOPILOT] CLI timeout after {timeout_seconds}s for {cli}\n".encode("utf-8")
+            )
+            return 124
+        return result.returncode
+
+result_code = _run_once(cmd, append=False)
+if cli == "gemini" and result_code != 0 and _is_gemini_capacity_error():
+    current_model = env.get("ORCHESTRATOR_GEMINI_MODEL", "").strip() or env.get("GEMINI_MODEL", "").strip()
+    for attempt in range(1, gemini_retry_limit + 1):
+        with open(output_file, "ab") as out_f:
+            out_f.write(
+                f"\n[AUTOPILOT] Gemini capacity exhausted; retry {attempt}/{gemini_retry_limit} after {gemini_retry_backoff * attempt:.1f}s\n".encode("utf-8")
+            )
+        if gemini_retry_backoff > 0:
+            time.sleep(gemini_retry_backoff * attempt)
+        result_code = _run_once(cmd, append=True)
+        if result_code == 0 or not _is_gemini_capacity_error():
+            break
+    if (
+        result_code != 0
+        and _is_gemini_capacity_error()
+        and gemini_fallback_model
+        and gemini_fallback_model != current_model
+    ):
+        fallback_cmd = list(cmd)
+        try:
+            model_index = fallback_cmd.index("-m")
+            fallback_cmd[model_index + 1] = gemini_fallback_model
+        except ValueError:
+            fallback_cmd.extend(["-m", gemini_fallback_model])
+        with open(output_file, "ab") as out_f:
+            out_f.write(
+                f"\n[AUTOPILOT] Gemini capacity exhausted; trying fallback model {gemini_fallback_model}\n".encode("utf-8")
+            )
+        result_code = _run_once(fallback_cmd, append=True)
+
+sys.exit(result_code)
+PY
+}
+
+detect_gemini_capacity_error() {
+  local output_file="$1"
+  [[ -f "$output_file" ]] || return 1
+  python3 - "$output_file" <<'PY'
+import sys
+try:
+    with open(sys.argv[1], "r", errors="replace") as f:
+        text = f.read()
+except Exception:
+    sys.exit(1)
+markers = (
+    "MODEL_CAPACITY_EXHAUSTED",
+    "No capacity available for model",
+    "RESOURCE_EXHAUSTED",
+    "rateLimitExceeded",
+    "429",
+    "Too Many Requests",
+    "quota exceeded",
+)
+lower = text.lower()
+for m in markers:
+    if m.lower() in lower:
+        sys.exit(0)
+sys.exit(1)
 PY
 }
 
@@ -194,11 +288,89 @@ consume_daily_budget() {
   return 0
 }
 
+emit_agent_heartbeat() {
+  local work_project_root="$1"
+  local agent="$2"
+  local cli="${3:-}"
+  local lane="${4:-default}"
+  local instance_id="${5:-${agent}#headless-${lane}}"
+  local task_activity="${6:-idle}"
+
+  python3 - "$ROOT_DIR" "$work_project_root" "$agent" "$cli" "$lane" "$instance_id" "$task_activity" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+repo_root = Path(os.environ.get("ORCHESTRATOR_ROOT", sys.argv[1])).resolve()
+work_project_root = str(Path(sys.argv[2]).resolve())
+agent = sys.argv[3]
+cli = sys.argv[4]
+lane = sys.argv[5]
+instance_id = sys.argv[6]
+task_activity = sys.argv[7]
+
+sys.path.insert(0, str(repo_root))
+
+try:
+    from orchestrator.engine import Orchestrator
+    from orchestrator.policy import Policy
+except Exception:
+    raise SystemExit(0)
+
+policy_path = repo_root / "config" / "policy.codex-manager.json"
+if not policy_path.exists():
+    raise SystemExit(0)
+
+try:
+    policy = Policy.load(policy_path)
+    orch = Orchestrator(root=repo_root, policy=policy)
+except Exception:
+    raise SystemExit(0)
+
+model = "-"
+if cli == "gemini":
+    model = os.environ.get("ORCHESTRATOR_GEMINI_MODEL", "").strip() or os.environ.get("GEMINI_MODEL", "").strip() or "-"
+elif cli == "claude":
+    model = os.environ.get("ORCHESTRATOR_CLAUDE_MODEL", "").strip() or "-"
+elif cli == "codex":
+    model = os.environ.get("ORCHESTRATOR_CODEX_MODEL", "").strip() or "-"
+
+client = {
+    "codex": "Codex CLI",
+    "claude": "Claude Code",
+    "gemini": "Gemini CLI",
+}.get(cli, cli or "Unknown")
+
+metadata = {
+    "role": "team_member",
+    "client": client,
+    "model": model,
+    "cwd": work_project_root,
+    "project_root": work_project_root,
+    "permissions_mode": "headless",
+    "sandbox_mode": "danger-full-access",
+    "instance_id": instance_id or f"{agent}#default",
+    "lane": lane or "default",
+    "headless_state": task_activity,
+    "task_activity": task_activity,
+    "process_state": "running",
+}
+try:
+    orch.heartbeat(agent=agent, metadata=metadata)
+except Exception:
+    raise SystemExit(0)
+PY
+}
+
 wait_for_task_signal() {
   local project_root="$1"
   local agent="$2"
   local max_wait="${3:-300}"
   local poll_interval="${4:-2}"
+  local heartbeat_interval="${5:-0}"
+  local cli="${6:-}"
+  local lane="${7:-default}"
+  local instance_id="${8:-${agent}#headless-${lane}}"
   local signal_file="$project_root/state/.wakeup-${agent}"
 
   # Record baseline mtime (0 if file doesn't exist yet).
@@ -208,9 +380,17 @@ wait_for_task_signal() {
   fi
 
   local waited=0
+  local last_heartbeat=0
+  if [[ "$heartbeat_interval" =~ ^[0-9]+$ ]] && (( heartbeat_interval > 0 )); then
+    emit_agent_heartbeat "$project_root" "$agent" "$cli" "$lane" "$instance_id" "idle"
+  fi
   while (( waited < max_wait )); do
     sleep "$poll_interval"
     waited=$((waited + poll_interval))
+    if [[ "$heartbeat_interval" =~ ^[0-9]+$ ]] && (( heartbeat_interval > 0 )) && (( waited - last_heartbeat >= heartbeat_interval )); then
+      emit_agent_heartbeat "$project_root" "$agent" "$cli" "$lane" "$instance_id" "idle"
+      last_heartbeat="$waited"
+    fi
     if [[ -f "$signal_file" ]]; then
       local current_mtime
       current_mtime="$(python3 -c "import os; print(int(os.path.getmtime('$signal_file') * 1000))" 2>/dev/null || echo 0)"

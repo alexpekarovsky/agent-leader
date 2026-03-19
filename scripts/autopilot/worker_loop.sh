@@ -67,6 +67,9 @@ mkdir_logs "$LOG_DIR"
 
 cycle=0
 idle_streak=0
+capacity_streak=0
+INSTANCE_ID="${AGENT}#headless-${LANE}"
+CAPACITY_BACKOFF="60,120,300,600,900"
 
 worker_has_claimable_work() {
   python3 - "$PROJECT_ROOT" "$AGENT" "$TEAM_ID" "$LANE" <<'PY'
@@ -120,10 +123,11 @@ while true; do
   if [[ "$ONCE" != true ]]; then
     if ! worker_has_claimable_work; then
       idle_streak=$((idle_streak + 1))
+      emit_agent_heartbeat "$PROJECT_ROOT" "$AGENT" "$CLI" "$LANE" "$INSTANCE_ID" "idle"
       log INFO "idle gate: no claimable work for $AGENT (streak=$idle_streak)"
       if [[ "$EVENT_DRIVEN" == true ]]; then
         log INFO "idle gate: waiting for wakeup signal for $AGENT (streak=$idle_streak max_wait=${EVENT_MAX_WAIT}s)"
-        if wait_for_task_signal "$PROJECT_ROOT" "$AGENT" "$EVENT_MAX_WAIT" "$EVENT_POLL_INTERVAL"; then
+        if wait_for_task_signal "$PROJECT_ROOT" "$AGENT" "$EVENT_MAX_WAIT" "$EVENT_POLL_INTERVAL" "60" "$CLI" "$LANE" "$INSTANCE_ID"; then
           log INFO "wakeup signal received for $AGENT; checking for work"
           continue  # Re-check immediately
         else
@@ -210,8 +214,14 @@ EOF
   # Keep legacy marker for existing parsers/tests while adding canonical action event.
   log INFO "worker cycle=$cycle agent=$AGENT cli=$CLI project=$PROJECT_ROOT"
   log INFO "CANONICAL ACTION: WORKER_PULSE cycle=$cycle agent=$AGENT cli=$CLI project=$PROJECT_ROOT"
+  cycle_sleep="$INTERVAL"
   if run_cli_prompt "$CLI" "$PROJECT_ROOT" "$prompt_file" "$out_file" "$CLI_TIMEOUT" "$AGENT" "$LANE" "${AGENT}#headless-${LANE}"; then
     log INFO "worker cycle complete agent=$AGENT; log=$out_file"
+    if (( capacity_streak > 0 )); then
+      log INFO "capacity recovery: clearing capacity_streak=$capacity_streak after successful cycle"
+      capacity_streak=0
+      rm -f "$PROJECT_ROOT/.autopilot-pids/gemini.capacity_errors"
+    fi
   else
     rc=$?
     cycle_rc=$rc
@@ -219,6 +229,19 @@ EOF
       log ERROR "worker cycle timed out agent=$AGENT after ${CLI_TIMEOUT}s; see $out_file"
     else
       log ERROR "worker cycle failed agent=$AGENT rc=$rc; see $out_file"
+    fi
+    # Gemini capacity error detection at the worker loop level
+    if [[ "$CLI" == "gemini" ]] && detect_gemini_capacity_error "$out_file"; then
+      capacity_streak=$((capacity_streak + 1))
+      log WARN "GEMINI_CAPACITY_EXHAUSTED detected (streak=$capacity_streak); see $out_file"
+      # Write marker file for supervisor status visibility
+      mkdir -p "$PROJECT_ROOT/.autopilot-pids"
+      echo "$capacity_streak" > "$PROJECT_ROOT/.autopilot-pids/gemini.capacity_errors"
+      # Emit degraded heartbeat so orchestrator shows correct state
+      emit_agent_heartbeat "$PROJECT_ROOT" "$AGENT" "$CLI" "$LANE" "$INSTANCE_ID" "capacity_degraded"
+      # Use longer capacity-specific backoff for inter-cycle sleep
+      cycle_sleep="$(backoff_interval_for_streak "$capacity_streak" "$CAPACITY_BACKOFF" "120")"
+      log WARN "capacity backoff: next retry in ${cycle_sleep}s (streak=$capacity_streak)"
     fi
   fi
   rm -f "$prompt_file"
@@ -228,5 +251,5 @@ EOF
     # One-shot mode is used by smoke/runbook validation; success means the cycle ran.
     exit 0
   fi
-  sleep_with_jitter "$INTERVAL"
+  sleep_with_jitter "$cycle_sleep"
 done
