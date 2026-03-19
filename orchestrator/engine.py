@@ -14,6 +14,8 @@ from typing import Any, Dict, List, Optional
 
 from orchestrator.bus import EventBus
 from orchestrator.policy import Policy
+from orchestrator.quality_gates import QualityGateOutcome, run_quality_gates
+from orchestrator.self_review import SelfReviewConfig
 
 try:
     import fcntl
@@ -31,6 +33,8 @@ _META_BLOCKER_PATTERNS = (
     "targets .*, not ",
     "cannot work on tasks outside my project",
 )
+
+TASK_TYPES = {"standard", "comprehend_project"}
 
 
 @dataclass
@@ -208,7 +212,10 @@ class Orchestrator:
         project_name: Optional[str] = None,
         tags: Optional[List[str]] = None,
         team_id: Optional[str] = None,
+        task_type: Optional[str] = None,
+        parent_task_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        normalized_task_type = self._normalize_task_type(task_type)
         delivery_profile = self._normalize_task_delivery_profile(
             risk=risk,
             test_plan=test_plan,
@@ -217,6 +224,7 @@ class Orchestrator:
         normalized_root = str(project_root or str(self.root)).strip() or str(self.root)
         normalized_name = str(project_name or Path(normalized_root).name or self.root.name).strip() or self.root.name
         normalized_team_id = str(team_id or "").strip().lower()
+        normalized_parent = str(parent_task_id or "").strip() or None
         task_tags = self._normalize_task_tags(
             tags=tags,
             project_name=normalized_name,
@@ -225,6 +233,10 @@ class Orchestrator:
         )
         with self._state_lock():
             tasks = self._read_json(self.tasks_path)
+            if normalized_parent:
+                parent = next((t for t in tasks if t["id"] == normalized_parent), None)
+                if parent is None:
+                    raise ValueError(f"Parent task not found: {normalized_parent}")
             task_id = f"TASK-{uuid.uuid4().hex[:8]}"
             resolved_owner = owner or self.policy.task_owner_for(workstream)
             duplicate = self._find_duplicate_open_task(
@@ -243,11 +255,13 @@ class Orchestrator:
                 "id": task_id,
                 "title": title,
                 "description": description,
+                "task_type": normalized_task_type,
                 "workstream": workstream,
                 "owner": resolved_owner,
                 "project_root": normalized_root,
                 "project_name": normalized_name,
                 "team_id": normalized_team_id or None,
+                "parent_task_id": normalized_parent,
                 "tags": task_tags,
                 "status": "assigned",
                 "acceptance_criteria": acceptance_criteria,
@@ -266,10 +280,12 @@ class Orchestrator:
                 "owner": resolved_owner,
                 "title": title,
                 "description": description,
+                "task_type": normalized_task_type,
                 "workstream": workstream,
                 "project_root": normalized_root,
                 "project_name": normalized_name,
                 "team_id": normalized_team_id or None,
+                "parent_task_id": normalized_parent,
                 "tags": task_tags,
                 "acceptance_criteria": acceptance_criteria,
                 "delivery_profile": delivery_profile,
@@ -391,6 +407,13 @@ class Orchestrator:
         if status:
             tasks = [task for task in tasks if task.get("status") == status]
         return tasks
+
+    def list_sub_tasks(self, parent_task_id: str) -> List[Dict[str, Any]]:
+        """Return all tasks whose parent_task_id matches the given id."""
+        tasks = self._read_json(self.tasks_path)
+        if not isinstance(tasks, list):
+            return []
+        return [t for t in tasks if isinstance(t, dict) and t.get("parent_task_id") == parent_task_id]
 
     def _claim_cooldown_seconds(self) -> float:
         """Return the anti-spam cooldown window (seconds) for empty claim attempts."""
@@ -735,6 +758,11 @@ class Orchestrator:
             if isinstance(review_gate, dict):
                 task["review_gate"] = self._normalize_review_gate(review_gate)
                 task["review_gate_updated_at"] = self._now()
+
+            self_review = report.get("self_review")
+            if isinstance(self_review, dict):
+                task["self_review"] = self_review
+                task["self_review_updated_at"] = self._now()
 
             task["status"] = "reported"
             task["updated_at"] = self._now()
@@ -1173,7 +1201,23 @@ class Orchestrator:
                 "threshold_seconds": threshold,
             }
 
-    def validate_task(self, task_id: str, passed: bool, notes: str, source: str) -> Dict[str, Any]:
+    def run_quality_gates(self, task: Dict[str, Any], report: Dict[str, Any]) -> QualityGateOutcome:
+        """Run policy-configured quality gates against a task report."""
+        gates_config = self.policy.triggers.get("quality_gates", {})
+        return run_quality_gates(report=report, task=task, gates_config=gates_config)
+
+    def self_review_config(self) -> SelfReviewConfig:
+        """Return the policy-configured self-review loop settings."""
+        return SelfReviewConfig.from_policy(self.policy.triggers)
+
+    def validate_task(
+        self,
+        task_id: str,
+        passed: bool,
+        notes: str,
+        source: str,
+        quality_gate_outcome: Optional[QualityGateOutcome] = None,
+    ) -> Dict[str, Any]:
         manager = self.manager_agent()
         if source != manager:
             raise ValueError(f"leader_mismatch: source={source}, current_leader={manager}")
@@ -1211,6 +1255,18 @@ class Orchestrator:
             review_gate_snapshot = None
             if isinstance(task.get("review_gate"), dict):
                 review_gate_snapshot = dict(task["review_gate"])
+
+            quality_gate_snapshot = None
+            if quality_gate_outcome is not None:
+                quality_gate_snapshot = {
+                    "all_passed": quality_gate_outcome.all_passed,
+                    "summary": quality_gate_outcome.summary(),
+                    "results": [
+                        {"gate": r.gate, "passed": r.passed, "policy": r.policy, "message": r.message}
+                        for r in quality_gate_outcome.results
+                    ],
+                }
+
             task["validation_gate"] = {
                 "validator_agent": source,
                 "validator_role": "leader",
@@ -1218,9 +1274,12 @@ class Orchestrator:
                 "decision_reason": notes,
                 "decided_at": self._now(),
                 "review_gate": review_gate_snapshot,
+                "quality_gate": quality_gate_snapshot,
             }
             if review_gate_snapshot is not None:
                 payload["review_gate"] = review_gate_snapshot
+            if quality_gate_snapshot is not None:
+                payload["quality_gate"] = quality_gate_snapshot
 
             task["updated_at"] = self._now()
             self._write_tasks_json(tasks)
@@ -1571,6 +1630,78 @@ class Orchestrator:
             ]
         return consults
 
+    def process_github_handoff_event(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Process a github.handoff_required event and simulate GitHub API interaction.
+
+        This method acts as a placeholder for actual GitHub API calls (e.g., creating issues,
+        commenting on PRs). It logs the intended actions and returns a summary.
+        """
+        task_id = payload.get("task_id")
+        ci_state = payload.get("ci_state")
+        orchestrator_status = payload.get("orchestrator_status")
+        conclusion = payload.get("conclusion")
+        normalized_ci = payload.get("normalized_ci", {})
+        action_required = payload.get("action_required")
+
+        log_message = (
+            f"GITHUB HANDOFF REQUIRED for task {task_id}: "
+            f"CI State='{ci_state}', Orchestrator Status='{orchestrator_status}', "
+            f"Conclusion='{conclusion}'. Action: '{action_required}'"
+        )
+        print(f"DEBUG: {log_message}", file=sys.stderr, flush=True)
+
+        # Placeholder for actual GitHub API interaction
+        # In a real implementation, you would use a library like PyGithub here.
+        github_token = os.getenv("GITHUB_TOKEN")
+        if not github_token:
+            print("WARNING: GITHUB_TOKEN environment variable not set. Cannot perform GitHub API actions.", file=sys.stderr, flush=True)
+            return {
+                "status": "skipped",
+                "reason": "GITHUB_TOKEN missing",
+                "task_id": task_id,
+                "log_message": log_message,
+            }
+
+        # Simulate creating an issue or commenting on a PR
+        if action_required == "create_github_issue_or_comment_pr":
+            # For simplicity, let's assume we create an issue for failed CI.
+            # In a real scenario, you'd check if it's a PR, etc.
+            issue_title = f"CI Failed for Task {task_id}: {conclusion}"
+            issue_body = (
+                f"Automated CI run failed for task **{task_id}**.\n\n"
+                f"CI State: `{ci_state}`\n"
+                f"GitHub Status: `{normalized_ci.get('status')}`\n"
+                f"Conclusion: `{conclusion}`\n"
+                f"CI Run URL: {normalized_ci.get('url', 'N/A')}\n\n"
+                "Please investigate the failure and address the underlying issues."
+            )
+            
+            # Simulate GitHub API call
+            print(f"INFO: Simulating GitHub API call to create issue/comment for task {task_id}", file=sys.stderr, flush=True)
+            print(f"  Issue Title: {issue_title}", file=sys.stderr, flush=True)
+            print(f"  Issue Body: {issue_body}", file=sys.stderr, flush=True)
+            
+            # In a real scenario:
+            # from github import Github
+            # g = Github(github_token)
+            # repo = g.get_user().get_repo("your-repo-name") # Need to determine repo context
+            # repo.create_issue(title=issue_title, body=issue_body, labels=["bug", "ci-failure"])
+            
+            return {
+                "status": "success",
+                "action": "simulated_github_issue_creation",
+                "task_id": task_id,
+                "issue_title": issue_title,
+                "log_message": log_message,
+            }
+        
+        return {
+            "status": "unhandled_action",
+            "reason": f"No specific handler for action_required: {action_required}",
+            "task_id": task_id,
+            "log_message": log_message,
+        }
+
     # ------------------------------------------------------------------
     # Unsupervised stop / escalation policy
     # ------------------------------------------------------------------
@@ -1843,6 +1974,12 @@ class Orchestrator:
             source=source,
         )
         return self.get_roles()
+
+    def _normalize_task_type(self, task_type: Optional[str]) -> str:
+        normalized = str(task_type or "standard").strip().lower()
+        if normalized not in TASK_TYPES:
+            raise ValueError(f"task_type must be one of: {', '.join(sorted(TASK_TYPES))}")
+        return normalized
 
     def _normalize_task_delivery_profile(
         self,
@@ -2485,6 +2622,32 @@ class Orchestrator:
             raise ValueError("review_gate must be an object when provided")
         if isinstance(review_gate, dict):
             self._normalize_review_gate(review_gate)
+
+        comprehension_summary = report.get("comprehension_summary")
+        if comprehension_summary is not None:
+            self._validate_comprehension_summary(comprehension_summary)
+
+    @staticmethod
+    def _validate_comprehension_summary(summary: Any) -> None:
+        """Validate a structured comprehension summary artifact."""
+        if not isinstance(summary, dict):
+            raise ValueError("comprehension_summary must be an object")
+        required_keys = {"modules", "patterns", "dependencies"}
+        missing = sorted(required_keys - set(summary))
+        if missing:
+            raise ValueError(f"comprehension_summary missing required fields: {', '.join(missing)}")
+        for key in ("modules", "patterns", "dependencies"):
+            value = summary.get(key)
+            if not isinstance(value, list):
+                raise ValueError(f"comprehension_summary.{key} must be an array")
+        # Validate module entries
+        for i, mod in enumerate(summary["modules"]):
+            if not isinstance(mod, dict):
+                raise ValueError(f"comprehension_summary.modules[{i}] must be an object")
+            if not isinstance(mod.get("name"), str) or not mod["name"].strip():
+                raise ValueError(f"comprehension_summary.modules[{i}].name must be a non-empty string")
+            if not isinstance(mod.get("responsibility"), str):
+                raise ValueError(f"comprehension_summary.modules[{i}].responsibility must be a string")
 
     def _normalize_review_gate(self, review_gate: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(review_gate, dict):

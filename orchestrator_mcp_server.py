@@ -6,6 +6,7 @@ Expose configurable multi-agent orchestration tools via MCP JSON-RPC.
 
 from __future__ import annotations
 
+import re
 import hashlib
 import io
 import json
@@ -626,6 +627,18 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
             },
         },
         {
+            "name": "orchestrator_process_github_webhook",
+            "description": "Process a GitHub webhook payload, normalize CI results, and update orchestrator tasks.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "payload": {"type": "object", "description": "Raw GitHub webhook payload."},
+                    "source": {"type": "string", "description": "Source of the webhook (e.g., github).", "default": "github"},
+                },
+                "required": ["payload"],
+            },
+        },
+        {
             "name": "orchestrator_get_roles",
             "description": "Get current orchestrator role assignments (leader, team_members). Default leader is codex via policy unless changed.",
             "inputSchema": {"type": "object", "properties": {}},
@@ -798,6 +811,8 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                     "project_name": {"type": "string", "description": "Optional project name tag override."},
                     "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional content tags. project:* and workstream:* are auto-added."},
                     "team_id": {"type": "string", "description": "Optional team id tag for multi-team routing."},
+                    "task_type": {"type": "string", "description": "Task type: standard (default) or comprehend_project."},
+                    "parent_task_id": {"type": "string", "description": "Optional parent task id for sub-task relationships."},
                 },
                 "required": ["title", "workstream"],
             },
@@ -920,6 +935,41 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                         "description": "Optional wingman review decision metadata (required/status/reviewer_* fields).",
                     },
                     "notes": {"type": "string", "default": "", "description": "Implementation summary and residual risks."},
+                    "comprehension_summary": {
+                        "type": "object",
+                        "description": "Structured codebase comprehension summary (for comprehend_project tasks). Requires modules, patterns, dependencies.",
+                        "properties": {
+                            "modules": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "responsibility": {"type": "string"},
+                                        "key_files": {"type": "array", "items": {"type": "string"}},
+                                    },
+                                    "required": ["name", "responsibility"],
+                                },
+                            },
+                            "patterns": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Architectural patterns observed (e.g., 'event-driven', 'MVC').",
+                            },
+                            "dependencies": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Key external dependencies.",
+                            },
+                            "entry_points": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Main entry points for user flows.",
+                            },
+                            "notes": {"type": "string", "description": "Additional observations."},
+                        },
+                        "required": ["modules", "patterns", "dependencies"],
+                    },
                 },
                 "required": ["task_id", "agent", "commit_sha", "status", "test_summary"],
             },
@@ -1305,13 +1355,22 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
             )
             continue
 
+        # Run quality gates before finalizing validation decision.
+        gate_outcome = ORCH.run_quality_gates(task=task, report=report)
+        gate_notes = ""
+        if not gate_outcome.all_passed:
+            passed = False
+            gate_notes = f" quality_gates_blocked: {gate_outcome.summary()}"
+        elif gate_outcome.warnings:
+            gate_notes = f" quality_gates_warnings: {gate_outcome.summary()}"
+
         notes = (
-            f"Auto manager cycle accepted report {report.get('commit_sha', 'unknown')}"
+            f"Auto manager cycle accepted report {report.get('commit_sha', 'unknown')}{gate_notes}"
             if passed
             else (
                 "Auto manager cycle rejected report "
                 f"status={report_status}, failed_tests={failed_tests}, has_command={has_command}, "
-                f"has_commit={has_commit}, review_status={review_status or 'none'}"
+                f"has_commit={has_commit}, review_status={review_status or 'none'}{gate_notes}"
             )
         )
         result = ORCH.validate_task(
@@ -1319,6 +1378,7 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
             passed=passed,
             notes=notes,
             source=ORCH.manager_agent(),
+            quality_gate_outcome=gate_outcome,
         )
         processed.append({"task_id": task["id"], "passed": passed, "result": result})
 
@@ -1492,7 +1552,21 @@ def _auto_manager_loop() -> None:
                     has_lock = False
         if has_lock:
             try:
+                # Process manager cycle logic
                 _manager_cycle(strict=True)
+
+                # Poll and process github.handoff_required events
+                if ORCH:
+                    try:
+                        events = ORCH.poll_events(agent=ORCH.manager_agent(), timeout_ms=500)
+                        for event in events:
+                            if event.get("type") == "github.handoff_required":
+                                print(f"INFO: Manager received github.handoff_required event: {event}", file=sys.stderr, flush=True)
+                                ORCH.process_github_handoff_event(event.get("payload", {}))
+                                ORCH.ack_event(agent=ORCH.manager_agent(), event_id=event["id"])
+                    except Exception as event_exc:
+                        print(f"auto-manager-cycle event processing error: {event_exc}", file=sys.stderr, flush=True)
+
             except Exception as exc:  # pragma: no cover - defensive loop safety
                 print(f"auto-manager-cycle error: {exc}", file=sys.stderr, flush=True)
         _AUTO_LOOP_STOP.wait(interval_seconds)
@@ -2152,8 +2226,94 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             payload = normalize_github_ci_result(raw)
             return _ok_and_audit(request_id, name, args, payload)
 
+        if name == "orchestrator_process_github_webhook":
+            raw_payload = args.get("payload", {})
+            source = args.get("source", "github")
+            if isinstance(raw_payload, str):
+                raw_payload = _parse_json_argument(raw_payload, "object")
+            if not isinstance(raw_payload, dict):
+                raise ValueError("payload must be an object")
+
+            normalized_ci = normalize_github_ci_result(raw_payload)
+            ci_state = normalized_ci.get("state") # passed, failed, running, unknown
+            github_status = normalized_ci.get("status") # e.g., completed, in_progress, queued
+            conclusion = raw_payload.get("check_run", {}).get("conclusion") # success, failure, neutral, cancelled, skipped, timed_out, action_required
+
+            # Attempt to extract task_id from check_run.external_id or check_run.output.text
+            task_id = None
+            external_id = raw_payload.get("check_run", {}).get("external_id")
+            if external_id and external_id.startswith("TASK-"):
+                task_id = external_id
+            
+            if not task_id:
+                output_text = raw_payload.get("check_run", {}).get("output", {}).get("text")
+                if output_text and "TASK-" in output_text:
+                    # Simple regex to find TASK-XXXX in text
+                    import re
+                    match = re.search(r"(TASK-[a-fA-F0-9]{8})", output_text)
+                    if match:
+                        task_id = match.group(0)
+
+            orchestrator_status = "blocked"
+            if ci_state == "passed":
+                orchestrator_status = "done"
+            elif ci_state == "failed":
+                orchestrator_status = "bug_open"
+            elif ci_state == "running":
+                orchestrator_status = "in_progress"
+            
+            update_result = {}
+            if task_id and ORCH:
+                try:
+                    update_result = ORCH.set_task_status(
+                        task_id=task_id,
+                        status=orchestrator_status,
+                        source=f"{source}-ci",
+                        note=f"CI state: {ci_state}, GitHub status: {github_status}, conclusion: {conclusion}"
+                    )
+                    ORCH.publish_event(
+                        event_type="github.ci_status_updated",
+                        source=source,
+                        payload={
+                            "task_id": task_id,
+                            "ci_state": ci_state,
+                            "orchestrator_status": orchestrator_status,
+                            "github_status": github_status,
+                            "conclusion": conclusion,
+                            "normalized_ci": normalized_ci,
+                        },
+                    )
+                    if ci_state == "failed" and orchestrator_status == "bug_open":
+                        # Publish event for GitHub handoff
+                        ORCH.publish_event(
+                            event_type="github.handoff_required",
+                            source=source,
+                            payload={
+                                "task_id": task_id,
+                                "ci_state": ci_state,
+                                "orchestrator_status": orchestrator_status,
+                                "github_status": github_status,
+                                "conclusion": conclusion,
+                                "normalized_ci": normalized_ci,
+                                "action_required": "create_github_issue_or_comment_pr" # Explicit action for clarity
+                            },
+                        )
+                except Exception as e:
+                    # Log the error but don't re-raise, allow webhook to respond OK
+                    print(f"Error updating task status or publishing event for task {task_id}: {e}", file=sys.stderr)
+                    update_result = {"error": str(e)}
+            
+            return _ok_and_audit(request_id, name, args, {
+                "ci_state": ci_state,
+                "orchestrator_status": orchestrator_status,
+                "task_id": task_id,
+                "update_result": update_result,
+                "normalized_ci": normalized_ci,
+            })
+
         if name == "orchestrator_headless_status":
             supervisor = _supervisor_from_tool_args(args if isinstance(args, dict) else {})
+            
             
             tasks = ORCH.list_tasks() if ORCH else []
             blockers_open = ORCH.list_blockers(status="open") if ORCH else []
@@ -2444,6 +2604,8 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 project_name=args.get("project_name"),
                 tags=tags,
                 team_id=args.get("team_id"),
+                task_type=args.get("task_type"),
+                parent_task_id=args.get("parent_task_id"),
             )
             return _ok_and_audit(request_id, name, args, task)
 
@@ -2552,6 +2714,11 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             }
             if isinstance(review_gate, dict):
                 report["review_gate"] = review_gate
+            comprehension_summary = args.get("comprehension_summary")
+            if isinstance(comprehension_summary, str):
+                comprehension_summary = _parse_json_argument(comprehension_summary, "object")
+            if isinstance(comprehension_summary, dict):
+                report["comprehension_summary"] = comprehension_summary
             report["run_context"] = {
                 "run_id": RUN_ID or None,
                 "orchestrator_version": __version__,
