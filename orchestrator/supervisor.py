@@ -17,6 +17,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from orchestrator.engine import Orchestrator
+from orchestrator.policy import Policy
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -273,14 +276,17 @@ class ProcessStatus:
     state: str  # running | stopped | dead | disabled
     pid: Optional[int]
     restarts: int
+    heartbeat_status: str # active | stale | unknown
+    task_activity: str # idle | working | blocked | reporting | no_tasks
 
 
 class Supervisor:
     """Headless process supervisor — Python equivalent of supervisor.sh."""
 
-    def __init__(self, cfg: SupervisorConfig) -> None:
+    def __init__(self, cfg: SupervisorConfig, orchestrator: Orchestrator) -> None:
         cfg.finalise()
         self.cfg = cfg
+        self.orchestrator = orchestrator
         # Register extra workers.
         self._extra_names: List[str] = []
         self._extra_cmds: List[str] = []
@@ -387,14 +393,40 @@ class Supervisor:
                 pass
 
         if not proc_enabled(name, self.cfg.leader_agent):
-            return ProcessStatus(name, "disabled", None, restarts)
+            return ProcessStatus(name, "disabled", None, restarts, "unknown", "no_tasks")
 
         pid = _read_pid(self.cfg.pid_dir, name)
+        
+        heartbeat_status = "unknown"
+        task_activity = "no_tasks"
+
+        # Query orchestrator for heartbeat and task activity if it's an agent process
+        if name in ("claude", "gemini", "codex_worker", "wingman", "manager"):
+            agent_name = name if name != "codex_worker" else "codex"
+            agent_info = next(
+                (a for a in self.orchestrator.list_agents(active_only=False) if a.get("agent") == agent_name),
+                None,
+            )
+            if agent_info:
+                heartbeat_status = "active" if agent_info.get("status") == "active" else "stale"
+                task_counts = agent_info.get("task_counts", {})
+                if task_counts.get("in_progress", 0) > 0:
+                    task_activity = "working"
+                elif task_counts.get("assigned", 0) > 0:
+                    task_activity = "assigned"
+                elif task_counts.get("blocked", 0) > 0:
+                    task_activity = "blocked"
+                elif task_counts.get("reported", 0) > 0:
+                    task_activity = "reporting"
+                else:
+                    task_activity = "idle"
+
+
         if pid is None:
-            return ProcessStatus(name, "stopped", None, restarts)
+            return ProcessStatus(name, "stopped", None, restarts, heartbeat_status, task_activity)
         if _is_alive(pid):
-            return ProcessStatus(name, "running", pid, restarts)
-        return ProcessStatus(name, "dead", pid, restarts)
+            return ProcessStatus(name, "running", pid, restarts, heartbeat_status, task_activity)
+        return ProcessStatus(name, "dead", pid, restarts, heartbeat_status, task_activity)
 
     def _get_agent_display_info(self, name: str) -> Dict[str, str]:
         info: Dict[str, str] = {"role": "N/A", "type": "N/A", "model": "N/A"}
@@ -455,8 +487,11 @@ class Supervisor:
         print(f"PID dir: {self.cfg.pid_dir}")
         print(f"Log dir: {self.cfg.log_dir}")
         print()
-        print(f"{'Process':<15} {'State':<10} {'PID':<8} {'Restarts':<10} {'Role':<30} {'Type':<15} {'Model':<20}")
-        print("-" * 110) # Separator line
+        print(
+            f"{'Process':<15} {'State':<10} {'PID':<8} {'Restarts':<10} {'Heartbeat':<10} {'Activity':<15} "
+            f"{'Role':<30} {'Type':<15} {'Model':<20}"
+        )
+        print("-" * 140) # Separator line
         results = []
         for name in self._procs:
             ps = self._status_proc(name)
@@ -464,7 +499,7 @@ class Supervisor:
             results.append(ps)
             pid_str = str(ps.pid) if ps.pid is not None else "-"
             print(
-                f"{ps.name:<15} {ps.state:<10} {pid_str:<8} {ps.restarts:<10} "
+                f"{ps.name:<15} {ps.state:<10} {pid_str:<8} {ps.restarts:<10} {ps.heartbeat_status:<10} {ps.task_activity:<15} "
                 f"{display_info['role']:<30} {display_info['type']:<15} {display_info['model']:<20}"
             )
         return results
@@ -555,6 +590,8 @@ class Supervisor:
                 "state": ps.state,
                 "pid": ps.pid,
                 "restarts": ps.restarts,
+                "heartbeat_status": ps.heartbeat_status,
+                "task_activity": ps.task_activity,
             })
         return results
 
@@ -683,7 +720,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print_usage()
         return 1
 
-    sup = Supervisor(cfg)
+    # Initialize policy and orchestrator
+    policy_path = Path(cfg.project_root) / "config" / "policy.balanced.json"
+    if not policy_path.exists():
+        _log("WARN", f"Policy file not found: {policy_path}. This may lead to unexpected behavior.")
+        # Attempt to load a default policy without a file path if not found, 
+        # or handle this error more gracefully based on project conventions.
+        # For now, we'll let Policy.load() fail if it strictly requires a file.
+        # Alternatively, we could create a dummy Policy object here.
+        # Given the orchestrator.policy.py, it expects a path.
+        # Let's assume for now that if it doesn't exist, it's an error.
+        raise FileNotFoundError(f"Policy file not found: {policy_path}")
+    
+    policy = Policy.load(path=policy_path)
+    
+    orchestrator = Orchestrator(root=Path(cfg.project_root), policy=policy)
+
+    sup = Supervisor(cfg, orchestrator)
     dispatch = {
         "start": sup.start,
         "stop": sup.stop,

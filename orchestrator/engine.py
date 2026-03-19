@@ -16,6 +16,7 @@ from orchestrator.bus import EventBus
 from orchestrator.policy import Policy
 from orchestrator.quality_gates import QualityGateOutcome, run_quality_gates
 from orchestrator.self_review import SelfReviewConfig
+from orchestrator import pr_stack as _pr_stack
 
 try:
     import fcntl
@@ -62,6 +63,7 @@ class Orchestrator:
         self.report_retry_queue_path = self.state_dir / "report_retry_queue.json"
         self.roles_path = self.state_dir / "roles.json"
         self.consults_path = self.state_dir / "consults.json"
+        self.pr_stacks_path = self.state_dir / "pr_stacks.json"
         self.decisions_dir = self.root / "decisions"
         self.decisions_dir.mkdir(parents=True, exist_ok=True)
         self.state_lock_path = self.state_dir / ".state.lock"
@@ -107,6 +109,8 @@ class Orchestrator:
             self.report_retry_queue_path.write_text("[]\n", encoding="utf-8")
         if not self.consults_path.exists():
             self.consults_path.write_text("[]\n", encoding="utf-8")
+        if not self.pr_stacks_path.exists():
+            self.pr_stacks_path.write_text("[]\n", encoding="utf-8")
         if not self.roles_path.exists():
             self.roles_path.write_text(
                 json.dumps(
@@ -1629,6 +1633,141 @@ class Orchestrator:
                 if c.get("source") == agent or agent in c.get("target_agents", [])
             ]
         return consults
+
+    # ------------------------------------------------------------------
+    # Stacked PR chains
+    # ------------------------------------------------------------------
+
+    def create_pr_stack(
+        self,
+        repo: str,
+        title: str,
+        *,
+        task_ids: Optional[List[str]] = None,
+        base_branch: str = "main",
+        created_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a new PR stack and persist it."""
+        stack = _pr_stack.create_stack(
+            repo=repo,
+            title=title,
+            task_ids=task_ids,
+            base_branch=base_branch,
+            created_by=created_by,
+        )
+        with self._state_lock():
+            stacks = self._read_json_list(self.pr_stacks_path)
+            stacks.append(stack)
+            self._write_json(self.pr_stacks_path, stacks)
+        self.bus.emit(
+            "prstack.created",
+            {"stack_id": stack["id"], "repo": repo, "title": title},
+            source=created_by or "orchestrator",
+        )
+        return stack
+
+    def add_pr_to_stack(
+        self,
+        stack_id: str,
+        *,
+        branch: str,
+        title: str,
+        task_id: Optional[str] = None,
+        pr_number: Optional[int] = None,
+        position: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Add a PR entry to an existing stack. Returns the new PR entry."""
+        with self._state_lock():
+            stacks = self._read_json_list(self.pr_stacks_path)
+            stack = next((s for s in stacks if s["id"] == stack_id), None)
+            if stack is None:
+                raise ValueError(f"PR stack not found: {stack_id}")
+            pr_entry = _pr_stack.add_pr_to_stack(
+                stack,
+                branch=branch,
+                title=title,
+                task_id=task_id,
+                pr_number=pr_number,
+                position=position,
+            )
+            self._write_json(self.pr_stacks_path, stacks)
+        self.bus.emit(
+            "prstack.pr_added",
+            {"stack_id": stack_id, "pr_id": pr_entry["id"], "branch": branch},
+            source="orchestrator",
+        )
+        return pr_entry
+
+    def process_pr_stack_merge(
+        self,
+        stack_id: str,
+        pr_id: str,
+    ) -> Dict[str, Any]:
+        """Handle a merge event for a stacked PR.
+
+        Returns a summary including any newly-ungated child PRs.
+        """
+        with self._state_lock():
+            stacks = self._read_json_list(self.pr_stacks_path)
+            stack = next((s for s in stacks if s["id"] == stack_id), None)
+            if stack is None:
+                raise ValueError(f"PR stack not found: {stack_id}")
+            ungated = _pr_stack.process_merge_event(stack, pr_id)
+            self._write_json(self.pr_stacks_path, stacks)
+
+        for child in ungated:
+            self.bus.emit(
+                "prstack.pr_ungated",
+                {
+                    "stack_id": stack_id,
+                    "pr_id": child["id"],
+                    "branch": child["branch"],
+                    "base_branch": child["base_branch"],
+                },
+                source="orchestrator",
+            )
+        if stack["state"] == "merged":
+            self.bus.emit(
+                "prstack.merged",
+                {"stack_id": stack_id, "repo": stack["repo"]},
+                source="orchestrator",
+            )
+        return {
+            "stack_id": stack_id,
+            "stack_state": stack["state"],
+            "merged_pr_id": pr_id,
+            "ungated_prs": [{"id": c["id"], "branch": c["branch"]} for c in ungated],
+        }
+
+    def get_pr_stacks(
+        self,
+        *,
+        repo: Optional[str] = None,
+        state: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List PR stacks, optionally filtered by repo or state."""
+        stacks = self._read_json_list(self.pr_stacks_path)
+        if repo:
+            stacks = [s for s in stacks if s.get("repo") == repo]
+        if state:
+            stacks = [s for s in stacks if s.get("state") == state]
+        return stacks
+
+    def get_stack_status(self, stack_id: str) -> Dict[str, Any]:
+        """Return readiness summary for a PR stack."""
+        stacks = self._read_json_list(self.pr_stacks_path)
+        stack = next((s for s in stacks if s["id"] == stack_id), None)
+        if stack is None:
+            raise ValueError(f"PR stack not found: {stack_id}")
+        ready_prs = _pr_stack.get_next_ready_prs(stack)
+        return {
+            "stack_id": stack_id,
+            "state": stack["state"],
+            "total_prs": len(stack["prs"]),
+            "merged_count": sum(1 for p in stack["prs"] if p["state"] == "merged"),
+            "gated_count": sum(1 for p in stack["prs"] if p.get("gated")),
+            "next_ready": [{"id": p["id"], "branch": p["branch"]} for p in ready_prs],
+        }
 
     def process_github_handoff_event(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Process a github.handoff_required event and simulate GitHub API interaction.
