@@ -110,28 +110,28 @@ version:
     - id: ci-github-integrations
       title: Integrate GitHub issue/PR handoff and CI result ingestion into validation loop
       effort: XL
-      status: in_progress
+      status: done
       tags: [integrations, ci, github]
 
     # --- Ralph-inspired additions (Feb 2026) ---
     - id: quality-gate-system
       title: "Plankton-style quality gate: automated arch violations, missing tests, bad patterns, style checks before PR"
       effort: L
-      status: in_progress
+      status: done
       tags: [qa, quality-gate, governance]
       inspiration: ralph
 
     - id: codebase-comprehension-phase
       title: "Add comprehend_project task type: parallel workers map codebase structure before planning begins"
       effort: M
-      status: in_progress
+      status: done
       tags: [orchestration, comprehension, onboarding]
       inspiration: ralph
 
     - id: iterative-self-review
       title: "Multi-round self-review loop: workers critique own output 2-3 rounds before submitting to wingman/manager"
       effort: M
-      status: planned
+      status: done
       tags: [qa, self-review, quality]
       inspiration: ralph
 
@@ -152,7 +152,7 @@ version:
     - id: agent-identity-role-visibility
       title: "Show agent name, provider/model, and role clearly in TUI and operator status"
       effort: S
-      status: in_progress
+      status: done
       tags: [ux, tui, status, operator-experience]
 
 roadmap:
