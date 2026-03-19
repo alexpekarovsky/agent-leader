@@ -42,6 +42,30 @@ def _write_tasks(project_root: Path, tasks: list) -> None:
     )
 
 
+def _bootstrap_orchestrator_root(root: Path) -> None:
+    (root / "config").mkdir(parents=True, exist_ok=True)
+    policy = {
+        "name": "codex-manager",
+        "roles": {"manager": "codex"},
+        "routing": {"default": "codex"},
+        "decisions": {},
+        "triggers": {"heartbeat_timeout_minutes": 10},
+    }
+    (root / "config" / "policy.codex-manager.json").write_text(
+        json.dumps(policy), encoding="utf-8"
+    )
+    state_dir = root / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    for name, payload in {
+        "agents.json": {},
+        "roles.json": {"leader": "codex", "leader_instance_id": "codex#default", "team_members": []},
+        "blockers.json": [],
+        "bugs.json": [],
+    }.items():
+        (state_dir / name).write_text(json.dumps(payload), encoding="utf-8")
+    (root / "bus").mkdir(parents=True, exist_ok=True)
+
+
 class WaitForTaskSignalTests(unittest.TestCase):
     """Test wait_for_task_signal from common.sh."""
 
@@ -92,6 +116,7 @@ class EventDrivenWorkerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "project"
             project.mkdir()
+            _bootstrap_orchestrator_root(project)
             bin_dir = Path(tmp) / "bin"
             bin_dir.mkdir()
             log_dir = Path(tmp) / "logs"
@@ -101,6 +126,7 @@ class EventDrivenWorkerTests(unittest.TestCase):
 
             env = os.environ.copy()
             env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+            env["ORCHESTRATOR_ROOT"] = str(project)
             result = subprocess.run(
                 [
                     "bash", WORKER_LOOP,
@@ -121,12 +147,16 @@ class EventDrivenWorkerTests(unittest.TestCase):
             marker = bin_dir / ".codex_invoked"
             self.assertFalse(marker.exists(), "LLM should NOT be invoked in event-driven idle")
             self.assertIn("waiting for wakeup signal", result.stderr)
+            agents = json.loads((project / "state" / "agents.json").read_text(encoding="utf-8"))
+            self.assertIn("codex", agents)
+            self.assertEqual(agents["codex"]["status"], "active")
 
     def test_event_driven_wakeup_triggers_recheck(self):
         """Signal file change wakes up event-driven worker to recheck."""
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "project"
             project.mkdir()
+            _bootstrap_orchestrator_root(project)
             bin_dir = Path(tmp) / "bin"
             bin_dir.mkdir()
             log_dir = Path(tmp) / "logs"
@@ -146,6 +176,7 @@ class EventDrivenWorkerTests(unittest.TestCase):
 
             env = os.environ.copy()
             env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+            env["ORCHESTRATOR_ROOT"] = str(project)
             result = subprocess.run(
                 [
                     "bash", WORKER_LOOP,
@@ -171,6 +202,7 @@ class EventDrivenWorkerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "project"
             project.mkdir()
+            _bootstrap_orchestrator_root(project)
             bin_dir = Path(tmp) / "bin"
             bin_dir.mkdir()
             log_dir = Path(tmp) / "logs"
@@ -180,6 +212,7 @@ class EventDrivenWorkerTests(unittest.TestCase):
 
             env = os.environ.copy()
             env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+            env["ORCHESTRATOR_ROOT"] = str(project)
             result = subprocess.run(
                 [
                     "bash", WORKER_LOOP,

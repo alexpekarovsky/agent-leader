@@ -76,6 +76,41 @@ def proc_status(name: str):
     return {"status": "running" if alive else "dead", "pid": pid}
 
 
+def heartbeat_state(age):
+    if age is None:
+        return "missing"
+    if age <= 600:
+        return "active"
+    if age <= 1800:
+        return "stale"
+    return "offline"
+
+
+def process_names_for_agent(agent_name: str, proc_map):
+    names = []
+    for name in proc_map.keys():
+        if agent_name == "codex" and (name == "manager" or name.startswith("codex")):
+            names.append(name)
+        elif agent_name == "ccm" and name == "wingman":
+            names.append(name)
+        elif agent_name == "claude_code" and (name == "claude" or name.startswith("claude_") or name.startswith("claude-")):
+            names.append(name)
+        elif agent_name == "gemini" and name.startswith("gemini"):
+            names.append(name)
+    return names
+
+
+def task_activity_for_agent(agent_name: str, task_rows):
+    statuses = {str(t.get("status", "")).strip().lower() for t in task_rows if str(t.get("owner", "")).strip() == agent_name}
+    if "in_progress" in statuses:
+        return "working"
+    if "blocked" in statuses:
+        return "blocked"
+    if statuses.intersection({"assigned", "reported", "bug_open"}):
+        return "queued"
+    return "idle"
+
+
 tasks = load_json(state_dir / "tasks.json", [])
 agents = load_json(state_dir / "agents.json", {})
 roles = load_json(state_dir / "roles.json", {})
@@ -172,6 +207,27 @@ if pid_dir.exists():
             proc[name] = proc_status(name)
             known.add(name)
 
+operator_agents = []
+operator_names = {"codex", "ccm", "claude_code", "gemini"} | set(agents.keys())
+for agent_name in sorted(operator_names):
+    if not agent_name:
+        continue
+    entry = agents.get(agent_name, {}) if isinstance(agents, dict) else {}
+    last_seen = parse_iso(str(entry.get("last_seen", "")))
+    age = age_seconds(last_seen)
+    hb_state = heartbeat_state(age)
+    pnames = process_names_for_agent(agent_name, proc)
+    running = [name for name in pnames if proc.get(name, {}).get("status") == "running"]
+    operator_agents.append({
+        "agent": agent_name,
+        "heartbeat_state": hb_state,
+        "heartbeat_age_seconds": age,
+        "process_state": "up" if running else "down",
+        "process_count": len(running),
+        "task_activity": task_activity_for_agent(agent_name, tasks),
+        "instance_id": (entry.get("metadata") or {}).get("instance_id") if isinstance(entry.get("metadata"), dict) else None,
+    })
+
 def _collect_budget_metrics(budgets_dir: Path):
     """Read .budget-*-YYYYMMDD.count files and report daily consumption."""
     import fnmatch
@@ -220,6 +276,7 @@ payload = {
     "recovery_actions": recovery_actions,
     "active_agents": [a["agent"] for a in active_agents if a["state"] == "active"],
     "active_agent_identities": active_agents,
+    "operator_agents": operator_agents,
     "processes": proc,
     "metrics": {
         "throughput": {
@@ -277,11 +334,13 @@ for k in ordered:
     print(f"  {k:8s} {p['status']:7s} pid={p['pid'] if p['pid'] is not None else '-'}")
 print()
 print("Agents")
-for a in payload["active_agent_identities"]:
-    age = "-" if a["age_seconds"] is None else f"{a['age_seconds']}s"
+for a in payload["operator_agents"]:
+    age = "-" if a["heartbeat_age_seconds"] is None else f"{a['heartbeat_age_seconds']}s"
     inst = a["instance_id"] or "-"
-    role = a["role"] or "-"
-    print(f"  {a['agent']:12s} {a['state']:7s} age={age:>6s} instance={inst:20s} role={role}")
+    print(
+        f"  {a['agent']:12s} proc={a['process_state']:<4s} hb={a['heartbeat_state']:<7s} "
+        f"task={a['task_activity']:<7s} age={age:>6s} instance={inst:20s}"
+    )
 budget = payload.get("budget", {})
 if budget:
     print()

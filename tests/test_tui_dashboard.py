@@ -188,6 +188,48 @@ class DashboardTuiTests(unittest.TestCase):
             self.assertEqual(snap.token_total_today, 33)
             self.assertEqual(snap.token_total_session, 33)
 
+    def test_build_snapshot_distinguishes_process_heartbeat_and_task_activity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "state").mkdir(parents=True, exist_ok=True)
+            (root / "bus" / "reports").mkdir(parents=True, exist_ok=True)
+            (root / ".autopilot-logs").mkdir(parents=True, exist_ok=True)
+            (root / ".autopilot-pids").mkdir(parents=True, exist_ok=True)
+
+            project_root = "/tmp/my-project"
+            tasks = [
+                {"id": "T1", "project_root": project_root, "status": "in_progress", "owner": "claude_code", "title": "Implement feature", "updated_at": "2099-01-01T00:00:00+00:00"},
+                {"id": "T2", "project_root": project_root, "status": "assigned", "owner": "gemini", "title": "Queued task", "updated_at": "2099-01-01T00:00:00+00:00"},
+            ]
+            (root / "state" / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
+            (root / "state" / "blockers.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "bugs.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "agents.json").write_text(
+                json.dumps(
+                    {
+                        "claude_code": {"status": "active", "last_seen": mod._now_utc().isoformat(), "metadata": {"instance_id": "claude_code#default"}},
+                        "gemini": {"status": "active", "last_seen": "2026-03-18T00:00:00+00:00", "metadata": {"instance_id": "gemini#default"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "bus" / "events.jsonl").write_text("", encoding="utf-8")
+            for name in ("claude.pid", "gemini.pid", "manager.pid"):
+                (root / ".autopilot-pids" / name).write_text(str(os.getpid()), encoding="utf-8")
+
+            snap = mod.build_snapshot(project_root=project_root, root=root)
+            rows = {row["agent"]: row for row in snap.active_agents}
+            self.assertEqual(rows["claude_code"]["process_state"], "up")
+            self.assertEqual(rows["claude_code"]["heartbeat_state"], "active")
+            self.assertEqual(rows["claude_code"]["task_activity"], "working")
+            self.assertEqual(rows["gemini"]["process_state"], "up")
+            self.assertIn(rows["gemini"]["heartbeat_state"], {"stale", "offline"})
+            self.assertEqual(rows["gemini"]["task_activity"], "queued")
+
+    def test_dashboard_default_style_is_gemini_v3b(self) -> None:
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        self.assertIn('default="gemini-v3b"', source)
+
     def test_render_gemini_v3b(self) -> None:
         # Create a dummy snapshot
         snap = mod.DashboardSnapshot(
@@ -280,7 +322,7 @@ class DashboardTuiTests(unittest.TestCase):
         self.assertIn("Version focus: CI/GitHub Integrations | Codebase Comprehension Phase", out)
         self.assertIn("Team Topology", out)
         self.assertIn("Delivery: today t4/c3/loc180", out)
-        self.assertIn("Codex | Leader | - | active", out)
+        self.assertIn("Codex | Leader | proc:-(0) hb:-", out)
         self.assertIn("Agent Session Stats:", out)
         self.assertIn("Current Work:", out)
         self.assertIn("Queued Next:", out)
@@ -299,8 +341,8 @@ class DashboardTuiTests(unittest.TestCase):
         self.assertIn("Stale Tasks: 0", out)
         self.assertIn("Blocker Res: 20m", out)
         self.assertIn("Active: 1 (div:2)", out)
+        self.assertIn("Claude-only signals:", out)
         self.assertIn("claude validation share: 40", out)
-        self.assertIn("wingman validation share: 20", out)
         self.assertIn("style=gemini-v3b", out)
 
 

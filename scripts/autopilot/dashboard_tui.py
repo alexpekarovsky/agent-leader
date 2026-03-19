@@ -586,6 +586,45 @@ def _read_supervisor_processes(root: Path) -> List[Dict[str, Any]]:
     return rows
 
 
+def _heartbeat_state(age_s: Optional[int]) -> str:
+    if age_s is None:
+        return "missing"
+    if age_s <= 600:
+        return "active"
+    if age_s <= 1800:
+        return "stale"
+    return "offline"
+
+
+def _process_names_for_agent(agent: str, processes: List[Dict[str, Any]]) -> List[str]:
+    names: List[str] = []
+    for proc in processes:
+        name = str(proc.get("name", "")).strip()
+        if not name:
+            continue
+        if agent == "codex" and (name == "manager" or name.startswith("codex")):
+            names.append(name)
+        elif agent == "ccm" and name == "wingman":
+            names.append(name)
+        elif agent == "claude_code" and (name == "claude" or name.startswith("claude_") or name.startswith("claude-")):
+            names.append(name)
+        elif agent == "gemini" and name.startswith("gemini"):
+            names.append(name)
+    return names
+
+
+def _task_activity_for_agent(agent: str, tasks: List[Dict[str, Any]]) -> str:
+    owned = [t for t in tasks if str(t.get("owner", "")).strip() == agent]
+    statuses = {str(t.get("status", "")).strip().lower() for t in owned}
+    if "in_progress" in statuses:
+        return "working"
+    if "blocked" in statuses:
+        return "blocked"
+    if statuses.intersection({"assigned", "reported", "bug_open"}):
+        return "queued"
+    return "idle"
+
+
 def _compute_next_actions(
     open_tasks: int,
     assigned_count: int,
@@ -649,27 +688,46 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
     blockers_open = sum(1 for b in blockers if str(b.get("status", "")).lower() == "open")
     bugs_open = sum(1 for b in bugs if str(b.get("status", "")).lower() == "open")
 
+    supervisor_processes = _read_supervisor_processes(root)
     active_agents: List[Dict[str, Any]] = []
+    operator_agent_names = set(AGENT_OPERATOR_PROFILES.keys())
     if isinstance(agents_map, dict):
-        for agent, entry in agents_map.items():
-            metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
-            profile = _agent_profile(agent, metadata)
-            active_agents.append(
-                {
-                    "agent": agent,
-                    "status": str(entry.get("status", "unknown")),
-                    "age_s": _age_s(entry.get("last_seen")),
-                    "instance_id": metadata.get("instance_id", "-"),
-                    "client": profile["type_label"],
-                    "model": profile["model_label"],
-                    "display_name": profile["display_name"],
-                    "role_label": profile["role_label"],
-                    "provider": profile["provider"],
-                }
-            )
+        operator_agent_names.update(str(agent).strip() for agent in agents_map.keys())
+    for agent in sorted(a for a in operator_agent_names if a):
+        entry = agents_map.get(agent, {}) if isinstance(agents_map, dict) else {}
+        metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
+        profile = _agent_profile(agent, metadata)
+        age_s = _age_s(entry.get("last_seen"))
+        heartbeat_state = _heartbeat_state(age_s)
+        process_names = _process_names_for_agent(agent, supervisor_processes)
+        running_processes = [
+            proc for proc in supervisor_processes
+            if str(proc.get("name", "")) in process_names and bool(proc.get("alive"))
+        ]
+        process_state = "up" if running_processes else "down"
+        task_activity = _task_activity_for_agent(agent, scoped)
+        active_agents.append(
+            {
+                "agent": agent,
+                "status": heartbeat_state,
+                "heartbeat_state": heartbeat_state,
+                "age_s": age_s,
+                "instance_id": metadata.get("instance_id", "-"),
+                "client": profile["type_label"],
+                "model": profile["model_label"],
+                "display_name": profile["display_name"],
+                "role_label": profile["role_label"],
+                "provider": profile["provider"],
+                "process_state": process_state,
+                "process_count": len(running_processes),
+                "process_names": process_names,
+                "task_activity": task_activity,
+            }
+        )
     active_agents.sort(
         key=lambda a: (
-            a["status"] != "active",
+            a.get("process_state") != "up",
+            a.get("heartbeat_state") != "active",
             AGENT_ROLE_ORDER.get(str(a.get("role_label", "")), 99),
             str(a["agent"]),
         )
@@ -719,7 +777,6 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
     token_total = 0
     token_present = False
     local_day_start = _day_start_utc()
-    supervisor_processes = _read_supervisor_processes(root)
     session_start_candidates = [
         _parse_iso(proc.get("started_at"))
         for proc in supervisor_processes
@@ -889,8 +946,12 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
     if open_tasks > 0 and throughput_per_hour and throughput_per_hour > 0:
         eta_minutes = int((open_tasks / throughput_per_hour) * 60)
 
-    active_agent_count = sum(1 for a in active_agents if str(a.get("status", "")).lower() == "active")
-    idle_agent_count = max(0, active_agent_count - len(in_progress))
+    active_agent_count = sum(1 for a in active_agents if str(a.get("heartbeat_state", "")).lower() == "active")
+    idle_agent_count = sum(
+        1
+        for a in active_agents
+        if str(a.get("process_state", "")).lower() == "up" and str(a.get("task_activity", "")).lower() == "idle"
+    )
     queue_pressure: Optional[float] = None
     if active_agent_count > 0:
         queue_pressure = open_tasks / active_agent_count
@@ -918,7 +979,7 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
     avg_validation_cycle_time_s = int(sum(validation_cycle_times) / len(validation_cycle_times)) if validation_cycle_times else None
 
     # Agent Utilization
-    active_agent_count = sum(1 for a in active_agents if str(a.get("status", "")).lower() == "active")
+    active_agent_count = sum(1 for a in active_agents if str(a.get("heartbeat_state", "")).lower() == "active")
     agent_utilization_percent = (len(in_progress) / active_agent_count * 100.0) if active_agent_count > 0 else 0.0
 
     # Task Failure Rate
@@ -1637,11 +1698,15 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
     for a in snapshot.active_agents[:10]:
         fleet_rows.append(
             f"{a.get('display_name', a['agent'])} | {_compact_role_label(str(a.get('role_label','-')))} | "
-            f"{a.get('model','-')} | {a['status']} {_format_age(a['age_s'])}"
+            f"proc:{a.get('process_state','-')}({a.get('process_count',0)}) hb:{a.get('heartbeat_state','-')}"
         )
         fleet_rows.append(
-            f"  {a['agent']} / {_compact_type(str(a.get('provider','-')), str(a.get('client','-')))}"
+            f"  task:{a.get('task_activity','-')} | {a['agent']} / {_compact_type(str(a.get('provider','-')), str(a.get('client','-')))} / {a.get('model','-')} / age={_format_age(a['age_s'])}"
         )
+    fleet_rows.append("-")
+    fleet_rows.append(
+        f"Heartbeat active={snapshot.active_agent_count} | process-idle={snapshot.idle_agent_count}"
+    )
     fleet_rows.append("-")
     fleet_rows.append("Agent Session Stats:")
     for row in (snapshot.agent_delivery_stats or [])[:4]:
@@ -1773,7 +1838,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--auto-stop-on-complete", action="store_true")
     p.add_argument("--complete-streak", type=int, default=3)
     p.add_argument("--stale-seconds", type=int, default=1800)
-    p.add_argument("--style", choices=["claude", "claude-v3a", "gemini", "gemini-v3b"], default="claude")
+    p.add_argument("--style", choices=["claude", "claude-v3a", "gemini", "gemini-v3b"], default="gemini-v3b")
     p.add_argument("--full-clear", action="store_true", help="Use full screen clear each refresh (default is static top-style redraw)")
     args = p.parse_args(argv)
 
