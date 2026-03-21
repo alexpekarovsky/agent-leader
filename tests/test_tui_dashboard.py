@@ -747,5 +747,65 @@ class DashboardTuiTests(unittest.TestCase):
             )
 
 
+    # ------------------------------------------------------------------
+    # File watcher and hash-based re-render
+    # ------------------------------------------------------------------
+
+    def test_state_watcher_poll_fallback_detects_change(self) -> None:
+        """_StateWatcher with poll backend detects file changes."""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "state"
+            d.mkdir()
+            (d / "tasks.json").write_text("[]", encoding="utf-8")
+            watcher = mod._StateWatcher([d])
+            # Force poll backend for deterministic test.
+            watcher._backend = "poll"
+            watcher._kq = None
+            watcher._inotify_fd = None
+            # No change within short timeout → returns False.
+            self.assertFalse(watcher.wait(timeout=0.1))
+            # Modify a file → returns True.
+            (d / "tasks.json").write_text('[{"id": "T1"}]', encoding="utf-8")
+            self.assertTrue(watcher.wait(timeout=1.0))
+            watcher.close()
+
+    def test_state_watcher_detects_backend(self) -> None:
+        """_StateWatcher selects an appropriate backend for the platform."""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "state"
+            d.mkdir()
+            watcher = mod._StateWatcher([d])
+            self.assertIn(watcher.backend, {"kqueue", "inotify", "poll"})
+            if sys.platform == "darwin":
+                self.assertEqual(watcher.backend, "kqueue")
+            watcher.close()
+
+    def test_render_hash_deduplication(self) -> None:
+        """Identical render output should produce the same MD5 hash."""
+        import hashlib
+
+        snap = mod.DashboardSnapshot(
+            project_root="/tmp/test",
+            total_tasks=1, open_tasks=0, done_tasks=1, progress_percent=100,
+            status_counts={"done": 1}, in_progress=[], assigned=[],
+            blockers_open=0, bugs_open=0, active_agents=[], review_events=[],
+            budget_calls_today=0, budget_by_process={},
+            loc_added_total=0, loc_deleted_total=0, loc_net_total=0,
+            reports_count=0, token_prompt_total=None, token_completion_total=None,
+            token_total=None, team_lane_counts={}, stale_in_progress=0,
+            recent_events=[], supervisor_processes=[],
+            done_last_hour=0, throughput_per_hour=None, eta_minutes=None,
+            next_actions=[], validation_passed=0, validation_failed=0,
+            review_pass_rate=None, oldest_open_task_age_s=None,
+            queue_pressure=None, active_agent_count=0, idle_agent_count=0,
+            avg_loc_per_report=None, avg_tokens_per_report=None,
+        )
+        out1 = mod._render(snap, completed=True, auto_stopped=False, style="gemini-v3b", color_enabled=False)
+        out2 = mod._render(snap, completed=True, auto_stopped=False, style="gemini-v3b", color_enabled=False)
+        h1 = hashlib.md5(out1.encode("utf-8")).hexdigest()
+        h2 = hashlib.md5(out2.encode("utf-8")).hexdigest()
+        self.assertEqual(h1, h2, "Same snapshot should produce same render hash")
+
+
 if __name__ == "__main__":
     unittest.main()

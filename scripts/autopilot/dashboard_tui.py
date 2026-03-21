@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -1823,6 +1824,172 @@ def _render(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, st
     return _render_claude(snapshot, completed=completed, auto_stopped=auto_stopped, color_enabled=color_enabled)
 
 
+# ─── File-system state watcher ──────────────────────────────────────────────
+
+
+class _StateWatcher:
+    """Watch state directories for changes using the best available OS primitive.
+
+    Backends (selected automatically):
+    - kqueue: macOS/BSD — blocks on kernel event queue, near-zero idle CPU.
+    - inotify: Linux — blocks on inotify fd via select().
+    - poll: fallback — stat-based mtime polling at 1 s intervals.
+    """
+
+    def __init__(self, dirs: List[Path]):
+        self._dirs = [d for d in dirs if d.is_dir()]
+        self._backend = "poll"
+        self._kq: Any = None
+        self._fds: List[int] = []
+        self._inotify_fd: Optional[int] = None
+        self._poll_baseline: Dict[str, float] = self._stat_mtimes()
+        self._init_backend()
+
+    def _init_backend(self) -> None:
+        # Try kqueue (macOS / BSD)
+        try:
+            import select as _sel
+
+            if hasattr(_sel, "kqueue"):
+                kq = _sel.kqueue()
+                fds: List[int] = []
+                changelist = []
+                for d in self._dirs:
+                    fd = os.open(str(d), os.O_RDONLY)
+                    fds.append(fd)
+                    changelist.append(
+                        _sel.kevent(
+                            fd,
+                            filter=_sel.KQ_FILTER_VNODE,
+                            flags=_sel.KQ_EV_ADD | _sel.KQ_EV_CLEAR,
+                            fflags=_sel.KQ_NOTE_WRITE | _sel.KQ_NOTE_DELETE | _sel.KQ_NOTE_RENAME,
+                        )
+                    )
+                if changelist:
+                    kq.control(changelist, 0, 0)
+                self._kq = kq
+                self._fds = fds
+                self._backend = "kqueue"
+                return
+        except Exception:
+            pass
+
+        # Try inotify (Linux)
+        if sys.platform.startswith("linux"):
+            try:
+                import ctypes
+                import ctypes.util
+
+                libc_name = ctypes.util.find_library("c")
+                if libc_name:
+                    libc = ctypes.CDLL(libc_name, use_errno=True)
+                    IN_MODIFY = 0x00000002
+                    IN_CREATE = 0x00000100
+                    IN_DELETE = 0x00000200
+                    IN_MOVED_TO = 0x00000080
+                    IN_NONBLOCK = 0x00000800
+                    ifd = libc.inotify_init1(IN_NONBLOCK)
+                    if ifd >= 0:
+                        mask = IN_MODIFY | IN_CREATE | IN_DELETE | IN_MOVED_TO
+                        for d in self._dirs:
+                            libc.inotify_add_watch(ifd, str(d).encode("utf-8"), mask)
+                        self._inotify_fd = ifd
+                        self._backend = "inotify"
+                        return
+            except Exception:
+                pass
+
+    # -- public API -----------------------------------------------------------
+
+    @property
+    def backend(self) -> str:
+        return self._backend
+
+    def wait(self, timeout: float) -> bool:
+        """Block until a state change is detected or *timeout* seconds elapse.
+
+        Returns ``True`` when a change was detected, ``False`` on timeout.
+        """
+        if self._backend == "kqueue" and self._kq is not None:
+            return self._wait_kqueue(timeout)
+        if self._backend == "inotify" and self._inotify_fd is not None:
+            return self._wait_inotify(timeout)
+        return self._wait_poll(timeout)
+
+    def close(self) -> None:
+        if self._kq is not None:
+            try:
+                self._kq.close()
+            except OSError:
+                pass
+        for fd in self._fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        self._fds.clear()
+        if self._inotify_fd is not None:
+            try:
+                os.close(self._inotify_fd)
+            except OSError:
+                pass
+            self._inotify_fd = None
+
+    # -- backend implementations ----------------------------------------------
+
+    def _wait_kqueue(self, timeout: float) -> bool:
+        import select as _sel
+
+        try:
+            events = self._kq.control(None, max(1, len(self._fds)), timeout)
+            return len(events) > 0
+        except (OSError, InterruptedError):
+            return True
+
+    def _wait_inotify(self, timeout: float) -> bool:
+        import select as _sel
+
+        try:
+            ready, _, _ = _sel.select([self._inotify_fd], [], [], timeout)
+            if ready:
+                try:
+                    os.read(self._inotify_fd, 4096)  # type: ignore[arg-type]
+                except OSError:
+                    pass
+                return True
+            return False
+        except (OSError, InterruptedError):
+            return True
+
+    def _wait_poll(self, timeout: float) -> bool:
+        """Stat-based mtime polling at 1 s intervals."""
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(1.0, remaining))
+            current = self._stat_mtimes()
+            if current != self._poll_baseline:
+                self._poll_baseline = current
+                return True
+
+    def _stat_mtimes(self) -> Dict[str, float]:
+        mtimes: Dict[str, float] = {}
+        for d in self._dirs:
+            try:
+                for child in d.iterdir():
+                    if child.name.startswith("."):
+                        continue
+                    try:
+                        mtimes[str(child)] = child.stat().st_mtime
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+        return mtimes
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(description="Headless live TUI dashboard")
     p.add_argument("--project-root", required=True)
@@ -1837,10 +2004,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     root = Path(__file__).resolve().parents[2]
     project_root = str(Path(args.project_root).resolve())
 
+    # Set up OS-native file watcher on state directories.
+    watch_dirs = [root / "state", root / "bus", root / ".autopilot-pids"]
+    watcher = _StateWatcher(watch_dirs)
+
     completed = False
     auto_stopped = False
     complete_streak = 0
     last_lines = 0
+    last_render_hash = ""
+    _FORCE_REFRESH_S = 30.0
+    last_refresh_at = 0.0
 
     stop = False
 
@@ -1851,7 +2025,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     signal.signal(signal.SIGINT, _handle_sig)
     signal.signal(signal.SIGTERM, _handle_sig)
 
+    first_pass = True
     while not stop:
+        # Wait for file-system change or timeout (skipped on first iteration).
+        if not first_pass:
+            changed = watcher.wait(timeout=max(0.5, args.refresh_seconds))
+            if not changed and (time.monotonic() - last_refresh_at) < _FORCE_REFRESH_S:
+                continue  # No state change and forced refresh not yet due.
+        first_pass = False
+
         snap = build_snapshot(project_root, root, stale_seconds=max(1, args.stale_seconds))
         # Completion requires: no open tasks, no open blockers,
         # no in-progress milestones, and no live supervisor processes.
@@ -1876,6 +2058,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                 auto_stopped = True
 
         out = _render(snap, completed=completed, auto_stopped=auto_stopped, style=args.style)
+
+        # Hash-based re-render: skip screen write when output is unchanged.
+        render_hash = hashlib.md5(out.encode("utf-8")).hexdigest()
+        if render_hash == last_render_hash:
+            continue
+        last_render_hash = render_hash
+        last_refresh_at = time.monotonic()
+
         out_lines = out.splitlines()
         term_cols = min(180, max(72, _term_width()))
         term_rows = max(10, _term_height())
@@ -1891,8 +2081,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         last_lines = len(out_lines)
         sys.stdout.flush()
 
-        time.sleep(max(0.5, args.refresh_seconds))
-
+    watcher.close()
     return 0
 
 
