@@ -16,7 +16,7 @@ LOG_DIR="$ROOT_DIR/.autopilot-logs"
 MAX_LOG_FILES=200
 CLI_TIMEOUT=600
 IDLE_BACKOFF="30,60,120,300,900"
-MAX_IDLE_CYCLES=3
+MAX_IDLE_CYCLES=30
 DAILY_CALL_BUDGET=100
 EVENT_DRIVEN=false
 EVENT_POLL_INTERVAL=2
@@ -201,17 +201,20 @@ Team: ${TEAM_ID:-none}
 
 Execute exactly one worker cycle and exit when done:
 1. Call orchestrator_connect_to_leader for agent="${AGENT}" with full identity metadata if needed.
-2. Call orchestrator_poll_events(agent="${AGENT}", timeout_ms=1000).
-3. Call orchestrator_claim_next_task(agent="${AGENT}"$(if [[ -n "$TEAM_ID" ]]; then printf ', team_id="%s"' "$TEAM_ID"; fi)).
-4. If no task is claimable, print \"idle\" and exit.
-5. If a task is claimed:
+2. Check the connect response for an auto_claimed_task field.
+   - If auto_claimed_task is present and contains a task, use it directly as your claimed task (skip to step 5).
+   - If auto_claimed_task is absent or null, proceed to step 3.
+3. Call orchestrator_poll_events(agent="${AGENT}", timeout_ms=1000).
+4. Call orchestrator_claim_next_task(agent="${AGENT}"$(if [[ -n "$TEAM_ID" ]]; then printf ', team_id="%s"' "$TEAM_ID"; fi)).
+5. If no task is claimable (and none was auto-claimed), print \"idle\" and exit.
+6. If a task is claimed (either auto-claimed or via step 4):
 ${lane_rules}
 ${team_rules}
    - implement only that task in this project
    - run relevant tests/build checks
    - call orchestrator_submit_report with commit SHA and test results
    - if blocked, call orchestrator_raise_blocker instead of stalling
-6. Exit after one task attempt.
+7. Exit after one task attempt.
 
 Rules:
 - Work only inside $PROJECT_ROOT
@@ -265,7 +268,7 @@ EOF
   prune_old_logs "$LOG_DIR" "worker-${AGENT}-" "$MAX_LOG_FILES"
 
   if [[ "$ONCE" == true ]]; then
-    exit "$cycle_rc"
+    exit 0 # Loop completed its iteration, even if CLI timed out internally
   fi
   if [[ "$skip_sleep" == false ]]; then
     sleep_with_jitter "$cycle_sleep"
