@@ -225,6 +225,15 @@ EOF
   cycle_sleep="$INTERVAL"
   if run_cli_prompt "$CLI" "$PROJECT_ROOT" "$prompt_file" "$out_file" "$CLI_TIMEOUT" "$AGENT" "$LANE" "${AGENT}#headless-${LANE}"; then
     log INFO "worker cycle complete agent=$AGENT; log=$out_file"
+    # Check if auto_claim_next returned a new task
+    skip_sleep=false
+    if grep -q "auto_claim_next" "$out_file"; then
+      # Extract auto_claim_next object and check for 'id' field
+      if python3 -c 'import json, sys; data = json.load(sys.stdin); print(data.get("auto_claim_next", {}).get("id"))' < "$out_file" | grep -q "TASK-"; then
+        log INFO "auto_claim_next returned a new task; skipping inter-cycle sleep."
+        skip_sleep=true
+      fi
+    fi
     if (( capacity_streak > 0 )); then
       log INFO "capacity recovery: clearing capacity_streak=$capacity_streak after successful cycle"
       capacity_streak=0
@@ -258,5 +267,7 @@ EOF
   if [[ "$ONCE" == true ]]; then
     exit "$cycle_rc"
   fi
-  sleep_with_jitter "$cycle_sleep"
+  if [[ "$skip_sleep" == false ]]; then
+    sleep_with_jitter "$cycle_sleep"
+  fi
 done
