@@ -1485,8 +1485,9 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
         # Check if wingman review is required but not yet done
         review_required = bool(review_gate.get("required", False))
         review_pending = review_required and not review_approved and not review_rejected
+        logger.info("review_check id=%s required=%s status=%s pending=%s report_status=%s", task["id"], review_required, review_status, review_pending, report_status)
 
-        if review_pending and failed_tests == 0 and strict_requirements_met:
+        if review_pending:
             deferred.append(
                 {
                     "task_id": task["id"],
