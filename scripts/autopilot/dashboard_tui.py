@@ -1674,144 +1674,188 @@ def _render_gemini(snapshot: DashboardSnapshot, completed: bool, auto_stopped: b
     return "\n".join(lines)
 
 
+def _ubar(pct: int, w: int = 20) -> str:
+    pct = max(0, min(100, pct))
+    fill = int(w * pct / 100)
+    return "\u2588" * fill + "\u2591" * (w - fill)
+
+
 def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, color_enabled: bool = True) -> str:
-    width = min(140, max(72, _term_width()))
-    height = max(24, _term_height())
-    sep = _color(color_enabled, "34", "-" * width)
+    width = min(140, max(80, _term_width()))
     lines: List[str] = []
     now = _now_utc().strftime("%H:%M:%S UTC")
+    c = lambda code, text: _color(color_enabled, code, text)
+    thin = c("34", "\u2500" * width)
+    thick = c("34;1", "\u2550" * width)
+    bar20 = lambda p: "\u2588" * int(20 * max(0, min(100, p)) / 100) + "\u2591" * (20 - int(20 * max(0, min(100, p)) / 100))
+
     if completed:
-        mode = _color(color_enabled, "32;1", "ALL DONE")
+        state_lbl = c("32;1", "\u2714 ALL DONE")
     elif snapshot.in_progress:
-        mode = _color(color_enabled, "33;1", "WORKING")
+        state_lbl = c("33;1", "\u25b6 WORKING")
     elif snapshot.blockers_open:
-        mode = _color(color_enabled, "31;1", "BLOCKED")
+        state_lbl = c("31;1", "\u26a0 BLOCKED")
+    elif snapshot.assigned:
+        state_lbl = c("33", "\u23f3 QUEUED")
     else:
-        mode = _color(color_enabled, "36", "IDLE")
+        state_lbl = c("36", "\u23f8 IDLE")
 
-    # ── Header ──
-    lines.append(sep)
-    lines.append(_color(color_enabled, "1", f"  AGENT LEADER  |  {now}  |  {mode}"))
-    pct_bar = _progress_bar(snapshot.progress_percent, width=30)
-    lines.append(f"  {snapshot.project_name_display}  |  {pct_bar} {snapshot.done_tasks}/{snapshot.total_tasks} tasks done ({snapshot.progress_percent}%)")
+    # HEADER
+    lines.append(thick)
+    lines.append(c("1", f"  AGENT LEADER DASHBOARD   {state_lbl}   {c('34', now)}"))
+    ver = f"v{snapshot.version_current or '?'} {snapshot.version_name or ''}"
+    lines.append(f"  {snapshot.project_name_display}  |  {ver}")
+    lines.append(f"  Progress:    [{bar20(snapshot.progress_percent)}] {snapshot.progress_percent:>3}%  ({snapshot.done_tasks}/{snapshot.total_tasks} tasks)")
+    if snapshot.milestones_total > 0:
+        ms_pct = int((snapshot.milestones_done / snapshot.milestones_total) * 100)
+        lines.append(f"  Milestones:  [{bar20(ms_pct)}] {ms_pct:>3}%  ({snapshot.milestones_done}/{snapshot.milestones_total})")
     if snapshot.bugs_open or snapshot.blockers_open:
-        lines.append(_color(color_enabled, "31", f"  !! {snapshot.blockers_open} blocker(s), {snapshot.bugs_open} bug(s) open"))
-    lines.append(sep)
+        lines.append(c("31;1", f"  \u26a0  {snapshot.blockers_open} blocker(s)  |  {snapshot.bugs_open} bug(s) open"))
+    lines.append(thick)
 
-    # ── What's Happening Now ──
-    lines.append(_color(color_enabled, "1", "  WHAT'S HAPPENING NOW"))
-    lines.append("")
+    # LIVE STATUS
+    lines.append(c("1", "  \u25b6 LIVE STATUS"))
     if snapshot.in_progress:
-        for t in snapshot.in_progress[:3]:
-            owner = _agent_profile(str(t.get("owner", ""))).get("display_name", "?")
+        for t in snapshot.in_progress[:4]:
+            own = _agent_profile(str(t.get("owner", ""))).get("display_name", "?")
             age = _format_age(_age_s(t.get("updated_at")))
             title = _clean_task_title(t.get("title", "-"))
-            lines.append(f"  {_color(color_enabled, '33', owner):>20}  is working on: {_truncate(title, width - 30)}")
-            lines.append(f"  {'':>20}  started {age} ago  [{t.get('id','-')}]")
+            lines.append(f"    {c('32', '\u25cf')} {c('1', own):<16} {_truncate(title, width - 35)}  ({age})")
     elif snapshot.assigned:
-        lines.append(f"  No active work. {len(snapshot.assigned)} task(s) queued, waiting for workers to claim.")
+        lines.append(f"    {c('33', '\u25cb')} {len(snapshot.assigned)} task(s) queued, waiting for workers")
     else:
-        lines.append("  All tasks are complete. The swarm is idle.")
+        lines.append(f"    {c('36', '\u25cb')} All work done. Swarm idle.")
     lines.append("")
 
-    # ── Team Status ──
-    lines.append(sep)
-    lines.append(_color(color_enabled, "1", "  TEAM"))
-    lines.append("")
+    # TEAM ROSTER
+    lines.append(thin)
+    lines.append(c("1", "  \u2692 TEAM ROSTER"))
+    lines.append(c("34", f"  {'Agent':<20} {'Role':<10} {'Status':<12} {'Model':<18}  {'Tasks':>5} {'Commits':>7} {'Lines':>8}"))
+    stats_by = {r.get("display_name", ""): r for r in (snapshot.agent_delivery_stats or [])}
     for a in snapshot.active_agents[:6]:
-        name = a.get("display_name", a["agent"])
+        display_name = a.get("display_name", a["agent"])
+        # Append last 4 chars of instance_id for session identification
+        inst = str(a.get("instance_id", "") or "")
+        sess_tag = inst[-4:] if len(inst) >= 4 else inst
+        name_with_sess = f"{display_name} #{sess_tag}" if sess_tag else display_name
         role = _compact_role_label(str(a.get("role_label", "-")))
         activity = str(a.get("task_activity", "idle"))
         hb = str(a.get("heartbeat_state", "?"))
-        model = a.get("model", "-")
-        proc_state = a.get("process_state", "down")
-
+        model = str(a.get("model", "-"))[:16]
+        ps = a.get("process_state", "down")
         if activity == "working":
-            status_icon = _color(color_enabled, "32", "WORKING")
+            badge = c("32;1", "\u25cf WORKING ")
         elif activity == "queued":
-            status_icon = _color(color_enabled, "33", "QUEUED")
-        elif proc_state == "up" and hb == "active":
-            status_icon = _color(color_enabled, "36", "READY")
+            badge = c("33", "\u25d4 QUEUED  ")
+        elif ps == "up" and hb == "active":
+            badge = c("36", "\u25cb READY   ")
         elif hb in ("stale", "offline", "missing"):
-            status_icon = _color(color_enabled, "31", "OFFLINE")
+            badge = c("31", "\u25cf OFFLINE ")
         else:
-            status_icon = _color(color_enabled, "36", "IDLE")
-
-        lines.append(f"  {name:<18} {role:<10} {status_icon:<10}  model={model}")
+            badge = c("34", "\u25cb IDLE    ")
+        st = stats_by.get(display_name, {})
+        lines.append(f"  {name_with_sess:<20} {role:<10} {badge} {model:<18}  {st.get('tasks_done_session',0):>5} {st.get('commits_session',0):>7} {st.get('loc_net_session',0):>8}")
     lines.append("")
 
-    # ── Work Queue ──
-    lines.append(sep)
-    lines.append(_color(color_enabled, "1", "  WORK QUEUE"))
-    lines.append("")
+    # WORK QUEUE
+    lines.append(thin)
+    lines.append(c("1", "  \u2630 WORK QUEUE"))
     queued = snapshot.queued_tasks or []
     blocked = snapshot.blocked_tasks or []
     if not queued and not blocked and not snapshot.in_progress:
-        lines.append("  Queue is empty. All work is done.")
+        lines.append(f"    {c('32', '\u2714')} Queue empty \u2014 all work complete")
     else:
-        if queued:
-            for t in queued[:5]:
-                owner = _agent_profile(str(t.get("owner", ""))).get("display_name", "?")
-                title = _clean_task_title(t.get("title", "-"))
-                lines.append(f"    -> {owner:<15} {_truncate(title, width - 25)}  [{t.get('id','-')}]")
-        if blocked:
-            for t in blocked[:3]:
-                title = _clean_task_title(t.get("title", "-"))
-                lines.append(_color(color_enabled, "31", f"    !! BLOCKED: {_truncate(title, width - 20)}  [{t.get('id','-')}]"))
+        for t in queued[:6]:
+            own = _agent_profile(str(t.get("owner", ""))).get("display_name", "?")
+            title = _clean_task_title(t.get("title", "-"))
+            lines.append(f"    {c('33', '\u25b7')} {own:<14} {_truncate(title, width - 28)}  [{t.get('id','-')}]")
+        for t in blocked[:3]:
+            title = _clean_task_title(t.get("title", "-"))
+            lines.append(c("31", f"    \u2716 BLOCKED  {_truncate(title, width - 18)}  [{t.get('id','-')}]"))
     lines.append("")
 
-    # ── Progress & Delivery ──
-    lines.append(sep)
-    lines.append(_color(color_enabled, "1", "  TODAY'S PROGRESS"))
-    lines.append("")
-    net_loc_today = snapshot.loc_added_today - snapshot.loc_deleted_today
-    lines.append(f"  Tasks completed today: {snapshot.tasks_done_today}  |  Commits: {snapshot.commits_today}  |  Code: +{snapshot.loc_added_today}/-{snapshot.loc_deleted_today} ({net_loc_today} net lines)")
-    tp = snapshot.throughput_per_hour
-    if tp and tp > 0:
-        lines.append(f"  Speed: {_fmt_number(tp)} tasks/hour  |  ETA for remaining: {(str(snapshot.eta_minutes) + ' min') if snapshot.eta_minutes is not None else 'done'}")
+    # VELOCITY & QUALITY
+    lines.append(thin)
+    lines.append(c("1", "  \u26a1 VELOCITY & QUALITY"))
+    tp = snapshot.throughput_per_hour or 0
+    eta = snapshot.eta_minutes
+    hrs = (snapshot.session_duration_s or 1) / 3600.0
+    net_s = snapshot.loc_added_session - snapshot.loc_deleted_session
+    loc_h = int(net_s / hrs) if hrs > 0.1 else 0
+    com_h = round(snapshot.commits_session / hrs, 1) if hrs > 0.1 else 0
+    half = width // 2 - 4
+    col1 = [
+        f"Tasks/hour:     {c('1', _fmt_number(tp))}",
+        f"Commits/hour:   {c('1', str(com_h))}",
+        f"Lines/hour:     {c('1', str(loc_h))}",
+        f"Avg lead time:  {c('1', _format_age(snapshot.avg_task_lead_time_s))}",
+        f"ETA remaining:  {c('1', (str(eta) + ' min') if eta is not None else 'done')}",
+    ]
+    col2 = [
+        f"Failure rate:   {c('32' if (snapshot.task_failure_rate_percent or 0) < 10 else '31', _fmt_number(snapshot.task_failure_rate_percent))}%",
+        f"Stale tasks:    {c('32' if (snapshot.stale_task_percent or 0) == 0 else '33', _fmt_number(snapshot.stale_task_percent))}%",
+        f"Utilization:    {_fmt_number(snapshot.agent_utilization_percent)}%",
+        f"Queue depth:    {_fmt_number(snapshot.queue_pressure)}",
+        f"Validation:     {_format_age(snapshot.avg_validation_cycle_time_s)}",
+    ]
+    for l, r in zip(col1, col2):
+        lines.append(f"    {l:<{half}}  {r}")
     lines.append("")
 
-    # Agent delivery breakdown
-    for row in (snapshot.agent_delivery_stats or [])[:4]:
-        dn = row.get("display_name", "?")
-        td = row.get("tasks_done_session", 0)
-        cs = row.get("commits_session", 0)
-        loc = row.get("loc_net_session", 0)
-        if td > 0 or cs > 0:
-            lines.append(f"  {dn:<18} {td} tasks, {cs} commits, {loc} lines")
+    # CODE OUTPUT
+    lines.append(thin)
+    lines.append(c("1", "  \u2692 CODE OUTPUT"))
+    net_t = snapshot.loc_added_today - snapshot.loc_deleted_today
+    lines.append(f"    Today:     {c('1', str(snapshot.tasks_done_today))} tasks  {c('1', str(snapshot.commits_today))} commits  {c('32', '+' + str(snapshot.loc_added_today))}/{c('31', '-' + str(snapshot.loc_deleted_today))} ({c('1', str(net_t))} net)")
+    lines.append(f"    Session:   {c('1', str(snapshot.tasks_done_session))} tasks  {c('1', str(snapshot.commits_session))} commits  {c('32', '+' + str(snapshot.loc_added_session))}/{c('31', '-' + str(snapshot.loc_deleted_session))} ({c('1', str(net_s))} net)")
+    lines.append(f"    All time:  {c('1', str(snapshot.done_tasks))} tasks  {c('1', str(snapshot.commits_total))} commits  {c('1', str(snapshot.loc_net_total))} net lines")
     lines.append("")
 
-    # ── Recent Activity ──
-    lines.append(sep)
-    lines.append(_color(color_enabled, "1", "  RECENT ACTIVITY"))
-    lines.append("")
-    for ev in snapshot.recent_events[:6]:
+    # BUDGET
+    budget_today = snapshot.budget_calls_today or 0
+    blimit = 100
+    if budget_today > 0 or snapshot.budget_by_process:
+        lines.append(thin)
+        lines.append(c("1", "  \u23f1 BUDGET & LIMITS"))
+        bp = min(100, int(budget_today / blimit * 100)) if blimit > 0 else 0
+        left = max(0, blimit - budget_today)
+        lines.append(f"    Daily budget:  [{bar20(bp)}] {bp:>3}%  ({left} calls left)")
+        for k, v in sorted(snapshot.budget_by_process.items())[:4]:
+            kp = min(100, int(v / blimit * 100)) if blimit > 0 else 0
+            lines.append(f"      {k:<18} [{bar20(kp)}] {v}/{blimit}")
+        lines.append("")
+
+    # RECENT ACTIVITY
+    lines.append(thin)
+    lines.append(c("1", "  \u23f0 RECENT ACTIVITY"))
+    for ev in snapshot.recent_events[:8]:
         t = ev.get("time", "")[11:16]
         etype = str(ev.get("type", ""))
         src = ev.get("source", "")
         tid = ev.get("task_id") or ""
-        # Translate event types to human language
+        sn = _agent_profile(src).get("display_name", src) if src else ""
         if "validation.passed" in etype:
-            desc = f"Task {tid} passed validation"
+            ico, desc = c("32", "\u2714"), f"{tid} passed validation"
         elif "validation.failed" in etype:
-            desc = f"Task {tid} failed validation"
+            ico, desc = c("31", "\u2716"), f"{tid} failed validation"
         elif "task.reported" in etype:
-            desc = f"Task {tid} submitted for review"
+            ico, desc = c("33", "\u25b2"), f"{tid} submitted by {sn}"
         elif "task.claimed" in etype:
-            desc = f"Task {tid} claimed by {src}"
+            ico, desc = c("36", "\u25b6"), f"{tid} claimed by {sn}"
         elif "idle_heartbeat" in etype:
-            desc = f"{src} is idle, no pending work"
+            ico, desc = c("34", "\u25cb"), f"{sn} idle"
         elif "heartbeat" in etype:
-            desc = f"{src} checked in"
+            ico, desc = c("34", "\u00b7"), f"{sn} heartbeat"
         elif "task_contracts" in etype:
-            desc = "Manager published task assignments"
+            ico, desc = c("34", "\u25a0"), "Manager published assignments"
         else:
-            desc = etype
-        lines.append(f"  {t}  {desc}")
+            ico, desc = c("34", "\u00b7"), etype
+        lines.append(f"    {t}  {ico} {desc}")
     lines.append("")
-    lines.append(sep)
-    lines.append(f"  Ctrl+C to exit  |  Refreshes every 5s  |  Total: {snapshot.commits_total} commits, {snapshot.loc_net_total} lines")
+    lines.append(thick)
+    lines.append(c("34", f"  Ctrl+C exit | 5s refresh | {snapshot.commits_total} commits | {snapshot.loc_net_total} lines | {snapshot.active_agent_count} agents"))
     return "\n".join(lines)
+
 
 
 def _render(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, style: str, color_enabled: bool = True) -> str:
