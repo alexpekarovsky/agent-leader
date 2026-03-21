@@ -15,13 +15,18 @@
   "decisions": {
     "architecture": {
       "mode": "consensus",
-      "members": ["codex", "claude_code", "gemini"],
+      "members": [
+        "codex",
+        "claude_code",
+        "gemini"
+      ],
       "tie_breaker": "round_two"
     }
   },
   "triggers": {
     "heartbeat_timeout_minutes": 10,
     "auto_open_bug_on_validation_failure": true,
-    "auto_requeue_on_offline": true
+    "auto_requeue_on_offline": true,
+    "review_gate_default": "required"
   }
 }

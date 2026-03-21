@@ -29,6 +29,7 @@
     "stop_max_validation_failures_per_task": 10,
     "stop_on_integrity_mismatch": false,
     "stop_on_deploy_mismatch": false,
-    "allow_cross_project_agents": true
+    "allow_cross_project_agents": true,
+    "review_gate_default": "optional"
   }
 }

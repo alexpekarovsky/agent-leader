@@ -15,7 +15,11 @@
   "decisions": {
     "architecture": {
       "mode": "consensus",
-      "members": ["codex", "claude_code", "gemini"],
+      "members": [
+        "codex",
+        "claude_code",
+        "gemini"
+      ],
       "tie_breaker": "codex"
     }
   },
@@ -30,6 +34,7 @@
     "stop_max_validation_failures_per_task": 1,
     "stop_on_integrity_mismatch": true,
     "stop_on_deploy_mismatch": true,
-    "allow_cross_project_agents": false
+    "allow_cross_project_agents": false,
+    "review_gate_default": "required"
   }
 }

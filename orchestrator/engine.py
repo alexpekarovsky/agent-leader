@@ -819,6 +819,13 @@ class Orchestrator:
             if isinstance(review_gate, dict):
                 task["review_gate"] = self._normalize_review_gate(review_gate)
                 task["review_gate_updated_at"] = self._now()
+            elif not isinstance(task.get("review_gate"), dict):
+                # Auto-set review gate from policy if not explicitly provided
+                policy_default = str(self.policy.triggers.get("review_gate_default", "")).strip().lower()
+                if policy_default == "required":
+                    task["review_gate"] = {"required": True, "status": "pending", "reviewer_agent": "ccm"}
+                    task["review_gate_updated_at"] = self._now()
+                    logger.info("review_gate.auto_set task=%s policy=required reviewer=ccm", task_id)
 
             self_review = report.get("self_review")
             if isinstance(self_review, dict):

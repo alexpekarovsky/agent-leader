@@ -1380,6 +1380,23 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
         review_approved = review_status in {"approved", "waived"}
         review_rejected = review_status == "rejected"
 
+        # Check if wingman review is required but not yet done
+        review_required = bool(review_gate.get("required", False))
+        review_pending = review_required and not review_approved and not review_rejected
+
+        if review_pending and failed_tests == 0 and strict_requirements_met:
+            deferred.append(
+                {
+                    "task_id": task["id"],
+                    "status": report_status,
+                    "review_status": review_status or "pending",
+                    "reason": "awaiting_wingman_review",
+                    "reviewer": str(review_gate.get("reviewer_agent", "ccm")),
+                }
+            )
+            logger.info("task.deferred_for_review id=%s reviewer=%s", task["id"], review_gate.get("reviewer_agent", "ccm"))
+            continue
+
         passed = failed_tests == 0 and strict_requirements_met and (
             report_status == "done" or (report_status == "needs_review" and review_approved)
         )
@@ -2376,7 +2393,7 @@ def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
                 "open_blockers": len(blockers_open),
                 "open_bugs": len(bugs_open),
             },
-            "team_lane_counters": team_lanes,
+            "team_lane_counters": _aggregate_team_lanes(tasks),
             "suggested_recovery_actions": recovery_actions,
         },
         "recommended_cadence_seconds": 600,
