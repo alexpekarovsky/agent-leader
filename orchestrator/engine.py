@@ -158,6 +158,7 @@ class Orchestrator:
         timeout_seconds: int = 60,
         poll_interval_seconds: int = 2,
         stale_after_seconds: Optional[int] = None,
+        blocking: bool = True,
     ) -> Dict[str, Any]:
         manager = self.manager_agent()
         if source != manager:
@@ -167,9 +168,6 @@ class Orchestrator:
         if not requested:
             raise ValueError("team_members must contain at least one non-empty agent id")
 
-        started_at = time.time()
-        deadline = started_at + max(1, int(timeout_seconds))
-
         # One manager signal that team_members should register + heartbeat now.
         self.publish_event(
             event_type="manager.connect_team_members",
@@ -177,6 +175,19 @@ class Orchestrator:
             payload={"team_members": requested, "timeout_seconds": int(timeout_seconds)},
             audience=requested,
         )
+
+        if not blocking:
+            return {
+                "status": "triggered_non_blocking",
+                "requested": requested,
+                "connected": [],
+                "missing": requested,
+                "timeout_seconds": int(timeout_seconds),
+                "elapsed_seconds": 0,
+            }
+
+        started_at = time.time()
+        deadline = started_at + max(1, int(timeout_seconds))
 
         connected: List[str] = []
         while time.time() < deadline:

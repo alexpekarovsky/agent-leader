@@ -1481,6 +1481,7 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
             timeout_seconds=reconnect_timeout,
             poll_interval_seconds=reconnect_poll,
             stale_after_seconds=stale_after_seconds,
+            blocking=False,  # Make connect non-blocking
         )
         auto_connect = {
             "attempted": True,
