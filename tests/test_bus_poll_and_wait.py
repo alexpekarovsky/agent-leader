@@ -238,5 +238,61 @@ class WaitForEventIndexTimeoutTests(unittest.TestCase):
             self.assertLess(elapsed, 1.0)
 
 
+class KqueueWaitBehaviorTests(unittest.TestCase):
+    """Tests that verify kqueue/fallback wait replaces busy-wait polling."""
+
+    def test_wait_for_event_index_uses_efficient_wait(self) -> None:
+        """wait_for_event_index should not busy-loop with 100ms sleeps.
+
+        With kqueue on macOS, it should wake on file write. On fallback
+        platforms, it uses 0.5s sleeps instead of 0.1s. Either way the
+        _count_lines call count should be much less than timeout/100ms.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            bus = EventBus(root=Path(tmp))
+            original = bus._count_lines
+            call_count = {"n": 0}
+
+            def counting_wrapper(*a, **kw):
+                call_count["n"] += 1
+                return original(*a, **kw)
+
+            bus._count_lines = counting_wrapper
+
+            # Wait 600ms with index unreachable — old code would call
+            # _count_lines ~6 times (every 100ms). With kqueue it should
+            # be <=2 (initial check + wake/timeout). Fallback: <=3 (0.5s sleep).
+            bus.wait_for_event_index(start=9999, timeout_ms=600)
+
+            self.assertLessEqual(call_count["n"], 3,
+                f"Expected <=3 line-count checks, got {call_count['n']} "
+                "(busy-wait regression?)")
+
+    def test_poll_events_wakes_on_file_write(self) -> None:
+        """poll_events should return promptly when an event is written."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bus = EventBus(root=Path(tmp))
+
+            def add_event_later():
+                time.sleep(0.15)
+                bus.emit("wakeup", {}, source="test")
+
+            thread = threading.Thread(target=add_event_later)
+            thread.start()
+
+            start = time.time()
+            events = list(bus.poll_events(timeout_ms=5000))
+            elapsed = time.time() - start
+            thread.join()
+
+            self.assertGreaterEqual(len(events), 1)
+            # Should wake well before the 5s timeout
+            self.assertLess(elapsed, 2.0)
+
+    def test_fallback_sleep_interval(self) -> None:
+        """On fallback path, sleep interval should be 0.5s, not 0.1s."""
+        self.assertEqual(EventBus._POLL_FALLBACK_SLEEP, 0.5)
+
+
 if __name__ == "__main__":
     unittest.main()

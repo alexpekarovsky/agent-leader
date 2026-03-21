@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import select
 import sys
 import time
 import uuid
@@ -64,18 +65,48 @@ class EventBus:
             fh.flush()
             os.fsync(fh.fileno())
         tmp.replace(path)
-        try:
-            dir_fd = os.open(str(path.parent), os.O_RDONLY)
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
-        except Exception:
-            pass
 
     @staticmethod
     def _lock_for(path: Path) -> Path:
         return path.parent / f".{path.name}.lock"
+
+    # Fallback sleep interval when kqueue/inotify is unavailable.
+    _POLL_FALLBACK_SLEEP = 0.5
+
+    def _wait_for_file_change(self, path: Path, timeout_sec: float) -> bool:
+        """Wait for *path* to be modified using kqueue, falling back to sleep.
+
+        Returns True if a change was detected (or assumed on fallback),
+        False on timeout.
+        """
+        if timeout_sec <= 0:
+            return False
+
+        if hasattr(select, "kqueue") and path.exists():
+            fd = -1
+            kq = None
+            try:
+                fd = os.open(str(path), os.O_RDONLY)
+                kq = select.kqueue()
+                ev = select.kevent(
+                    fd,
+                    filter=select.KQ_FILTER_VNODE,
+                    flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
+                    fflags=select.KQ_NOTE_WRITE | select.KQ_NOTE_EXTEND,
+                )
+                events = kq.control([ev], 1, timeout_sec)
+                return len(events) > 0
+            except OSError:
+                pass  # fall through to sleep-based fallback
+            finally:
+                if kq is not None:
+                    kq.close()
+                if fd >= 0:
+                    os.close(fd)
+
+        # Fallback: sleep for min(remaining, 0.5s) and assume possible change.
+        time.sleep(min(timeout_sec, self._POLL_FALLBACK_SLEEP))
+        return True
 
     def emit(self, event_type: str, payload: Dict[str, Any], source: str) -> Dict[str, Any]:
         event = {
@@ -123,9 +154,10 @@ class EventBus:
             events = list(self.iter_events())
             if events:
                 return events
-            if time.time() >= deadline:
+            remaining = deadline - time.time()
+            if remaining <= 0:
                 return events
-            time.sleep(0.1)
+            self._wait_for_file_change(self.events_path, remaining)
 
     def _count_lines(self, path: Path, lock_path: Path) -> int:
         if not path.exists():
@@ -141,10 +173,13 @@ class EventBus:
         if timeout_ms <= 0:
             return
         deadline = time.time() + (timeout_ms / 1000.0)
-        while time.time() < deadline:
+        while True:
             if self._count_lines(self.events_path, self._events_lock) > max(0, int(start)):
                 return
-            time.sleep(0.1)
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return
+            self._wait_for_file_change(self.events_path, remaining)
 
     def iter_events_from(self, start: int = 0) -> Iterator[Tuple[int, Dict[str, Any]]]:
         if not self.events_path.exists():
