@@ -56,9 +56,9 @@ class SupervisorConfig:
     manager_interval: int = 20
     worker_interval: int = 25
     idle_backoff: str = "30,60,120,300,900"
-    max_idle_cycles: int = 0
-    daily_call_budget: int = 0
-    event_driven: bool = False
+    max_idle_cycles: int = 30
+    daily_call_budget: int = 100
+    event_driven: bool = True
     low_burn: bool = False
     leader_agent: str = "codex"
     leader_cli: str = ""
@@ -76,7 +76,7 @@ class SupervisorConfig:
     gemini_team_id: str = ""
     codex_team_id: str = ""
     wingman_team_id: str = ""
-    claude_lanes: int = 1  # Number of parallel Claude workers (1-3).
+    claude_lanes: int = 3  # Number of parallel Claude workers (1-3).
     extra_workers: List[ExtraWorker] = field(default_factory=list)
     max_restarts: int = 5
     backoff_base: int = 10
@@ -159,7 +159,7 @@ def _is_alive(pid: int) -> bool:
 # Topology
 # ---------------------------------------------------------------------------
 
-def proc_enabled(name: str, leader_agent: str, claude_lanes: int = 1) -> bool:
+def proc_enabled(name: str, leader_agent: str, claude_lanes: int = 3) -> bool:
     """Return whether *name* should run given *leader_agent*.
 
     *claude_lanes* controls how many parallel Claude workers are active (1-3).
@@ -233,8 +233,9 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
         )
     if name in ("claude", "claude_2", "claude_3"):
         # Each Claude lane gets a distinct instance-id for claim isolation.
-        instance_id = f"claude_code#headless-default-{name.split('_')[1]}" if "_" in name else ""
-        instance_arg = f" --instance-id {instance_id}" if instance_id else ""
+        lane_num = name.split("_")[1] if "_" in name else "1"
+        instance_id = f"claude_code#headless-default-{lane_num}"
+        instance_arg = f" --instance-id {instance_id}"
         return (
             f"{scripts}/worker_loop.sh"
             f" --cli claude --agent claude_code{_team_arg(cfg.claude_team_id)}"
@@ -671,9 +672,9 @@ class Supervisor:
                 "role": display["role"],
                 "model": display["model"],
             }
-            # Include instance_id for multi-lane Claude workers.
-            if name in ("claude_2", "claude_3"):
-                lane_num = name.split("_")[1]
+            # Include instance_id for all Claude lane workers.
+            if name in ("claude", "claude_2", "claude_3"):
+                lane_num = name.split("_")[1] if "_" in name else "1"
                 entry["instance_id"] = f"claude_code#headless-default-{lane_num}"
             if ps.capacity_errors > 0:
                 entry["capacity_errors"] = ps.capacity_errors
@@ -736,7 +737,7 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> Tuple[str, Supe
     parser.add_argument("--gemini-fallback-model", default="")
     parser.add_argument("--gemini-capacity-retries", type=int, default=2)
     parser.add_argument("--gemini-capacity-backoff", type=int, default=15)
-    parser.add_argument("--claude-lanes", type=int, default=1,
+    parser.add_argument("--claude-lanes", type=int, default=3,
                         help="Number of parallel Claude worker lanes (1-3)")
     parser.add_argument("--claude-team-id", default="")
     parser.add_argument("--gemini-team-id", default="")

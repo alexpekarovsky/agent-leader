@@ -8,6 +8,7 @@ CLI=""
 AGENT=""
 LANE="default"
 TEAM_ID=""
+INSTANCE_ID_OVERRIDE=""
 PROJECT_ROOT="$ROOT_DIR"
 INTERVAL=25
 ONCE=false
@@ -15,8 +16,8 @@ LOG_DIR="$ROOT_DIR/.autopilot-logs"
 MAX_LOG_FILES=200
 CLI_TIMEOUT=600
 IDLE_BACKOFF="30,60,120,300,900"
-MAX_IDLE_CYCLES=0
-DAILY_CALL_BUDGET=0
+MAX_IDLE_CYCLES=30
+DAILY_CALL_BUDGET=100
 EVENT_DRIVEN=false
 EVENT_POLL_INTERVAL=2
 EVENT_MAX_WAIT=300
@@ -27,6 +28,7 @@ while [[ $# -gt 0 ]]; do
     --agent) AGENT="$2"; shift 2 ;;
     --lane) LANE="$2"; shift 2 ;;
     --team-id) TEAM_ID="$2"; shift 2 ;;
+    --instance-id) INSTANCE_ID_OVERRIDE="$2"; shift 2 ;;
     --project-root) PROJECT_ROOT="$2"; shift 2 ;;
     --interval) INTERVAL="$2"; shift 2 ;;
     --log-dir) LOG_DIR="$2"; shift 2 ;;
@@ -42,6 +44,18 @@ while [[ $# -gt 0 ]]; do
     *) log ERROR "Unknown arg: $1"; exit 1 ;;
   esac
 done
+
+cycle=0
+idle_streak=0
+capacity_streak=0
+if [[ -n "$INSTANCE_ID_OVERRIDE" ]]; then
+  INSTANCE_ID="$INSTANCE_ID_OVERRIDE"
+else
+  INSTANCE_ID="${AGENT}#headless-${LANE}"
+fi
+CAPACITY_BACKOFF="60,120,300,600,900"
+
+log INFO "worker cycle=$cycle agent=$AGENT cli=$CLI project=$PROJECT_ROOT"
 
 if [[ -z "$CLI" || -z "$AGENT" ]]; then
   log ERROR "--cli and --agent are required"
@@ -60,16 +74,10 @@ case "$CLI" in
   *)
     log ERROR "Unsupported CLI: $CLI"
     log ERROR "worker cycle failed rc=2"
-    exit 2
+    cycle_rc=2
+    break # Break from the while true loop
     ;;
 esac
-mkdir_logs "$LOG_DIR"
-
-cycle=0
-idle_streak=0
-capacity_streak=0
-INSTANCE_ID="${AGENT}#headless-${LANE}"
-CAPACITY_BACKOFF="60,120,300,600,900"
 
 worker_has_claimable_work() {
   python3 - "$PROJECT_ROOT" "$AGENT" "$TEAM_ID" "$LANE" <<'PY'
@@ -248,8 +256,7 @@ EOF
   prune_old_logs "$LOG_DIR" "worker-${AGENT}-" "$MAX_LOG_FILES"
 
   if [[ "$ONCE" == true ]]; then
-    # One-shot mode is used by smoke/runbook validation; success means the cycle ran.
-    exit 0
+    exit "$cycle_rc"
   fi
   sleep_with_jitter "$cycle_sleep"
 done

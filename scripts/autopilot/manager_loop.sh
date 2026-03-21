@@ -13,8 +13,8 @@ LOG_DIR="$ROOT_DIR/.autopilot-logs"
 MAX_LOG_FILES=200
 CLI_TIMEOUT=300
 IDLE_BACKOFF="30,60,120,300,900"
-MAX_IDLE_CYCLES=0
-DAILY_CALL_BUDGET=0
+MAX_IDLE_CYCLES=30
+DAILY_CALL_BUDGET=100
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -128,8 +128,7 @@ EOF
   prune_old_logs "$LOG_DIR" "manager-" "$MAX_LOG_FILES"
 
   if [[ "$ONCE" == true ]]; then
-    # One-shot mode is used by smoke/runbook validation; success means the cycle ran.
-    exit 0
+    exit "$cycle_rc"
   fi
   sleep_with_jitter "$INTERVAL"
 done

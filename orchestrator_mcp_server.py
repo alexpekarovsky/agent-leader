@@ -19,6 +19,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from orchestrator.command_bundles import (
+    get_command_bundle,
+    list_command_bundles,
+    list_startup_templates,
+    load_startup_template,
+)
 from orchestrator.doctor import build_doctor_payload
 from orchestrator.engine import Orchestrator
 from orchestrator.github_ci import normalize_github_ci_result
@@ -423,13 +429,19 @@ def _supervisor_from_tool_args(args: Dict[str, Any]) -> Supervisor:
         gemini_project_root=str(args.get("gemini_project_root", "")),
         codex_project_root=str(args.get("codex_project_root", "")),
         wingman_project_root=str(args.get("wingman_project_root", "")),
+        claude_lanes=max(1, min(3, int(args.get("claude_lanes", 1)))),
         claude_team_id=str(args.get("claude_team_id", "")),
         gemini_team_id=str(args.get("gemini_team_id", "")),
         codex_team_id=str(args.get("codex_team_id", "")),
         wingman_team_id=str(args.get("wingman_team_id", "")),
+        event_driven=bool(args.get("event_driven", True)),
+        low_burn=bool(args.get("low_burn", True)),
+        idle_backoff=str(args.get("idle_backoff", "30,60,120,300,900")),
+        max_idle_cycles=int(args.get("max_idle_cycles", 30)),
+        daily_call_budget=int(args.get("daily_call_budget", 100)),
         extra_workers=extra_workers,
     )
-    return Supervisor(cfg)
+    return Supervisor(cfg, ORCH)
 
 
 def _run_supervisor_action(supervisor: Supervisor, action: str) -> Dict[str, Any]:
@@ -502,6 +514,11 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                     "gemini_team_id": {"type": "string"},
                     "codex_team_id": {"type": "string"},
                     "wingman_team_id": {"type": "string"},
+                    "claude_lanes": {"type": "integer", "description": "Number of parallel Claude worker lanes (1-3).", "default": 1},
+                    "low_burn": {"type": "boolean", "description": "Enable conservative low-burn mode: longer intervals, bounded idle cycles. Default: true.", "default": True},
+                    "idle_backoff": {"type": "string", "description": "Comma-separated idle backoff seconds (default: 30,60,120,300,900).", "default": "30,60,120,300,900"},
+                    "max_idle_cycles": {"type": "integer", "description": "Auto-exit loop after N idle cycles. 0 disables. Default: 30.", "default": 30},
+                    "daily_call_budget": {"type": "integer", "description": "Per-process daily LLM call budget. 0 disables. Default: 100.", "default": 100},
                     "extra_workers": {
                         "type": "array",
                         "items": {
@@ -536,6 +553,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                     "gemini_team_id": {"type": "string"},
                     "codex_team_id": {"type": "string"},
                     "wingman_team_id": {"type": "string"},
+                    "claude_lanes": {"type": "integer", "description": "Number of parallel Claude worker lanes (1-3).", "default": 1},
                     "extra_workers": {"type": "array", "items": {"type": "object"}},
                 },
             },
@@ -556,6 +574,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                     "gemini_team_id": {"type": "string"},
                     "codex_team_id": {"type": "string"},
                     "wingman_team_id": {"type": "string"},
+                    "claude_lanes": {"type": "integer", "description": "Number of parallel Claude worker lanes (1-3).", "default": 1},
                     "extra_workers": {"type": "array", "items": {"type": "object"}},
                 },
             },
@@ -576,6 +595,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                     "gemini_team_id": {"type": "string"},
                     "codex_team_id": {"type": "string"},
                     "wingman_team_id": {"type": "string"},
+                    "claude_lanes": {"type": "integer", "description": "Number of parallel Claude worker lanes (1-3).", "default": 1},
                     "extra_workers": {"type": "array", "items": {"type": "object"}},
                 },
             },
@@ -596,6 +616,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                     "gemini_team_id": {"type": "string"},
                     "codex_team_id": {"type": "string"},
                     "wingman_team_id": {"type": "string"},
+                    "claude_lanes": {"type": "integer", "description": "Number of parallel Claude worker lanes (1-3).", "default": 1},
                     "extra_workers": {"type": "array", "items": {"type": "object"}},
                 },
             },
@@ -1386,7 +1407,7 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
     reconnect_candidates: List[str] = []
     seen_candidates = set()
     team_members = set(ORCH.get_roles().get("team_members", []) or [])
-    for task in ORCH.list_tasks():
+    for task in tasks:
         if task.get("status") not in reconnect_statuses:
             continue
         owner = str(task.get("owner", "")).strip()
@@ -1450,7 +1471,7 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
     )
     stale_requeues = ORCH.requeue_stale_in_progress_tasks(stale_after_seconds=stale_after_seconds)
 
-    latest_tasks = ORCH.list_tasks()
+    latest_tasks = tasks
     open_blockers = ORCH.list_blockers(status="open")
     by_owner: Dict[str, Dict[str, int]] = {}
     pending_statuses = {"assigned", "in_progress", "reported", "bug_open", "blocked"}
@@ -2303,101 +2324,42 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
         if name == "orchestrator_process_github_webhook":
             raw_payload = args.get("payload", {})
             source = args.get("source", "github")
+            headers = args.get("headers", {})
             if isinstance(raw_payload, str):
                 raw_payload = _parse_json_argument(raw_payload, "object")
             if not isinstance(raw_payload, dict):
                 raise ValueError("payload must be an object")
 
-            normalized_ci = normalize_github_ci_result(raw_payload)
-            ci_state = normalized_ci.get("state") # passed, failed, running, unknown
-            github_status = normalized_ci.get("status") # e.g., completed, in_progress, queued
-            conclusion = raw_payload.get("check_run", {}).get("conclusion") # success, failure, neutral, cancelled, skipped, timed_out, action_required
+            if ORCH is None:
+                raise ValueError("orchestrator not initialized")
 
-            # Attempt to extract task_id from check_run.external_id or check_run.output.text
-            task_id = None
-            external_id = raw_payload.get("check_run", {}).get("external_id")
-            if external_id and external_id.startswith("TASK-"):
-                task_id = external_id
-            
-            if not task_id:
-                output_text = raw_payload.get("check_run", {}).get("output", {}).get("text")
-                if output_text and "TASK-" in output_text:
-                    # Simple regex to find TASK-XXXX in text
-                    import re
-                    match = re.search(r"(TASK-[a-fA-F0-9]{8})", output_text)
-                    if match:
-                        task_id = match.group(0)
+            # Inject headers into payload if provided separately (engine expects them inside payload)
+            if headers and "headers" not in raw_payload:
+                raw_payload["headers"] = headers
 
-            orchestrator_status = "blocked"
-            if ci_state == "passed":
-                orchestrator_status = "done"
-            elif ci_state == "failed":
-                orchestrator_status = "bug_open"
-            elif ci_state == "running":
-                orchestrator_status = "in_progress"
-            
-            update_result = {}
-            if task_id and ORCH:
-                try:
-                    update_result = ORCH.set_task_status(
-                        task_id=task_id,
-                        status=orchestrator_status,
-                        source=f"{source}-ci",
-                        note=f"CI state: {ci_state}, GitHub status: {github_status}, conclusion: {conclusion}"
-                    )
-                    ORCH.publish_event(
-                        event_type="github.ci_status_updated",
-                        source=source,
-                        payload={
-                            "task_id": task_id,
-                            "ci_state": ci_state,
-                            "orchestrator_status": orchestrator_status,
-                            "github_status": github_status,
-                            "conclusion": conclusion,
-                            "normalized_ci": normalized_ci,
-                        },
-                    )
-                    if ci_state == "failed" and orchestrator_status == "bug_open":
-                        # Publish event for GitHub handoff
-                        ORCH.publish_event(
-                            event_type="github.handoff_required",
-                            source=source,
-                            payload={
-                                "task_id": task_id,
-                                "ci_state": ci_state,
-                                "orchestrator_status": orchestrator_status,
-                                "github_status": github_status,
-                                "conclusion": conclusion,
-                                "normalized_ci": normalized_ci,
-                                "action_required": "create_github_issue_or_comment_pr" # Explicit action for clarity
-                            },
-                        )
-                except Exception as e:
-                    # Log the error but don't re-raise, allow webhook to respond OK
-                    print(f"Error updating task status or publishing event for task {task_id}: {e}", file=sys.stderr)
-                    update_result = {"error": str(e)}
-            
-            return _ok_and_audit(request_id, name, args, {
-                "ci_state": ci_state,
-                "orchestrator_status": orchestrator_status,
-                "task_id": task_id,
-                "update_result": update_result,
-                "normalized_ci": normalized_ci,
-            })
+            result = ORCH.process_github_webhook(payload=raw_payload, source=source)
 
+            return _ok_and_audit(request_id, name, args, result)
         if name == "orchestrator_headless_status":
             supervisor = _supervisor_from_tool_args(args if isinstance(args, dict) else {})
-            
-            
+
             tasks = ORCH.list_tasks() if ORCH else []
             blockers_open = ORCH.list_blockers(status="open") if ORCH else []
             bugs_open = ORCH.list_bugs(status="open") if ORCH else []
-            
+
+            proc_statuses = supervisor.status_json()
+
+            # Detect stale leader heartbeat from process status.
+            leader_heartbeat_stale = any(
+                p.get("leader_heartbeat_stale") for p in proc_statuses
+            )
+
             payload = {
                 "ok": True,
                 "project_root": supervisor.cfg.project_root,
                 "leader_agent": supervisor.cfg.leader_agent,
-                "processes": supervisor.status_json(),
+                "claude_lanes": supervisor.cfg.claude_lanes,
+                "processes": proc_statuses,
                 "pipeline": {
                     "total": len(tasks),
                     "done": len([t for t in tasks if t.get("status") == "done"]),
@@ -2408,6 +2370,12 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "blockers_open_count": len(blockers_open),
                 "bugs_open_count": len(bugs_open),
             }
+            if leader_heartbeat_stale:
+                payload["leader_heartbeat_stale"] = True
+                payload["leader_heartbeat_remediation"] = (
+                    "Leader process is running but its orchestrator heartbeat is stale. "
+                    "Check manager_loop health or restart the supervisor."
+                )
             return _ok_and_audit(request_id, name, args, payload)
 
         if name == "orchestrator_headless_restart":

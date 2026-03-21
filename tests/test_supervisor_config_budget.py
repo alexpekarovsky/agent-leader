@@ -35,11 +35,11 @@ class SupervisorConfigDefaultsTests(unittest.TestCase):
 
     def test_default_max_idle_cycles(self):
         cfg = _default_cfg()
-        self.assertEqual(cfg.max_idle_cycles, 0)
+        self.assertEqual(cfg.max_idle_cycles, 30)
 
     def test_default_daily_call_budget(self):
         cfg = _default_cfg()
-        self.assertEqual(cfg.daily_call_budget, 0)
+        self.assertEqual(cfg.daily_call_budget, 100)
 
     def test_default_low_burn_false(self):
         cfg = _default_cfg()
