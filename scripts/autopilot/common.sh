@@ -372,6 +372,8 @@ wait_for_task_signal() {
   local lane="${7:-default}"
   local instance_id="${8:-${agent}#headless-${lane}}"
   local signal_file="$project_root/state/.wakeup-${agent}"
+  local fswatcher
+  fswatcher="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fswatcher.py"
 
   # Record baseline mtime (0 if file doesn't exist yet).
   local baseline_mtime=0
@@ -384,19 +386,41 @@ wait_for_task_signal() {
   if [[ "$heartbeat_interval" =~ ^[0-9]+$ ]] && (( heartbeat_interval > 0 )); then
     emit_agent_heartbeat "$project_root" "$agent" "$cli" "$lane" "$instance_id" "idle"
   fi
+
+  # Use OS-native file watcher (kqueue/inotify) with polling fallback.
+  # Run in chunks of heartbeat_interval (or max_wait) to allow heartbeat emission.
   while (( waited < max_wait )); do
-    sleep "$poll_interval"
-    waited=$((waited + poll_interval))
+    local remaining=$((max_wait - waited))
+    local chunk="$remaining"
+    if [[ "$heartbeat_interval" =~ ^[0-9]+$ ]] && (( heartbeat_interval > 0 )) && (( heartbeat_interval < chunk )); then
+      chunk="$heartbeat_interval"
+    fi
+
+    if [[ -f "$fswatcher" ]]; then
+      # Use OS-native watcher (kqueue on macOS, inotify on Linux, poll fallback)
+      if python3 "$fswatcher" "$signal_file" "$chunk" --baseline-mtime "$baseline_mtime" 2>/dev/null; then
+        return 0  # Signal detected — new work available
+      fi
+    else
+      # Inline fallback: sleep-based polling (legacy path)
+      local chunk_waited=0
+      while (( chunk_waited < chunk )); do
+        sleep "$poll_interval"
+        chunk_waited=$((chunk_waited + poll_interval))
+        if [[ -f "$signal_file" ]]; then
+          local current_mtime
+          current_mtime="$(python3 -c "import os; print(int(os.path.getmtime('$signal_file') * 1000))" 2>/dev/null || echo 0)"
+          if [[ "$current_mtime" != "$baseline_mtime" ]]; then
+            return 0  # Signal detected — new work available
+          fi
+        fi
+      done
+    fi
+
+    waited=$((waited + chunk))
     if [[ "$heartbeat_interval" =~ ^[0-9]+$ ]] && (( heartbeat_interval > 0 )) && (( waited - last_heartbeat >= heartbeat_interval )); then
       emit_agent_heartbeat "$project_root" "$agent" "$cli" "$lane" "$instance_id" "idle"
       last_heartbeat="$waited"
-    fi
-    if [[ -f "$signal_file" ]]; then
-      local current_mtime
-      current_mtime="$(python3 -c "import os; print(int(os.path.getmtime('$signal_file') * 1000))" 2>/dev/null || echo 0)"
-      if [[ "$current_mtime" != "$baseline_mtime" ]]; then
-        return 0  # Signal detected — new work available
-      fi
     fi
   done
   return 1  # Timeout — no signal
