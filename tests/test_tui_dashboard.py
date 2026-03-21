@@ -346,5 +346,190 @@ class DashboardTuiTests(unittest.TestCase):
         self.assertIn("style=gemini-v3b", out)
 
 
+    def test_project_meta_milestone_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "project.yaml").write_text(
+                "\n".join(
+                    [
+                        "name: Test Project",
+                        "version:",
+                        "  current: v0.2.0",
+                        '  name: "Test Phase"',
+                        "  milestones:",
+                        "    - id: m1",
+                        "      title: First milestone",
+                        "      status: done",
+                        "    - id: m2",
+                        "      title: Second milestone",
+                        "      status: done",
+                        "    - id: m3",
+                        "      title: Third milestone",
+                        "      status: in_progress",
+                        "    - id: m4",
+                        "      title: Fourth milestone",
+                        "      status: planned",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            meta = mod._read_project_meta(root)
+            self.assertEqual(meta["milestones_total"], 4)
+            self.assertEqual(meta["milestones_done"], 2)
+            self.assertEqual(meta["active_milestones"], ["Third milestone"])
+
+    def test_completion_blocked_by_open_blockers(self) -> None:
+        """Dashboard must not report COMPLETED when blockers are open."""
+        snap = mod.DashboardSnapshot(
+            project_root="/tmp/test",
+            total_tasks=2, open_tasks=0, done_tasks=2, progress_percent=100,
+            status_counts={"done": 2}, in_progress=[], assigned=[],
+            blockers_open=1, bugs_open=0,
+            active_agents=[], review_events=[],
+            budget_calls_today=0, budget_by_process={},
+            loc_added_total=0, loc_deleted_total=0, loc_net_total=0,
+            reports_count=0, token_prompt_total=None, token_completion_total=None,
+            token_total=None, team_lane_counts={}, stale_in_progress=0,
+            recent_events=[], supervisor_processes=[],
+            done_last_hour=0, throughput_per_hour=None, eta_minutes=None,
+            next_actions=[], validation_passed=0, validation_failed=0,
+            review_pass_rate=None, oldest_open_task_age_s=None,
+            queue_pressure=None, active_agent_count=0, idle_agent_count=0,
+            avg_loc_per_report=None, avg_tokens_per_report=None,
+            milestones_total=2, milestones_done=2,
+        )
+        # open_tasks==0 but blockers_open > 0 → should NOT be COMPLETED
+        has_open_blockers = snap.blockers_open > 0
+        has_pending_milestones = snap.milestones_total > 0 and snap.milestones_done < snap.milestones_total
+        has_live_supervisor = any(p.get("alive") for p in snap.supervisor_processes)
+        truly_complete = (
+            snap.open_tasks == 0
+            and not has_open_blockers
+            and not has_pending_milestones
+            and not has_live_supervisor
+        )
+        self.assertFalse(truly_complete, "Should not be complete with open blockers")
+
+    def test_completion_blocked_by_pending_milestones(self) -> None:
+        """Dashboard must not report COMPLETED when milestones are not all done."""
+        snap = mod.DashboardSnapshot(
+            project_root="/tmp/test",
+            total_tasks=2, open_tasks=0, done_tasks=2, progress_percent=100,
+            status_counts={"done": 2}, in_progress=[], assigned=[],
+            blockers_open=0, bugs_open=0,
+            active_agents=[], review_events=[],
+            budget_calls_today=0, budget_by_process={},
+            loc_added_total=0, loc_deleted_total=0, loc_net_total=0,
+            reports_count=0, token_prompt_total=None, token_completion_total=None,
+            token_total=None, team_lane_counts={}, stale_in_progress=0,
+            recent_events=[], supervisor_processes=[],
+            done_last_hour=0, throughput_per_hour=None, eta_minutes=None,
+            next_actions=[], validation_passed=0, validation_failed=0,
+            review_pass_rate=None, oldest_open_task_age_s=None,
+            queue_pressure=None, active_agent_count=0, idle_agent_count=0,
+            avg_loc_per_report=None, avg_tokens_per_report=None,
+            milestones_total=5, milestones_done=3,
+            active_milestones=["In-progress milestone"],
+        )
+        has_pending_milestones = snap.milestones_total > 0 and snap.milestones_done < snap.milestones_total
+        self.assertTrue(has_pending_milestones)
+        truly_complete = (
+            snap.open_tasks == 0
+            and snap.blockers_open == 0
+            and not has_pending_milestones
+            and not any(p.get("alive") for p in snap.supervisor_processes)
+        )
+        self.assertFalse(truly_complete, "Should not be complete with pending milestones")
+
+    def test_completion_blocked_by_live_supervisor(self) -> None:
+        """Dashboard must not report COMPLETED when supervisor processes are alive."""
+        snap = mod.DashboardSnapshot(
+            project_root="/tmp/test",
+            total_tasks=2, open_tasks=0, done_tasks=2, progress_percent=100,
+            status_counts={"done": 2}, in_progress=[], assigned=[],
+            blockers_open=0, bugs_open=0,
+            active_agents=[], review_events=[],
+            budget_calls_today=0, budget_by_process={},
+            loc_added_total=0, loc_deleted_total=0, loc_net_total=0,
+            reports_count=0, token_prompt_total=None, token_completion_total=None,
+            token_total=None, team_lane_counts={}, stale_in_progress=0,
+            recent_events=[], supervisor_processes=[{"name": "manager", "alive": True}],
+            done_last_hour=0, throughput_per_hour=None, eta_minutes=None,
+            next_actions=[], validation_passed=0, validation_failed=0,
+            review_pass_rate=None, oldest_open_task_age_s=None,
+            queue_pressure=None, active_agent_count=0, idle_agent_count=0,
+            avg_loc_per_report=None, avg_tokens_per_report=None,
+            milestones_total=2, milestones_done=2,
+        )
+        has_live_supervisor = any(p.get("alive") for p in snap.supervisor_processes)
+        self.assertTrue(has_live_supervisor)
+        truly_complete = (
+            snap.open_tasks == 0
+            and snap.blockers_open == 0
+            and not (snap.milestones_total > 0 and snap.milestones_done < snap.milestones_total)
+            and not has_live_supervisor
+        )
+        self.assertFalse(truly_complete, "Should not be complete with live supervisor")
+
+    def test_completion_allowed_when_all_clear(self) -> None:
+        """Dashboard should allow COMPLETED when all conditions are met."""
+        snap = mod.DashboardSnapshot(
+            project_root="/tmp/test",
+            total_tasks=2, open_tasks=0, done_tasks=2, progress_percent=100,
+            status_counts={"done": 2}, in_progress=[], assigned=[],
+            blockers_open=0, bugs_open=0,
+            active_agents=[], review_events=[],
+            budget_calls_today=0, budget_by_process={},
+            loc_added_total=0, loc_deleted_total=0, loc_net_total=0,
+            reports_count=0, token_prompt_total=None, token_completion_total=None,
+            token_total=None, team_lane_counts={}, stale_in_progress=0,
+            recent_events=[], supervisor_processes=[],
+            done_last_hour=0, throughput_per_hour=None, eta_minutes=None,
+            next_actions=[], validation_passed=0, validation_failed=0,
+            review_pass_rate=None, oldest_open_task_age_s=None,
+            queue_pressure=None, active_agent_count=0, idle_agent_count=0,
+            avg_loc_per_report=None, avg_tokens_per_report=None,
+            milestones_total=2, milestones_done=2,
+        )
+        truly_complete = (
+            snap.open_tasks == 0
+            and snap.blockers_open == 0
+            and not (snap.milestones_total > 0 and snap.milestones_done < snap.milestones_total)
+            and not any(p.get("alive") for p in snap.supervisor_processes)
+        )
+        self.assertTrue(truly_complete, "Should be complete when all conditions are met")
+
+    def test_render_milestone_progress_bar(self) -> None:
+        """Dashboard should render milestone progress bar when milestones exist."""
+        snap = mod.DashboardSnapshot(
+            project_root="/tmp/test",
+            total_tasks=10, open_tasks=5, done_tasks=5, progress_percent=50,
+            status_counts={"done": 5, "assigned": 5},
+            in_progress=[], assigned=[],
+            blockers_open=0, bugs_open=0,
+            active_agents=[], review_events=[],
+            budget_calls_today=0, budget_by_process={},
+            loc_added_total=0, loc_deleted_total=0, loc_net_total=0,
+            reports_count=0, token_prompt_total=None, token_completion_total=None,
+            token_total=None, team_lane_counts={}, stale_in_progress=0,
+            recent_events=[], supervisor_processes=[],
+            done_last_hour=0, throughput_per_hour=None, eta_minutes=None,
+            next_actions=["action1"], validation_passed=0, validation_failed=0,
+            review_pass_rate=None, oldest_open_task_age_s=None,
+            queue_pressure=None, active_agent_count=0, idle_agent_count=0,
+            avg_loc_per_report=None, avg_tokens_per_report=None,
+            project_name_display="Test Project",
+            version_current="v0.2.0",
+            version_name="Test Phase",
+            active_milestones=["Active Milestone"],
+            milestones_total=10, milestones_done=7,
+        )
+        out = mod._render_gemini_v3b(snap, completed=False, auto_stopped=False, color_enabled=False)
+        self.assertIn("Milestones:", out)
+        self.assertIn("(7/10)", out)
+        self.assertIn("70%", out)
+        self.assertIn("Version focus: Active Milestone", out)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -264,6 +264,8 @@ def _read_project_meta(root: Path) -> Dict[str, Any]:
         "version_current": None,
         "version_name": None,
         "active_milestones": [],
+        "milestones_total": 0,
+        "milestones_done": 0,
     }
     path = root / "project.yaml"
     if not path.exists():
@@ -285,10 +287,15 @@ def _read_project_meta(root: Path) -> Dict[str, Any]:
                     meta["version_name"] = version_name.strip()
                 milestones = version.get("milestones")
                 if isinstance(milestones, list):
+                    valid = [m for m in milestones if isinstance(m, dict)]
+                    meta["milestones_total"] = len(valid)
+                    meta["milestones_done"] = sum(
+                        1 for m in valid if str(m.get("status", "")).strip() == "done"
+                    )
                     meta["active_milestones"] = [
                         _clean_task_title(m.get("title") or m.get("id"))
-                        for m in milestones
-                        if isinstance(m, dict) and str(m.get("status", "")).strip() == "in_progress"
+                        for m in valid
+                        if str(m.get("status", "")).strip() == "in_progress"
                     ]
         return meta
     except Exception:
@@ -304,8 +311,11 @@ def _read_project_meta(root: Path) -> Dict[str, Any]:
             meta["version_name"] = version_name_match.group(1).strip().strip('"')
         lines = text.splitlines()
         active: List[str] = []
+        ms_total = 0
+        ms_done = 0
         for idx, line in enumerate(lines):
             if re.match(r"^\s*-\s+id:\s+", line):
+                ms_total += 1
                 title = None
                 status = None
                 for look_ahead in lines[idx + 1 : idx + 8]:
@@ -317,9 +327,13 @@ def _read_project_meta(root: Path) -> Dict[str, Any]:
                         title = title_match.group(1)
                     if status_match:
                         status = status_match.group(1)
+                if status == "done":
+                    ms_done += 1
                 if title and status == "in_progress":
                     active.append(_clean_task_title(title))
         meta["active_milestones"] = active
+        meta["milestones_total"] = ms_total
+        meta["milestones_done"] = ms_done
         return meta
 
 
@@ -462,6 +476,8 @@ class DashboardSnapshot:
     version_current: Optional[str] = None
     version_name: Optional[str] = None
     active_milestones: Optional[List[str]] = None
+    milestones_total: int = 0
+    milestones_done: int = 0
     session_started_at: Optional[datetime] = None
     session_duration_s: Optional[int] = None
     commits_total: int = 0
@@ -1191,6 +1207,8 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
         version_current=project_meta.get("version_current"),
         version_name=project_meta.get("version_name"),
         active_milestones=project_meta.get("active_milestones") or [],
+        milestones_total=project_meta.get("milestones_total", 0),
+        milestones_done=project_meta.get("milestones_done", 0),
         session_started_at=session_started_at,
         session_duration_s=session_duration_s,
         commits_total=len(commits_total),
@@ -1620,11 +1638,16 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
     if snapshot.version_current or snapshot.version_name:
         project_line += f" | Version: {snapshot.version_current or '-'} - {snapshot.version_name or '-'}"
     lines.append(_truncate(project_line, width))
+    # Project progress bar with milestone context
+    if snapshot.milestones_total > 0:
+        ms_pct = int((snapshot.milestones_done / snapshot.milestones_total) * 100)
+        ms_bar = _progress_bar(ms_pct, width=20)
+        lines.append(f"Milestones: {ms_bar} ({snapshot.milestones_done}/{snapshot.milestones_total})")
     if snapshot.active_milestones:
         lines.append(_truncate("Version focus: " + " | ".join((snapshot.active_milestones or [])[:3]), width))
     else:
         lines.append(_truncate(f"Project root: {snapshot.project_root}", width))
-    
+
     # Quick Stats Row
     stats = [
         f"Tasks: {snapshot.done_tasks}/{snapshot.total_tasks} ({snapshot.progress_percent}%)",
@@ -1861,7 +1884,18 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     while not stop:
         snap = build_snapshot(project_root, root, stale_seconds=max(1, args.stale_seconds))
-        if snap.open_tasks == 0:
+        # Completion requires: no open tasks, no open blockers,
+        # no in-progress milestones, and no live supervisor processes.
+        has_open_blockers = snap.blockers_open > 0
+        has_pending_milestones = snap.milestones_total > 0 and snap.milestones_done < snap.milestones_total
+        has_live_supervisor = any(p.get("alive") for p in snap.supervisor_processes)
+        truly_complete = (
+            snap.open_tasks == 0
+            and not has_open_blockers
+            and not has_pending_milestones
+            and not has_live_supervisor
+        )
+        if truly_complete:
             complete_streak += 1
         else:
             complete_streak = 0
