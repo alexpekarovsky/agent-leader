@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import re
 import sys
@@ -12,6 +13,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger("orchestrator.engine")
 
 from orchestrator.bus import EventBus
 from orchestrator.policy import Policy
@@ -291,6 +294,7 @@ class Orchestrator:
             }
             tasks.append(task)
             self._write_tasks_json(tasks)
+            logger.info("task.created id=%s owner=%s workstream=%s title=%s", task_id, resolved_owner, workstream, title[:60])
 
         self.bus.write_command(
             task_id,
@@ -580,6 +584,7 @@ class Orchestrator:
                 task["claimed_at"] = task["updated_at"]
                 self._issue_task_lease_unlocked(task=task, owner=owner, owner_instance_id=lease_owner_instance)
                 self._write_tasks_json(tasks)
+                logger.info("task.claimed id=%s owner=%s title=%s", task["id"], owner, str(task.get("title", ""))[:60])
                 self.bus.emit(
                     "task.claimed",
                     {"task_id": task["id"], "owner": owner},
@@ -1401,6 +1406,8 @@ class Orchestrator:
 
             task["updated_at"] = self._now()
             self._write_tasks_json(tasks)
+        decision = "ACCEPTED" if passed else "REJECTED"
+        logger.info("task.validated id=%s decision=%s owner=%s notes=%s", task_id, decision, task.get("owner"), notes[:80])
         self.bus.emit(event, payload, source=source)
         return payload
 

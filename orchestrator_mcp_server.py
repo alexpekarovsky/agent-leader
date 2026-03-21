@@ -6,6 +6,7 @@ Expose configurable multi-agent orchestration tools via MCP JSON-RPC.
 
 from __future__ import annotations
 
+import logging
 import re
 import hashlib
 import io
@@ -18,6 +19,17 @@ from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+# ── Structured logging setup ──
+_LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+_LOG_LEVEL = os.getenv("ORCHESTRATOR_LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, _LOG_LEVEL, logging.INFO),
+    format=_LOG_FORMAT,
+    datefmt="%Y-%m-%dT%H:%M:%S",
+    stream=sys.stderr,
+)
+logger = logging.getLogger("orchestrator.mcp")
 
 from orchestrator.command_bundles import (
     get_command_bundle,
@@ -1322,6 +1334,7 @@ def _guide_payload() -> Dict[str, Any]:
 
 
 def _manager_cycle(strict: bool) -> Dict[str, Any]:
+    logger.info("manager_cycle.start strict=%s", strict)
     stale_after_seconds = ORCH._heartbeat_timeout_seconds()
     tasks = ORCH.list_tasks()
     processed: List[Dict[str, Any]] = []
@@ -1548,6 +1561,15 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
             stop_policy["reason_codes"].append("deploy_mismatch")
             stop_policy["stop_required"] = True
 
+    pending_total = sum(bucket["pending"] for bucket in by_owner.values())
+    logger.info(
+        "manager_cycle.done processed=%d deferred=%d stale_reassigned=%d pending=%d blockers=%d",
+        len(processed), len(deferred), len(stale_reassignments) if isinstance(stale_reassignments, list) else 0,
+        pending_total, len(open_blockers),
+    )
+    for p in processed:
+        logger.info("  report %s: %s", p.get("task_id"), "ACCEPTED" if p.get("passed") else "REJECTED")
+
     return {
         "processed_reports": processed,
         "deferred_reports": deferred,
@@ -1559,7 +1581,7 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
         "lease_recoveries": lease_recoveries,
         "stale_requeues": stale_requeues,
         "remaining_by_owner": by_owner,
-        "pending_total": sum(bucket["pending"] for bucket in by_owner.values()),
+        "pending_total": pending_total,
         "open_blockers": open_blockers,
         "stop_policy": stop_policy,
     }
@@ -2398,13 +2420,18 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             return _ok_and_audit(request_id, name, args, payload)
 
         if name == "orchestrator_headless_start":
+            logger.info("headless.start project=%s leader=%s", str(args.get("project_root", "")), str(args.get("leader_agent", "")))
             supervisor = _supervisor_from_tool_args(args if isinstance(args, dict) else {})
             payload = _run_supervisor_action(supervisor, "start")
+            running = [p for p in payload.get("processes", []) if p.get("state") == "running"]
+            logger.info("headless.started processes=%d pids=%s", len(running), [p.get("pid") for p in running])
             return _ok_and_audit(request_id, name, args, payload)
 
         if name == "orchestrator_headless_stop":
+            logger.info("headless.stop project=%s", str(args.get("project_root", "")))
             supervisor = _supervisor_from_tool_args(args if isinstance(args, dict) else {})
             payload = _run_supervisor_action(supervisor, "stop")
+            logger.info("headless.stopped")
             return _ok_and_audit(request_id, name, args, payload)
 
         if name == "orchestrator_parity_smoke":
