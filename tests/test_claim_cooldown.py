@@ -305,5 +305,82 @@ class ClaimCooldownNoRegressionTests(unittest.TestCase):
             self.assertNotIn("throttled", claimed)
 
 
+class ClaimCooldownEngineInitiatedTests(unittest.TestCase):
+    """Engine-initiated claims (auto_claim_next) must not penalize workers."""
+
+    def test_engine_initiated_empty_claim_does_not_set_cooldown(self) -> None:
+        """Engine-initiated empty claim must NOT record cooldown, so next manual claim is not throttled."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = _make_orch(root)
+            _setup_agent(orch, root, "claude_code")
+
+            # Simulate auto_claim_next after submit_report: engine-initiated, no tasks
+            result = orch.claim_next_task("claude_code", engine_initiated=True)
+            self.assertIsNone(result)
+
+            # Worker loop restarts immediately — manual claim must NOT be throttled
+            manual = orch.claim_next_task("claude_code")
+            self.assertIsNone(manual)  # None, NOT throttled dict
+
+    def test_manual_empty_claim_still_sets_cooldown(self) -> None:
+        """Manual (non-engine) empty claim must still trigger cooldown on repeat."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = _make_orch(root)
+            _setup_agent(orch, root, "claude_code")
+
+            # Manual empty claim sets cooldown
+            first = orch.claim_next_task("claude_code")
+            self.assertIsNone(first)
+
+            # Second manual claim is throttled
+            second = orch.claim_next_task("claude_code")
+            self.assertIsNotNone(second)
+            self.assertTrue(second.get("throttled"))
+
+    def test_fast_worker_scenario(self) -> None:
+        """Full scenario: worker completes task, auto_claim_next misses, worker restarts and claims."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = _make_orch(root, cooldown=5)
+            _setup_agent(orch, root, "claude_code")
+
+            # Worker has a task, completes it
+            task = orch.create_task(
+                title="Fast worker task",
+                workstream="backend",
+                owner="claude_code",
+                acceptance_criteria=["done"],
+            )
+            claimed = orch.claim_next_task("claude_code")
+            self.assertIsNotNone(claimed)
+            self.assertEqual(task["id"], claimed["id"])
+
+            # auto_claim_next fires (engine-initiated) — no more tasks
+            auto = orch.claim_next_task("claude_code", engine_initiated=True)
+            self.assertIsNone(auto)
+
+            # Worker loop restarts within 5s cooldown window — must NOT be throttled
+            manual = orch.claim_next_task("claude_code")
+            self.assertIsNone(manual)  # None, not a throttled dict
+
+    def test_engine_initiated_claim_still_subject_to_existing_cooldown(self) -> None:
+        """If a manual miss already set cooldown, engine-initiated claim is still throttled."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = _make_orch(root)
+            _setup_agent(orch, root, "claude_code")
+
+            # Manual empty claim sets cooldown
+            first = orch.claim_next_task("claude_code")
+            self.assertIsNone(first)
+
+            # Engine-initiated claim within window — still throttled (cooldown was set by manual)
+            engine = orch.claim_next_task("claude_code", engine_initiated=True)
+            self.assertIsNotNone(engine)
+            self.assertTrue(engine.get("throttled"))
+
+
 if __name__ == "__main__":
     unittest.main()

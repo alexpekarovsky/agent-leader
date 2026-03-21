@@ -452,6 +452,9 @@ def _supervisor_from_tool_args(args: Dict[str, Any]) -> Supervisor:
         idle_backoff=str(args.get("idle_backoff", "30,60,120,300,900")),
         max_idle_cycles=int(args.get("max_idle_cycles", 30)),
         daily_call_budget=int(args.get("daily_call_budget", 100)),
+        daily_token_budget=int(args.get("daily_token_budget", 0)),
+        hourly_token_budget=int(args.get("hourly_token_budget", 0)),
+        tokens_per_call=int(args.get("tokens_per_call", 10000)),
         extra_workers=extra_workers,
     )
     return Supervisor(cfg, ORCH)
@@ -532,6 +535,9 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                     "idle_backoff": {"type": "string", "description": "Comma-separated idle backoff seconds (default: 30,60,120,300,900).", "default": "30,60,120,300,900"},
                     "max_idle_cycles": {"type": "integer", "description": "Auto-exit loop after N idle cycles. 0 disables. Default: 30.", "default": 30},
                     "daily_call_budget": {"type": "integer", "description": "Per-process daily LLM call budget. 0 disables. Default: 100.", "default": 100},
+                    "daily_token_budget": {"type": "integer", "description": "Hard daily token ceiling across all processes. 0 disables. Default: 0.", "default": 0},
+                    "hourly_token_budget": {"type": "integer", "description": "Hard hourly token ceiling across all processes. 0 disables. Default: 0.", "default": 0},
+                    "tokens_per_call": {"type": "integer", "description": "Estimated tokens consumed per CLI call for budget tracking. Default: 10000.", "default": 10000},
                     "extra_workers": {
                         "type": "array",
                         "items": {
@@ -3152,7 +3158,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                     },
                 }
                 # Help workers continue without extra manual "claim next" reminders.
-                result["auto_claim_next"] = ORCH.claim_next_task(owner=reporting_agent)
+                result["auto_claim_next"] = ORCH.claim_next_task(owner=reporting_agent, engine_initiated=True)
             return _ok_and_audit(request_id, name, args, result)
 
         if name == "orchestrator_validate_task":

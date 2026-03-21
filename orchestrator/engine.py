@@ -58,11 +58,20 @@ class Orchestrator:
         # In-memory mtime-based JSON file cache.
         # Maps str(path) -> (mtime_ns: int, parsed_data: Any).
         self._json_cache: Dict[str, tuple] = {}
+        self._tasks_dirty: bool = False
+        self._current_tasks: Optional[list] = None
         self.state_dir = self.root / "state"
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.tasks_path = self.state_dir / "tasks.json"
         self.bugs_path = self.state_dir / "bugs.json"
         self.blockers_path = self.state_dir / "blockers.json"
+        # Load initial tasks into memory
+        try:
+            self._current_tasks = self._read_json(self.tasks_path)
+            if not isinstance(self._current_tasks, list):
+                self._current_tasks = []
+        except Exception:
+            self._current_tasks = []
         self.cursors_path = self.state_dir / "event_cursors.json"
         self.acks_path = self.state_dir / "event_acks.json"
         self.agents_path = self.state_dir / "agents.json"
@@ -479,6 +488,7 @@ class Orchestrator:
         owner: str,
         instance_id: Optional[str] = None,
         team_id: Optional[str] = None,
+        engine_initiated: bool = False,
     ) -> Optional[Dict[str, Any]]:
         self._assert_agent_operational(owner)
         normalized_team_id = str(team_id or "").strip().lower()
@@ -493,11 +503,16 @@ class Orchestrator:
                 last_ts, last_mtime = last_info
                 elapsed = time.monotonic() - last_ts
                 if elapsed < cooldown:
-                    try:
-                        current_mtime = self.tasks_path.stat().st_mtime
-                    except OSError:
-                        current_mtime = 0.0
-                    if current_mtime == last_mtime:
+                    # If tasks are buffered in memory (dirty), new work exists
+                    # even though the file mtime hasn't changed yet.
+                    if self._tasks_dirty:
+                        pass  # bypass cooldown — unflushed new tasks
+                    else:
+                        try:
+                            current_mtime = self.tasks_path.stat().st_mtime
+                        except OSError:
+                            current_mtime = 0.0
+                    if not self._tasks_dirty and current_mtime == last_mtime:
                         remaining = cooldown - elapsed
                         return {
                             "throttled": True,
@@ -512,7 +527,8 @@ class Orchestrator:
             explicit_instance_id = str(instance_id or "").strip()
             lease_owner_instance = explicit_instance_id or self._current_agent_instance_id_unlocked(owner)
             owner_scope = self._agent_project_scope_unlocked(owner)
-            tasks = self._read_json(self.tasks_path)
+            # Prefer in-memory buffer (may contain unflushed writes from _write_tasks_json).
+            tasks = self._current_tasks if self._current_tasks is not None else self._read_json(self.tasks_path)
             overrides = self._read_json(self.claim_overrides_path)
             if not isinstance(overrides, dict):
                 overrides = {}
@@ -607,7 +623,10 @@ class Orchestrator:
                 return task
 
         # Empty claim: start cooldown window with current tasks file mtime.
-        if cooldown > 0:
+        # Engine-initiated claims (e.g. auto_claim_next after submit_report)
+        # must NOT record a cooldown miss — otherwise legitimate worker_loop
+        # restarts within the window get incorrectly throttled.
+        if cooldown > 0 and not engine_initiated:
             try:
                 mtime = self.tasks_path.stat().st_mtime
             except OSError:
@@ -620,7 +639,7 @@ class Orchestrator:
         if source != manager:
             raise ValueError(f"leader_mismatch: source={source}, current_leader={manager}")
         with self._state_lock():
-            tasks = self._read_json(self.tasks_path)
+            tasks = self._current_tasks if self._current_tasks is not None else self._read_json(self.tasks_path)
             task = next((t for t in tasks if t.get("id") == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
@@ -4100,13 +4119,17 @@ class Orchestrator:
         return repaired
 
     def _write_tasks_json(self, tasks: Any) -> None:
-        """Write tasks.json with append-only cardinality protection.
+        """Mark tasks.json as dirty and store in memory for eventual flush.
 
         By design, tasks are not deleted from state/tasks.json through normal MCP
         flows; they only change status. A shrinking task list usually indicates a
         stale snapshot overwrite or manual corruption. Refuse the write unless an
         explicit escape hatch is set.
         """
+        if self._current_tasks is not None and tasks == self._current_tasks:
+            # No change, no need to mark dirty
+            return
+
         allow_shrink = os.getenv("ORCHESTRATOR_ALLOW_TASK_COUNT_SHRINK", "").strip().lower() in {
             "1",
             "true",
@@ -4114,7 +4137,8 @@ class Orchestrator:
         }
         if not allow_shrink and isinstance(tasks, list):
             try:
-                current = self._read_json(self.tasks_path)
+                # Use in-memory _current_tasks if available, else read from disk
+                current = self._current_tasks if self._current_tasks is not None else self._read_json(self.tasks_path)
             except Exception:
                 current = None
             if isinstance(current, list) and len(tasks) < len(current):
@@ -4134,8 +4158,25 @@ class Orchestrator:
                     f"refusing_tasks_json_shrink: existing_count={len(current)} attempted_count={len(tasks)} "
                     "set ORCHESTRATOR_ALLOW_TASK_COUNT_SHRINK=1 to override intentionally"
                 )
-        self._write_json(self.tasks_path, tasks)
+        self._current_tasks = tasks
+        self._tasks_dirty = True
         self._touch_wakeup_signals(tasks)
+
+    def _flush_tasks_if_dirty(self) -> None:
+        """Writes in-memory tasks to disk if the _tasks_dirty flag is set."""
+        if not self._tasks_dirty:
+            return
+        if self._current_tasks is None:
+            logger.warning("Attempted to flush dirty tasks, but _current_tasks is None.")
+            self._tasks_dirty = False
+            return
+        
+        try:
+            self._write_json(self.tasks_path, self._current_tasks)
+            self._tasks_dirty = False
+            logger.debug("Flushed dirty tasks.json to disk.")
+        except Exception as e:
+            logger.error("Failed to flush dirty tasks.json: %s", e)
 
     def _touch_wakeup_signals(self, tasks: Any = None) -> None:
         """Touch per-agent wakeup signal files so event-driven loops can detect changes.
