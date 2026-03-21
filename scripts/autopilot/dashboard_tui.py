@@ -1674,232 +1674,142 @@ def _render_gemini(snapshot: DashboardSnapshot, completed: bool, auto_stopped: b
 
 
 def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, color_enabled: bool = True) -> str:
-    width = min(180, max(72, _term_width()))
+    width = min(140, max(72, _term_width()))
     height = max(24, _term_height())
-    sep = _color(color_enabled, "34;1", "=" * width)
+    sep = _color(color_enabled, "34", "-" * width)
     lines: List[str] = []
-    now = _now_utc().strftime("%Y-%m-%d %H:%M:%SZ")
-    mode = _color(color_enabled, "32;1" if completed else "33;1", "COMPLETED" if completed else "RUNNING")
-    
-    # Header
-    lines.append(sep)
-    lines.append(_color(color_enabled, "34;1", f"AGENT LEADER // GEMINI V3B DENSE TELEMETRY // {now} // {mode}"))
-    project_line = f"Project: {snapshot.project_name_display} ({Path(snapshot.project_root).name})"
-    if snapshot.version_current or snapshot.version_name:
-        project_line += f" | Version: {snapshot.version_current or '-'} - {snapshot.version_name or '-'}"
-    lines.append(_truncate(project_line, width))
-    # Project progress bar with milestone context
-    if snapshot.milestones_total > 0:
-        ms_pct = int((snapshot.milestones_done / snapshot.milestones_total) * 100)
-        ms_bar = _progress_bar(ms_pct, width=20)
-        lines.append(f"Milestones: {ms_bar} ({snapshot.milestones_done}/{snapshot.milestones_total})")
-    if snapshot.active_milestones:
-        lines.append(_truncate("Version focus: " + " | ".join((snapshot.active_milestones or [])[:3]), width))
+    now = _now_utc().strftime("%H:%M:%S UTC")
+    if completed:
+        mode = _color(color_enabled, "32;1", "ALL DONE")
+    elif snapshot.in_progress:
+        mode = _color(color_enabled, "33;1", "WORKING")
+    elif snapshot.blockers_open:
+        mode = _color(color_enabled, "31;1", "BLOCKED")
     else:
-        lines.append(_truncate(f"Project root: {snapshot.project_root}", width))
+        mode = _color(color_enabled, "36", "IDLE")
 
-    # Quick Stats Row
-    stats = [
-        f"Tasks: {snapshot.done_tasks}/{snapshot.total_tasks} ({snapshot.progress_percent}%)",
-        f"Active: {snapshot.active_agent_count} (div:{snapshot.agent_diversity})",
-        f"IP/Assigned: {len(snapshot.in_progress)}/{len(snapshot.assigned)}",
-        f"Bugs: {snapshot.bugs_open}",
-        f"Blockers: {snapshot.blockers_open}",
-        f"Done this session: {snapshot.tasks_done_session}",
-    ]
-    lines.append("  |  ".join(stats))
-    lines.append(
-        "Delivery: "
-        f"today t{snapshot.tasks_done_today}/c{snapshot.commits_today}/loc{snapshot.loc_added_today - snapshot.loc_deleted_today}  |  "
-        f"session t{snapshot.tasks_done_session}/c{snapshot.commits_session}/loc{snapshot.loc_added_session - snapshot.loc_deleted_session}  |  "
-        f"total t{snapshot.done_tasks}/c{snapshot.commits_total}/loc{snapshot.loc_net_total}"
-    )
-    # Human-readable state summary to reduce operator confusion.
-    now_rows: List[str] = []
+    # ── Header ──
+    lines.append(sep)
+    lines.append(_color(color_enabled, "1", f"  AGENT LEADER  |  {now}  |  {mode}"))
+    pct_bar = _progress_bar(snapshot.progress_percent, width=30)
+    lines.append(f"  {snapshot.project_name_display}  |  {pct_bar} {snapshot.done_tasks}/{snapshot.total_tasks} tasks done ({snapshot.progress_percent}%)")
+    if snapshot.bugs_open or snapshot.blockers_open:
+        lines.append(_color(color_enabled, "31", f"  !! {snapshot.blockers_open} blocker(s), {snapshot.bugs_open} bug(s) open"))
+    lines.append(sep)
+
+    # ── What's Happening Now ──
+    lines.append(_color(color_enabled, "1", "  WHAT'S HAPPENING NOW"))
+    lines.append("")
     if snapshot.in_progress:
-        t = snapshot.in_progress[0]
-        owner_profile = _agent_profile(str(t.get("owner", "")))
-        now_rows.append(
-            f"STATE: WORKING | {owner_profile['display_name']} | {owner_profile['role_label']} | task={t.get('id','-')} | age={_format_age(_age_s(t.get('updated_at')))}"
-        )
-        now_rows.append(f"NOW: {_truncate(_clean_task_title(t.get('title','-')), max(20, width - 10))}")
-        now_rows.append(f"GOAL: {_truncate(_clean_task_description(t.get('description','-')), max(20, width - 11))}")
-    elif snapshot.blockers_open > 0:
-        now_rows.append(f"STATE: BLOCKED | blockers_open={snapshot.blockers_open} | bugs_open={snapshot.bugs_open}")
-        now_rows.append("NOW: waiting for blocker resolution before new execution can continue")
+        for t in snapshot.in_progress[:3]:
+            owner = _agent_profile(str(t.get("owner", ""))).get("display_name", "?")
+            age = _format_age(_age_s(t.get("updated_at")))
+            title = _clean_task_title(t.get("title", "-"))
+            lines.append(f"  {_color(color_enabled, '33', owner):>20}  is working on: {_truncate(title, width - 30)}")
+            lines.append(f"  {'':>20}  started {age} ago  [{t.get('id','-')}]")
     elif snapshot.assigned:
-        t = snapshot.assigned[0]
-        now_rows.append(f"STATE: QUEUED | next_owner={t.get('owner','-')} | next_task={t.get('id','-')}")
-        now_rows.append(f"NOW: {_truncate(t.get('title','-'), max(20, width - 10))}")
+        lines.append(f"  No active work. {len(snapshot.assigned)} task(s) queued, waiting for workers to claim.")
     else:
-        now_rows.append("STATE: IDLE | no open work in current project scope")
-        now_rows.append("NOW: waiting for manager assignment")
-    if snapshot.recent_events:
-        ev = snapshot.recent_events[0]
-        now_rows.append(f"LATEST EVENT: {ev.get('type','-')} | source={ev.get('source','-')} | task={ev.get('task_id') or '-'}")
-    if snapshot.next_actions:
-        now_rows.append(f"NEXT ACTION: {snapshot.next_actions[0]}")
-    lines.extend(_panel_fixed("NOW (Operator Summary)", now_rows, width, body_rows=5, color_enabled=color_enabled))
-    lines.append(sep)
+        lines.append("  All tasks are complete. The swarm is idle.")
+    lines.append("")
 
-    three_col = width >= 195
-    two_col = 128 <= width < 195
-    panel_w = (width - 2) // 3 if three_col else (width - 2) // 2
-    fixed_lines = 7
-    remaining = max(12, height - fixed_lines)
-    top_rows, bottom_rows, action_rows_n = _split_rows(remaining, [7, 6, 2], [3, 3, 1])
-    
-    # Panel 1: Velocity & Quality
-    vel_rows = [
-        f"Throughput: {_fmt_number(snapshot.throughput_per_hour)} done/h",
-        f"ETA: {(str(snapshot.eta_minutes) + 'm') if snapshot.eta_minutes is not None else '-'}",
-        f"Lead Time: {_format_age(snapshot.avg_task_lead_time_s)}",
-        f"Validation: {_format_age(snapshot.avg_validation_cycle_time_s)}",
-        f"Utilization: {_fmt_number(snapshot.agent_utilization_percent)}%",
-        f"Queue Pressure: {_fmt_number(snapshot.queue_pressure)}",
-        "-",
-        f"Total Validations: {snapshot.total_validations}",
-        f"Validations Today/Session: {snapshot.validations_today}/{snapshot.validations_session}",
-        f"Failure Rate: {_fmt_number(snapshot.task_failure_rate_percent)}%",
-        f"Review Depth: {_fmt_number(snapshot.avg_review_loop_depth)}x",
-        f"Stale Tasks: {_fmt_number(snapshot.stale_task_percent)}%",
-        f"Blocker Res: {_format_age(snapshot.avg_blocker_resolution_time_s)}",
-    ]
-    
-    # Panel 2: Team Topology
-    fleet_rows = ["Operator Topology:"]
-    for a in snapshot.active_agents[:10]:
-        fleet_rows.append(
-            f"{a.get('display_name', a['agent'])} | {_compact_role_label(str(a.get('role_label','-')))} | "
-            f"proc:{a.get('process_state','-')}({a.get('process_count',0)}) hb:{a.get('heartbeat_state','-')}"
-        )
-        fleet_rows.append(
-            f"  task:{a.get('task_activity','-')} | {a['agent']} / {_compact_type(str(a.get('provider','-')), str(a.get('client','-')))} / {a.get('model','-')} / age={_format_age(a['age_s'])}"
-        )
-        # Per-lane detail rows for multi-lane agents (e.g. claude_code with 2-3 lanes).
-        lane_details = a.get("lane_details", [])
-        if len(lane_details) > 1:
-            for ld in lane_details:
-                state_str = "UP" if ld.get("alive") else "DOWN"
-                fleet_rows.append(
-                    f"    {ld.get('lane_label', ld.get('process_name', '-'))}: "
-                    f"{state_str} pid={ld.get('pid', '-')} age={_format_age(ld.get('age_s'))}"
-                )
-    fleet_rows.append("-")
-    fleet_rows.append(
-        f"Heartbeat active={snapshot.active_agent_count} | process-idle={snapshot.idle_agent_count}"
-    )
-    fleet_rows.append("-")
-    fleet_rows.append("Agent Session Stats:")
+    # ── Team Status ──
+    lines.append(sep)
+    lines.append(_color(color_enabled, "1", "  TEAM"))
+    lines.append("")
+    for a in snapshot.active_agents[:6]:
+        name = a.get("display_name", a["agent"])
+        role = _compact_role_label(str(a.get("role_label", "-")))
+        activity = str(a.get("task_activity", "idle"))
+        hb = str(a.get("heartbeat_state", "?"))
+        model = a.get("model", "-")
+        proc_state = a.get("process_state", "down")
+
+        if activity == "working":
+            status_icon = _color(color_enabled, "32", "WORKING")
+        elif activity == "queued":
+            status_icon = _color(color_enabled, "33", "QUEUED")
+        elif proc_state == "up" and hb == "active":
+            status_icon = _color(color_enabled, "36", "READY")
+        elif hb in ("stale", "offline", "missing"):
+            status_icon = _color(color_enabled, "31", "OFFLINE")
+        else:
+            status_icon = _color(color_enabled, "36", "IDLE")
+
+        lines.append(f"  {name:<18} {role:<10} {status_icon:<10}  model={model}")
+    lines.append("")
+
+    # ── Work Queue ──
+    lines.append(sep)
+    lines.append(_color(color_enabled, "1", "  WORK QUEUE"))
+    lines.append("")
+    queued = snapshot.queued_tasks or []
+    blocked = snapshot.blocked_tasks or []
+    if not queued and not blocked and not snapshot.in_progress:
+        lines.append("  Queue is empty. All work is done.")
+    else:
+        if queued:
+            for t in queued[:5]:
+                owner = _agent_profile(str(t.get("owner", ""))).get("display_name", "?")
+                title = _clean_task_title(t.get("title", "-"))
+                lines.append(f"    -> {owner:<15} {_truncate(title, width - 25)}  [{t.get('id','-')}]")
+        if blocked:
+            for t in blocked[:3]:
+                title = _clean_task_title(t.get("title", "-"))
+                lines.append(_color(color_enabled, "31", f"    !! BLOCKED: {_truncate(title, width - 20)}  [{t.get('id','-')}]"))
+    lines.append("")
+
+    # ── Progress & Delivery ──
+    lines.append(sep)
+    lines.append(_color(color_enabled, "1", "  TODAY'S PROGRESS"))
+    lines.append("")
+    net_loc_today = snapshot.loc_added_today - snapshot.loc_deleted_today
+    lines.append(f"  Tasks completed today: {snapshot.tasks_done_today}  |  Commits: {snapshot.commits_today}  |  Code: +{snapshot.loc_added_today}/-{snapshot.loc_deleted_today} ({net_loc_today} net lines)")
+    tp = snapshot.throughput_per_hour
+    if tp and tp > 0:
+        lines.append(f"  Speed: {_fmt_number(tp)} tasks/hour  |  ETA for remaining: {(str(snapshot.eta_minutes) + ' min') if snapshot.eta_minutes is not None else 'done'}")
+    lines.append("")
+
+    # Agent delivery breakdown
     for row in (snapshot.agent_delivery_stats or [])[:4]:
-        fleet_rows.append(
-            f"{row.get('display_name')} t={row.get('tasks_done_session',0)} "
-            f"c={row.get('commits_session',0)} loc={row.get('loc_net_session',0)}"
-        )
-    fleet_rows.append("-")
-    fleet_rows.append("Team Lanes:")
-    for tid, c in sorted(snapshot.team_lane_counts.items()):
-        fleet_rows.append(f"{tid:<12} {c.get('done',0)}/{c.get('total',0)} done (ip={c.get('in_progress',0)})")
-    fleet_rows.append("-")
-    fleet_rows.append("Claude-only signals:")
-    fleet_rows.append(f"claude validation share: {_fmt_number(snapshot.claude_validation_contribution_percent)}%")
-    fleet_rows.append(f"wingman validation share: {_fmt_number(snapshot.wingman_validation_contribution_percent)}%")
-    fleet_rows.append(
-        f"claude last event: {snapshot.claude_latest_lane_event_type or '-'} age={_format_age(_age_s(snapshot.claude_latest_lane_event_time.isoformat() if snapshot.claude_latest_lane_event_time else None))}"
-    )
-    fleet_rows.append(
-        f"wingman last event: {snapshot.wingman_latest_lane_event_type or '-'} age={_format_age(_age_s(snapshot.wingman_latest_lane_event_time.isoformat() if snapshot.wingman_latest_lane_event_time else None))}"
-    )
-    
-    # Panel 3: Costs & Systems
-    cost_rows = [
-        f"Today: tasks={snapshot.tasks_done_today} commits={snapshot.commits_today} files={snapshot.files_changed_today}",
-        f"Today LOC: +{snapshot.loc_added_today}/-{snapshot.loc_deleted_today} net={snapshot.loc_added_today - snapshot.loc_deleted_today}",
-        f"Today Tokens: {_fmt_int(snapshot.token_total_today)} | Reports: {snapshot.reports_today}",
-        f"Session Start: {_format_age(snapshot.session_duration_s)} ago" if snapshot.session_duration_s is not None else "Session Start: -",
-        f"Session: tasks={snapshot.tasks_done_session} commits={snapshot.commits_session} files={snapshot.files_changed_session}",
-        f"Session LOC: +{snapshot.loc_added_session}/-{snapshot.loc_deleted_session} net={snapshot.loc_added_session - snapshot.loc_deleted_session}",
-        f"Session Tokens: {_fmt_int(snapshot.token_total_session)} | Reports: {snapshot.reports_session}",
-        "-",
-        f"Total Tokens: {snapshot.token_total or '-'}",
-        f"Avg Tokens/Task: {_fmt_number(snapshot.avg_tokens_per_report)}",
-        f"LOC net: {snapshot.loc_net_total} (+{snapshot.loc_added_total}/-{snapshot.loc_deleted_total})",
-        f"Efficiency: {_fmt_number(snapshot.cost_efficiency_loc_per_k_tokens)} loc/k-tok",
-        f"Claude throughput: {_fmt_number(snapshot.claude_throughput_per_hour)}/h",
-        f"Wingman throughput: {_fmt_number(snapshot.wingman_throughput_per_hour)}/h",
-        "-",
-        "Processes:",
-    ]
-    for proc in snapshot.supervisor_processes[:5]:
-        state = _color(color_enabled, "32", "up") if proc.get("alive") else _color(color_enabled, "31;1", "dead")
-        cost_rows.append(f"{proc.get('name','-'):<14} {state} age={_format_age(proc.get('age_s'))}")
-    cost_rows.append("-")
-    cost_rows.append(f"Budget Today: {snapshot.budget_calls_today} calls")
-    for k, v in sorted(snapshot.budget_by_process.items())[:3]:
-        cost_rows.append(f"  {k:<12} {v}")
+        dn = row.get("display_name", "?")
+        td = row.get("tasks_done_session", 0)
+        cs = row.get("commits_session", 0)
+        loc = row.get("loc_net_session", 0)
+        if td > 0 or cs > 0:
+            lines.append(f"  {dn:<18} {td} tasks, {cs} commits, {loc} lines")
+    lines.append("")
 
-    # Render top panels (responsive)
-    p1 = _panel_fixed("Velocity & Quality", vel_rows, panel_w, body_rows=top_rows, color_enabled=color_enabled)
-    p2 = _panel_fixed("Team Topology", fleet_rows, panel_w, body_rows=top_rows, color_enabled=color_enabled)
-    p3 = _panel_fixed("Costs & Systems", cost_rows, panel_w, body_rows=top_rows, color_enabled=color_enabled)
-
-    if three_col:
-        h = max(len(p1), len(p2), len(p3))
-        for i in range(h):
-            l1 = p1[i] if i < len(p1) else " " * panel_w
-            l2 = p2[i] if i < len(p2) else " " * panel_w
-            l3 = p3[i] if i < len(p3) else " " * panel_w
-            lines.append(l1 + " " + l2 + " " + l3)
-    elif two_col:
-        lines.extend(_merge_columns(p1, p2, width))
-        lines.extend(_panel_fixed("Costs & Systems", cost_rows, width, body_rows=max(3, top_rows // 2), color_enabled=color_enabled))
-    else:
-        lines.extend(_panel_fixed("Velocity & Quality", vel_rows, width, body_rows=top_rows, color_enabled=color_enabled))
-        lines.extend(_panel_fixed("Team Topology", fleet_rows, width, body_rows=top_rows, color_enabled=color_enabled))
-        lines.extend(_panel_fixed("Costs & Systems", cost_rows, width, body_rows=max(3, top_rows // 2), color_enabled=color_enabled))
-
+    # ── Recent Activity ──
     lines.append(sep)
-
-    # Bottom Panels: Queue and Timeline (2 columns)
-    bot_w = (width - 2) // 2
-    queue_rows = ["Current Work:"]
-    for t in snapshot.in_progress[:5]:
-        owner_profile = _agent_profile(str(t.get("owner", "")))
-        queue_rows.append(
-            f"{owner_profile['display_name']} | {owner_profile['role_label']} | {t.get('id','-')} | age={_format_age(_age_s(t.get('updated_at')))}"
-        )
-        queue_rows.append("  " + _truncate(_clean_task_title(t.get("title", "")), bot_w - 4))
-        queue_rows.append("  " + _truncate(_clean_task_description(t.get("description", "")), bot_w - 4))
-    queue_rows.append("-")
-    queue_rows.append("Queued Next:")
-    for t in (snapshot.queued_tasks or [])[:4]:
-        owner_profile = _agent_profile(str(t.get("owner", "")))
-        queue_rows.append(f"{owner_profile['display_name']} | {t.get('status','-')} | {t.get('id','-')}")
-        queue_rows.append("  " + _truncate(_clean_task_title(t.get("title", "")), bot_w - 4))
-        queue_rows.append("  " + _truncate(_clean_task_description(t.get("description", "")), bot_w - 4))
-    queue_rows.append("-")
-    queue_rows.append("Blocked:")
-    for t in (snapshot.blocked_tasks or [])[:4]:
-        owner_profile = _agent_profile(str(t.get("owner", "")))
-        queue_rows.append(f"{owner_profile['display_name']} | blocked | {t.get('id','-')}")
-        queue_rows.append("  " + _truncate(_clean_task_title(t.get("title", "")), bot_w - 4))
-        queue_rows.append("  " + _truncate(_clean_task_description(t.get("description", "")), bot_w - 4))
-    
-    timeline_rows = ["Activity:"]
-    for ev in snapshot.recent_events[:10]:
-        timeline_rows.append(f"{ev.get('time')[11:16]} {ev.get('type'):<20} {ev.get('task_id') or '-':<10} {ev.get('source')}")
-
-    if width >= 120:
-        p_queue = _panel_fixed("Work Queue", queue_rows, bot_w, body_rows=bottom_rows, color_enabled=color_enabled)
-        p_time = _panel_fixed("Timeline", timeline_rows, bot_w, body_rows=bottom_rows, color_enabled=color_enabled)
-        lines.extend(_merge_columns(p_queue, p_time, width))
-    else:
-        lines.extend(_panel_fixed("Work Queue", queue_rows, width, body_rows=bottom_rows, color_enabled=color_enabled))
-        lines.extend(_panel_fixed("Timeline", timeline_rows, width, body_rows=bottom_rows, color_enabled=color_enabled))
-
-    lines.extend(_panel_fixed("Recommended Actions", snapshot.next_actions[:4] or ["none"], width, body_rows=action_rows_n, color_enabled=color_enabled))
+    lines.append(_color(color_enabled, "1", "  RECENT ACTIVITY"))
+    lines.append("")
+    for ev in snapshot.recent_events[:6]:
+        t = ev.get("time", "")[11:16]
+        etype = str(ev.get("type", ""))
+        src = ev.get("source", "")
+        tid = ev.get("task_id") or ""
+        # Translate event types to human language
+        if "validation.passed" in etype:
+            desc = f"Task {tid} passed validation"
+        elif "validation.failed" in etype:
+            desc = f"Task {tid} failed validation"
+        elif "task.reported" in etype:
+            desc = f"Task {tid} submitted for review"
+        elif "task.claimed" in etype:
+            desc = f"Task {tid} claimed by {src}"
+        elif "idle_heartbeat" in etype:
+            desc = f"{src} is idle, no pending work"
+        elif "heartbeat" in etype:
+            desc = f"{src} checked in"
+        elif "task_contracts" in etype:
+            desc = "Manager published task assignments"
+        else:
+            desc = etype
+        lines.append(f"  {t}  {desc}")
+    lines.append("")
     lines.append(sep)
-    lines.append("controls: Ctrl+C exit | style=gemini-v3b")
+    lines.append(f"  Ctrl+C to exit  |  Refreshes every 5s  |  Total: {snapshot.commits_total} commits, {snapshot.loc_net_total} lines")
     return "\n".join(lines)
 
 
