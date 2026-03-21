@@ -15,10 +15,26 @@
         "failed": {"type": "integer"}
       }
     },
+    "ci_logs": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "ci_artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "url"],
+        "properties": {
+          "name": {"type": "string"},
+          "url": {"type": "string", "format": "uri"}
+        }
+      }
+    },
     "artifacts": {
       "type": "array",
       "items": {"type": "string"}
     },
     "notes": {"type": "string"}
-  }
+  },
+  "additionalProperties": false
 }

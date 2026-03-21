@@ -88,7 +88,7 @@ def mcp_server_process():
     print(f"Mock MCP HTTP server terminated with exit code: {process.returncode}", file=sys.stderr)
     stderr_output = process.stderr.read()
     if stderr_output:
-        print(f"Mock MCP HTTP server stderr:\\n{stderr_output}", file=sys.stderr)
+        print("Mock MCP HTTP server stderr:", stderr_output, file=sys.stderr)
 
 
 @pytest.fixture
@@ -143,7 +143,7 @@ def github_webhook_listener_thread(mcp_server_process):
         # Print any remaining stderr before failing
         stderr_output_final = listener_process.stderr.read()
         if stderr_output_final:
-            print(f"Final Webhook listener stderr before failure:\n{stderr_output_final}", file=sys.stderr)
+            print("Final Webhook listener stderr before failure:", stderr_output_final, file=sys.stderr)
         pytest.fail("GitHub webhook listener did not become ready in time.")
     
     yield listener_process, listener_port
@@ -156,7 +156,7 @@ def github_webhook_listener_thread(mcp_server_process):
     print(f"Webhook listener terminated with exit code: {listener_process.returncode}", file=sys.stderr)
     stderr_output = listener_process.stderr.read()
     if stderr_output:
-        print(f"Webhook listener stderr:\\n{stderr_output}", file=sys.stderr)
+        print("Webhook listener stderr:", stderr_output, file=sys.stderr)
 
 
 # --- Unit Tests for orchestrator_mcp_server.py webhook handler ---
@@ -523,6 +523,216 @@ def test_orchestrator_process_github_webhook_pull_request_closed_not_merged(mock
     mock_orch.process_github_webhook.assert_called_once_with(
         payload=github_payload, source="github"
     )
+
+
+@patch('orchestrator_mcp_server.ORCH')
+def test_orchestrator_create_github_issue_success(mock_orch):
+    from orchestrator_mcp_server import handle_tool_call
+
+    bug_id = "BUG-12345678"
+    expected_result = {
+        "status": "success",
+        "action": "github_issue_created",
+        "bug_id": bug_id,
+        "repo": "test/repo",
+        "issue_number": 123,
+        "issue_url": "https://github.com/test/repo/issues/123",
+        "issue_title": "[HIGH Bug] Task TASK-abcdef12: Crashed on startup",
+    }
+
+    mock_orch.orchestrator_create_github_issue.return_value = expected_result
+
+    params = {
+        "name": "orchestrator_create_github_issue",
+        "arguments": {"bug_id": bug_id, "repo": "test/repo"},
+    }
+
+    result = handle_tool_call("test_req_github_issue", params)
+
+    assert "result" in result
+    parsed = json.loads(result["result"]["content"][0]["text"])
+    assert parsed["status"] == "success"
+    assert parsed["bug_id"] == bug_id
+    assert parsed["issue_number"] == 123
+    assert parsed["repo"] == "test/repo"
+    assert parsed["issue_title"] == "[HIGH Bug] Task TASK-abcdef12: Crashed on startup"
+
+    mock_orch.orchestrator_create_github_issue.assert_called_once_with(bug_id=bug_id, repo="test/repo")
+
+
+def test_build_github_issue_payload_structure():
+    """Verify build_github_issue_payload returns valid GitHub issue payload."""
+    from orchestrator.github_ci import build_github_issue_payload
+
+    bug = {
+        "id": "BUG-aabbccdd",
+        "source_task": "TASK-11223344",
+        "owner": "claude_code",
+        "severity": "critical",
+        "repro_steps": "1. Run orchestrator\n2. Create task\n3. Observe crash",
+        "expected": "Task created successfully",
+        "actual": "RuntimeError on task creation",
+        "status": "open",
+    }
+
+    payload = build_github_issue_payload(bug)
+
+    # Required GitHub API fields present
+    assert "title" in payload
+    assert "body" in payload
+    assert "labels" in payload
+    assert "assignees" in payload
+
+    # Title maps severity correctly
+    assert payload["title"] == "[CRITICAL Bug] Task TASK-11223344: RuntimeError on task creation"
+
+    # Body includes repro steps and task context
+    assert "BUG-aabbccdd" in payload["body"]
+    assert "TASK-11223344" in payload["body"]
+    assert "claude_code" in payload["body"]
+    assert "critical" in payload["body"]
+    assert "Run orchestrator" in payload["body"]
+    assert "Task created successfully" in payload["body"]
+    assert "RuntimeError on task creation" in payload["body"]
+
+    # Labels include mapped severity, bug tag, and task reference
+    assert "severity:critical" in payload["labels"]
+    assert "bug" in payload["labels"]
+    assert "task:TASK-11223344" in payload["labels"]
+
+    # Assignees set to bug owner
+    assert payload["assignees"] == ["claude_code"]
+
+
+def test_create_github_issue_payload_generation():
+    """Verify _create_github_issue_from_bug generates valid payload without hitting GitHub API."""
+    import tempfile
+    from pathlib import Path
+    from orchestrator.engine import Orchestrator
+    from orchestrator.policy import Policy
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        policy_path = root / "policy.json"
+        policy_path.write_text(json.dumps({
+            "name": "test-policy",
+            "roles": {"manager": "codex"},
+            "routing": {"default": "codex"},
+            "decisions": {"architecture": {"mode": "consensus", "members": ["codex"]}},
+            "triggers": {"heartbeat_timeout_minutes": 10},
+        }))
+        policy = Policy.load(policy_path)
+        orch = Orchestrator(root=root, policy=policy)
+        orch.bootstrap()
+
+        bug = {
+            "id": "BUG-aabbccdd",
+            "source_task": "TASK-11223344",
+            "owner": "claude_code",
+            "severity": "critical",
+            "repro_steps": "1. Run orchestrator\n2. Create task\n3. Observe crash",
+            "expected": "Task created successfully",
+            "actual": "RuntimeError on task creation",
+            "status": "open",
+            "created_at": "2026-03-21T00:00:00Z",
+        }
+
+        # Write the bug to state so the method can update it
+        orch._write_json(orch.bugs_path, [bug])
+
+        # Set env vars; API call will fail (fake token) so falls back to dry-run
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/test-repo", "GITHUB_TOKEN": "fake-token"}):
+            result = orch._create_github_issue_from_bug(bug, repo_full_name="owner/test-repo")
+
+        # Verify payload structure
+        assert result["status"] == "success"
+        assert result["bug_id"] == "BUG-aabbccdd"
+        assert result["repo"] == "owner/test-repo"
+        assert isinstance(result["issue_number"], int)
+        assert result["issue_url"].startswith("https://github.com/owner/test-repo/issues/")
+        assert result["action"] in ("github_issue_created", "dry_run_github_issue_creation")
+
+        # Verify title maps severity correctly
+        assert result["issue_title"] == "[CRITICAL Bug] Task TASK-11223344: RuntimeError on task creation"
+
+        # Verify bug record was updated with github_issue link
+        bugs = orch._read_json_list(orch.bugs_path)
+        updated_bug = next(b for b in bugs if b["id"] == "BUG-aabbccdd")
+        assert "github_issue" in updated_bug
+        gh_issue = updated_bug["github_issue"]
+        assert gh_issue["repo"] == "owner/test-repo"
+        assert gh_issue["status"] == "open"
+        assert isinstance(gh_issue["issue_number"], int)
+
+
+def test_create_github_issue_skips_without_token():
+    """Verify _create_github_issue_from_bug returns skipped when GITHUB_TOKEN is missing."""
+    import tempfile
+    from pathlib import Path
+    from orchestrator.engine import Orchestrator
+    from orchestrator.policy import Policy
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        policy_path = root / "policy.json"
+        policy_path.write_text(json.dumps({
+            "name": "test-policy",
+            "roles": {"manager": "codex"},
+            "routing": {"default": "codex"},
+            "decisions": {"architecture": {"mode": "consensus", "members": ["codex"]}},
+            "triggers": {"heartbeat_timeout_minutes": 10},
+        }))
+        policy = Policy.load(policy_path)
+        orch = Orchestrator(root=root, policy=policy)
+        orch.bootstrap()
+
+        bug = {
+            "id": "BUG-99887766",
+            "source_task": "TASK-55667788",
+            "owner": "gemini",
+            "severity": "medium",
+            "repro_steps": "Steps here",
+            "expected": "Expected",
+            "actual": "Actual",
+            "status": "open",
+        }
+
+        env = {"GITHUB_REPOSITORY": "owner/repo"}
+        # Ensure GITHUB_TOKEN is not set
+        env_remove = {k: v for k, v in os.environ.items() if k != "GITHUB_TOKEN"}
+        env_remove["GITHUB_REPOSITORY"] = "owner/repo"
+        with patch.dict(os.environ, env_remove, clear=True):
+            result = orch._create_github_issue_from_bug(bug)
+
+        assert result["status"] == "skipped"
+        assert result["reason"] == "GITHUB_TOKEN missing"
+        assert result["bug_id"] == "BUG-99887766"
+
+
+def test_create_github_issue_severity_label_mapping():
+    """Verify severity levels map to correct labels in the issue payload."""
+    from orchestrator.github_ci import build_github_issue_payload
+
+    for severity in ("critical", "high", "medium", "low"):
+        bug = {
+            "id": f"BUG-{severity[:8].ljust(8, '0')}",
+            "source_task": "TASK-aabb0011",
+            "owner": "codex",
+            "severity": severity,
+            "repro_steps": "repro",
+            "expected": "expected",
+            "actual": "actual",
+            "status": "open",
+        }
+
+        payload = build_github_issue_payload(bug)
+
+        # Title includes uppercased severity
+        assert f"[{severity.upper()} Bug]" in payload["title"]
+        # Labels include mapped severity label
+        assert f"severity:{severity}" in payload["labels"]
+        assert "bug" in payload["labels"]
+        assert "task:TASK-aabb0011" in payload["labels"]
 
 
 def test_orchestrator_process_github_webhook_orch_not_initialized():

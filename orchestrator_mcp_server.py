@@ -648,6 +648,18 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
             },
         },
         {
+            "name": "orchestrator_create_github_issue",
+            "description": "Creates a new GitHub issue from an orchestrator bug record and links it to a task.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "bug_id": {"type": "string", "description": "The ID of the bug record to create an issue for.", "pattern": "^BUG-[a-f0-9]{8}$"},
+                    "repo": {"type": "string", "description": "Optional: The full name of the GitHub repository (e.g., 'owner/repo'). Defaults to GITHUB_REPOSITORY env var.", "pattern": "^[^/]+/[^/]+$"},
+                },
+                "required": ["bug_id"],
+            },
+        },
+        {
             "name": "orchestrator_process_github_webhook",
             "description": "Process a GitHub webhook payload, normalize CI results, and update orchestrator tasks.",
             "inputSchema": {
@@ -1821,6 +1833,111 @@ def _aggregate_team_lanes(tasks: List[Dict[str, Any]]) -> Dict[str, Dict[str, in
     return team_lanes
 
 
+def _aggregate_by_project_root(
+    tasks: List[Dict[str, Any]],
+    bugs: List[Dict[str, Any]],
+    agent_instances: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {}
+
+    # Aggregate tasks
+    for task in tasks:
+        task_project_name = task.get("project_name")
+        task_project_root = str(task.get("project_root") or "<unknown_root>").strip()
+
+        project_identifier = task_project_name if task_project_name else task_project_root
+
+        if project_identifier not in summary:
+            summary[project_identifier] = {
+                "task_counts": {"total": 0, "done": 0, "in_progress": 0, "assigned": 0, "blocked": 0, "reported": 0},
+                "bug_counts": {"total": 0, "open": 0, "closed": 0},
+                "agents": set(),
+                "project_name": task_project_name if task_project_name else Path(task_project_root).name,
+                "project_root": task_project_root
+            }
+        status = task.get("status", "unknown")
+        summary[project_identifier]["task_counts"][status] = summary[project_identifier]["task_counts"].get(status, 0) + 1
+        summary[project_identifier]["task_counts"]["total"] += 1
+
+    # Aggregate bugs
+    for bug in bugs:
+        bug_project_name = bug.get("project_name")
+        bug_project_root = str(bug.get("project_root") or "<unknown_root>").strip()
+
+        bug_project_identifier = bug_project_name if bug_project_name else bug_project_root
+
+        bug_task_id = bug.get("source_task")
+        if bug_task_id:
+            related_task = next((t for t in tasks if t.get("id") == bug_task_id), None)
+            if related_task:
+                related_task_project_name = related_task.get("project_name")
+                related_task_project_root = str(related_task.get("project_root") or "<unknown_root>").strip()
+                bug_project_identifier = related_task_project_name if related_task_project_name else related_task_project_root
+
+        if bug_project_identifier not in summary:
+            summary[bug_project_identifier] = {
+                "task_counts": {"total": 0, "done": 0, "in_progress": 0, "assigned": 0, "blocked": 0, "reported": 0},
+                "bug_counts": {"total": 0, "open": 0, "closed": 0},
+                "agents": set(),
+                "project_name": bug_project_name if bug_project_name else Path(bug_project_root).name,
+                "project_root": bug_project_root
+            }
+        status = bug.get("status", "unknown")
+        summary[bug_project_identifier]["bug_counts"][status] = summary[bug_project_identifier]["bug_counts"].get(status, 0) + 1
+        summary[bug_project_identifier]["bug_counts"]["total"] += 1
+
+    # Build reverse map: project_root -> project_identifier (from tasks/bugs pass)
+    _root_to_identifier: Dict[str, str] = {}
+    for _pid, _data in summary.items():
+        pr = _data.get("project_root")
+        if pr and pr != "<unknown_root>":
+            _root_to_identifier[pr] = _pid
+
+    # Aggregate agents
+    for agent_instance in agent_instances:
+        agent_project_name = agent_instance.get("project_name")
+        agent_project_root = str(agent_instance.get("project_root") or "<unknown_root>").strip()
+
+        # Resolve via reverse map first so agents join the same bucket as their project's tasks
+        agent_project_identifier = agent_project_name if agent_project_name else _root_to_identifier.get(agent_project_root, agent_project_root)
+
+        if agent_project_identifier not in summary:
+            summary[agent_project_identifier] = {
+                "task_counts": {"total": 0, "done": 0, "in_progress": 0, "assigned": 0, "blocked": 0, "reported": 0},
+                "bug_counts": {"total": 0, "open": 0, "closed": 0},
+                "agents": set(),
+                "project_name": agent_project_name if agent_project_name else Path(agent_project_root).name,
+                "project_root": agent_project_root
+            }
+        agent_name = agent_instance.get("agent_name")
+        if agent_name:
+            summary[agent_project_identifier]["agents"].add(agent_name)
+
+    # Convert sets to sorted lists and add agent_count and enrich project_name
+    for project_identifier, data in summary.items():
+        data["agents"] = sorted(list(data["agents"]))
+        data["active_agent_count"] = len(data["agents"])
+        
+        # Try to get project_name from project.yaml within that root if not already set
+        if not data["project_name"] and data["project_root"] != "<unknown_root>":
+            project_yaml_path = Path(data["project_root"]) / "project.yaml"
+            if project_yaml_path.exists():
+                try:
+                    import yaml
+                    project_data = yaml.safe_load(project_yaml_path.read_text(encoding="utf-8"))
+                    if isinstance(project_data, dict) and isinstance(project_data.get("name"), str):
+                        data["project_name"] = project_data["name"].strip()
+                except Exception:
+                    pass # Ignore parsing errors, use default name
+
+        # Calculate completion rate for each project
+        total_tasks = data["task_counts"].get("total", 0)
+        done_tasks = data["task_counts"].get("done", 0)
+        data["completion_rate_percent"] = _percent(done_tasks, total_tasks)
+
+    return summary
+
+
 def _status_metrics(tasks: List[Dict[str, Any]], bugs_open: List[Dict[str, Any]], blockers_open: List[Dict[str, Any]]) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     done_tasks = [t for t in tasks if t.get("status") == "done"]
@@ -2177,6 +2294,20 @@ def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
                 summary += ", " + ", ".join(parts)
             lines.append(f"- {tid}: {summary}")
 
+    cross_project_summary = args.get("cross_project_summary")
+    if cross_project_summary:
+        lines.extend(["", "Cross-Project Summary:"])
+        for project_root, summary in cross_project_summary.items():
+            lines.append(f"- Project: {summary.get('project_name', project_root)}")
+            lines.append(f"  Tasks: {summary.get('total_tasks', 0)} (Done: {summary.get('done_tasks', 0)}, "
+                         f"In Progress: {summary.get('in_progress_tasks', 0)}, "
+                         f"Blocked: {summary.get('blocked_tasks', 0)})")
+            lines.append(f"  Agents: {summary.get('active_agents', 0)} active, "
+                         f"{summary.get('total_agents', 0)} total")
+            lines.append(f"  Bugs: {summary.get('open_bugs', 0)} open, "
+                         f"Blockers: {summary.get('open_blockers', 0)} open")
+            lines.append(f"  Completion: {_percent(summary.get('done_tasks', 0), summary.get('total_tasks', 0))}%")
+
     if recovery_actions:
         lines.extend(["", "Suggested recovery actions:"])
         for action in recovery_actions[:5]:
@@ -2321,6 +2452,13 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             payload = normalize_github_ci_result(raw)
             return _ok_and_audit(request_id, name, args, payload)
 
+        if name == "orchestrator_create_github_issue":
+            bug_id = args["bug_id"]
+            repo = args.get("repo")
+            result = ORCH.orchestrator_create_github_issue(bug_id=bug_id, repo=repo)
+            return _ok_and_audit(request_id, name, args, result)
+
+
         if name == "orchestrator_process_github_webhook":
             raw_payload = args.get("payload", {})
             source = args.get("source", "github")
@@ -2420,7 +2558,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             agents = ORCH.list_agents(active_only=True)
             agent_instances = ORCH.list_agent_instances(active_only=False)
             roles = ORCH.get_roles()
-            live_status = _live_status_report({})
+            live_status = _live_status_report({"cross_project_summary": multi_project_data})
             by_status: Dict[str, int] = {}
             for task in tasks:
                 by_status[task["status"]] = by_status.get(task["status"], 0) + 1
@@ -2439,6 +2577,13 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             in_progress_tasks = [t for t in tasks if t.get("status") == "in_progress"]
             wingman_pending = [t for t in tasks if isinstance(t.get("review_gate"), dict) and t["review_gate"].get("status") == "pending"]
             wingman_rejected = [t for t in tasks if isinstance(t.get("review_gate"), dict) and t["review_gate"].get("status") == "rejected"]
+
+            cross_project_summary = _aggregate_by_project_root(tasks, bugs, agent_instances)
+            if len(cross_project_summary) > 1: # Only include if multiple project roots are detected
+                multi_project_data = cross_project_summary
+            else:
+                multi_project_data = {}
+
             payload: Dict[str, Any] = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "server": "agent-leader-orchestrator",
@@ -2509,6 +2654,8 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 },
                 "stop_policy": ORCH.evaluate_stop_policy(),
             }
+            if multi_project_data:
+                payload["cross_project_summary"] = multi_project_data
             if STATUS_VERBOSE_PATHS:
                 payload["root"] = str(ROOT_DIR)
                 payload["policy"] = str(POLICY_PATH)

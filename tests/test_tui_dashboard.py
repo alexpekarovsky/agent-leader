@@ -336,7 +336,7 @@ class DashboardTuiTests(unittest.TestCase):
         self.assertIn("Failure rate:", out)
         self.assertIn("Stale tasks:", out)
         # Budget section present
-        self.assertIn("BUDGET & LIMITS", out)
+        self.assertIn("CODE OUTPUT & BUDGET", out)
 
 
     def test_project_meta_milestone_counts(self) -> None:

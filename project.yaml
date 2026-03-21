@@ -4,8 +4,8 @@ icon: "🧭"
 revenue: true
 
 version:
-  current: v0.2.0
-  name: "Stability + Multi-Project Foundation"
+  current: v1.0.0
+  name: "Production Readiness"
   started: 2026-02-16
 
   milestones:
@@ -138,7 +138,7 @@ version:
     - id: stacked-pr-support
       title: "Stacked/dependent PR chains: when features span multiple PRs, auto-create base→child branch relationships"
       effort: L
-      status: in_progress
+      status: done
       tags: [integrations, github, pr-workflow]
       depends_on: [ci-github-integrations]
       inspiration: ralph

@@ -2,7 +2,7 @@
 
 This document tracks planned direction for `agent-leader`.
 
-## v0.2 - Stability
+## v0.2 - Stability (COMPLETE)
 - Finalize one-shot connection workflow:
   - `orchestrator_connect_to_leader`
   - `orchestrator_connect_team_members`
@@ -17,7 +17,7 @@ This document tracks planned direction for `agent-leader`.
   - `orchestrator_headless_status`
 - Harden docs for manual MCP-first workflow.
 
-## v0.3 - UX
+## v0.3 - UX (COMPLETE)
 - Add slash-command bundles for common actions:
   - `/connect-to-leader`
   - `/manager-start`
@@ -35,13 +35,13 @@ This document tracks planned direction for `agent-leader`.
   - Add `--watch` mode using `select.kqueue()` (macOS) / `inotify` (Linux) for near-zero idle CPU
   - Current problem: 80-90% CPU per instance with `--refresh-seconds 1`, `build_snapshot()` does full I/O every tick
 
-## v0.4 - Reliability
+## v0.4 - Reliability (COMPLETE)
 - Add stale-task reassignment policies (configurable thresholds).
 - Add idempotent report handling (dedupe by task + commit).
 - Add event retention/compaction with cursor safety.
 - Improve reconnect behavior for interrupted sessions.
 
-## v0.5 - Governance & Quality Gates
+## v0.5 - Governance & Quality Gates (COMPLETE)
 - Add policy bundles:
   - strict QA
   - prototype/fast iteration
@@ -51,13 +51,13 @@ This document tracks planned direction for `agent-leader`.
 - **Quality gate system** (ralph-inspired): automated "plankton" checker that runs between task completion and PR creation — catches architecture violations, missing tests, bad patterns, style/consistency issues.
 - **Iterative self-review**: workers critique their own output 2-3 rounds before submitting to wingman/manager. Reduces review noise, catches obvious issues earlier.
 
-## v0.6 - Multi-Project Operations
+## v0.6 - Multi-Project Operations (COMPLETE)
 - Add global config + per-repo override model.
 - Add project registry for quick context switching.
 - Add cross-project status/reporting view.
 - **Codebase comprehension phase** (ralph-inspired): `comprehend_project` task type where parallel workers map an unfamiliar codebase (file structure, key modules, patterns, dependencies) before planning begins. Output feeds into all subsequent task planning.
 
-## v0.7 - Integrations
+## v0.7 - Integrations (COMPLETE)
 - GitHub integration:
   - open issues from orchestrator bugs
   - PR-ready summaries from reports
@@ -66,11 +66,12 @@ This document tracks planned direction for `agent-leader`.
   - consume CI test outcomes in validation cycle
   - attach logs/artifacts to reports
 
-## v1.0 - Production Readiness
-- Freeze MCP tool contract for compatibility.
-- Add migration tooling for state schema evolution.
-- Publish security hardening and least-privilege deployment guide.
-- Finalize operational runbooks (incident/recovery/resume).
+## v1.0 - Production Readiness (COMPLETE)
+- [x] Freeze MCP tool contract for compatibility.
+- [x] Add migration tooling for state schema evolution.
+- [x] Publish security hardening and least-privilege deployment guide.
+- [x] Finalize operational runbooks (incident/recovery/resume).
+- [x] Full test suite passing, all milestones closed, version bumped to v1.0.0.
 
 ## Notes
 - Prioritization may shift based on real-world usage.

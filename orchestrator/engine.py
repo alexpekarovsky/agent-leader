@@ -17,7 +17,7 @@ from orchestrator.bus import EventBus
 from orchestrator.policy import Policy
 from orchestrator.quality_gates import QualityGateOutcome, run_quality_gates
 from orchestrator.self_review import SelfReviewConfig
-from orchestrator.github_ci import normalize_github_ci_result
+from orchestrator.github_ci import normalize_github_ci_result, build_github_issue_payload, post_github_issue
 from orchestrator import pr_stack as _pr_stack
 from orchestrator.migration import migrate_state as _migrate_state
 
@@ -3135,15 +3135,12 @@ class Orchestrator:
         repo_full_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Creates a GitHub issue from a bug record.
-        This method simulates GitHub API interaction.
+
+        Uses :func:`build_github_issue_payload` for payload generation and
+        :func:`post_github_issue` to call the GitHub API.  Falls back to a
+        dry-run when credentials are missing or the API call fails.
         """
         bug_id = bug.get("id", "UNKNOWN_BUG")
-        source_task = bug.get("source_task", "UNKNOWN_TASK")
-        owner = bug.get("owner", "UNKNOWN_OWNER")
-        severity = bug.get("severity", "medium")
-        repro_steps = bug.get("repro_steps", "No reproduction steps provided.")
-        expected = bug.get("expected", "Expected behavior not specified.")
-        actual = bug.get("actual", "Actual behavior not specified.")
 
         repo = repo_full_name or os.getenv("GITHUB_REPOSITORY")
         if not repo:
@@ -3172,39 +3169,33 @@ class Orchestrator:
                 "bug_id": bug_id,
             }
 
-        issue_title = f"[{severity.upper()} Bug] Task {source_task}: {actual}"
-        issue_body = (
-            f"**Bug ID:** {bug_id}\n"
-            f"**Task ID:** {source_task}\n"
-            f"**Owner:** {owner}\n"
-            f"**Severity:** {severity}\n\n"
-            f"**Reproduction Steps:**\n```\n{repro_steps}\n```\n\n"
-            f"**Expected Behavior:**\n```\n{expected}\n```\n\n"
-            f"**Actual Behavior:**\n```\n{actual}\n```\n"
-        )
-        labels = [severity, "bug", f"task:{source_task}"]
-        assignees = [owner]  # Assign to the owner of the orchestrator bug
+        payload = build_github_issue_payload(bug)
+        issue_title = payload["title"]
 
-        print(f"INFO: Simulating GitHub API call to create issue for bug {bug_id} in repo {repo}", file=sys.stderr, flush=True)
-        print(f"  Issue Title: {issue_title}", file=sys.stderr, flush=True)
-        print(f"  Issue Body: {issue_body}", file=sys.stderr, flush=True)
-        print(f"  Labels: {labels}", file=sys.stderr, flush=True)
-        print(f"  Assignees: {assignees}", file=sys.stderr, flush=True)
-
-        # Simulate GitHub API call response
-        # In a real implementation, you would use a library like PyGithub here.
-        # For now, generate a placeholder issue number.
-        simulated_issue_number = int(uuid.uuid4().hex[:8], 16) % 10000 + 1 # Pseudo-random issue number
-        issue_url = f"https://github.com/{repo}/issues/{simulated_issue_number}"
+        # Try the real GitHub API; fall back to dry-run on failure.
+        try:
+            api_resp = post_github_issue(repo, github_token, payload)
+            issue_number = api_resp.get("number", 0)
+            issue_url = api_resp.get("html_url", f"https://github.com/{repo}/issues/{issue_number}")
+            action = "github_issue_created"
+        except Exception as exc:
+            print(
+                f"WARNING: GitHub API call failed for bug {bug_id}: {exc}. "
+                "Recording as dry-run.",
+                file=sys.stderr,
+                flush=True,
+            )
+            issue_number = int(uuid.uuid4().hex[:8], 16) % 10000 + 1
+            issue_url = f"https://github.com/{repo}/issues/{issue_number}"
+            action = "dry_run_github_issue_creation"
 
         with self._state_lock():
-            # Update the bug record with GitHub issue information
             bugs = self._read_json_list(self.bugs_path)
             for b in bugs:
                 if b["id"] == bug_id:
                     b["github_issue"] = {
                         "repo": repo,
-                        "issue_number": simulated_issue_number,
+                        "issue_number": issue_number,
                         "url": issue_url,
                         "title": issue_title,
                         "status": "open",
@@ -3216,10 +3207,10 @@ class Orchestrator:
 
         result = {
             "status": "success",
-            "action": "simulated_github_issue_creation",
+            "action": action,
             "bug_id": bug_id,
             "repo": repo,
-            "issue_number": simulated_issue_number,
+            "issue_number": issue_number,
             "issue_url": issue_url,
             "issue_title": issue_title,
         }
@@ -3258,6 +3249,26 @@ class Orchestrator:
         comprehension_summary = report.get("comprehension_summary")
         if comprehension_summary is not None:
             self._validate_comprehension_summary(comprehension_summary)
+
+        ci_logs = report.get("ci_logs")
+        if ci_logs is not None:
+            if not isinstance(ci_logs, list):
+                raise ValueError("ci_logs must be an array")
+            for i, log_url in enumerate(ci_logs):
+                if not isinstance(log_url, str) or not log_url.strip():
+                    raise ValueError(f"ci_logs[{i}] must be a non-empty string")
+
+        ci_artifacts = report.get("ci_artifacts")
+        if ci_artifacts is not None:
+            if not isinstance(ci_artifacts, list):
+                raise ValueError("ci_artifacts must be an array")
+            for i, artifact in enumerate(ci_artifacts):
+                if not isinstance(artifact, dict):
+                    raise ValueError(f"ci_artifacts[{i}] must be an object")
+                if not isinstance(artifact.get("name"), str) or not artifact["name"].strip():
+                    raise ValueError(f"ci_artifacts[{i}].name must be a non-empty string")
+                if not isinstance(artifact.get("url"), str) or not artifact["url"].strip():
+                    raise ValueError(f"ci_artifacts[{i}].url must be a non-empty string")
 
     @staticmethod
     def _validate_comprehension_summary(summary: Any) -> None:
