@@ -2778,6 +2778,9 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             agents = ORCH.list_agents(active_only=True)
             agent_instances = ORCH.list_agent_instances(active_only=False)
             roles = ORCH.get_roles()
+            # Compute cross-project data before live_status_report needs it
+            cross_project_summary = _aggregate_by_project_root(tasks, bugs, agent_instances)
+            multi_project_data = cross_project_summary if len(cross_project_summary) > 1 else {}
             live_status = _live_status_report({"cross_project_summary": multi_project_data})
             by_status: Dict[str, int] = {}
             for task in tasks:
@@ -2798,11 +2801,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             wingman_pending = [t for t in tasks if isinstance(t.get("review_gate"), dict) and t["review_gate"].get("status") == "pending"]
             wingman_rejected = [t for t in tasks if isinstance(t.get("review_gate"), dict) and t["review_gate"].get("status") == "rejected"]
 
-            cross_project_summary = _aggregate_by_project_root(tasks, bugs, agent_instances)
-            if len(cross_project_summary) > 1: # Only include if multiple project roots are detected
-                multi_project_data = cross_project_summary
-            else:
-                multi_project_data = {}
+            # cross_project_summary already computed above
 
             payload: Dict[str, Any] = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
