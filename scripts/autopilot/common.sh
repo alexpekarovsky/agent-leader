@@ -32,6 +32,11 @@ prune_old_logs() {
   fi
 
   local files=()
+  local now_seconds=$(date +%s)
+  local two_days_ago=$(( now_seconds - (2 * 24 * 60 * 60) ))
+  local seven_days_ago=$(( now_seconds - (7 * 24 * 60 * 60) ))
+
+  # Collect all files matching the pattern, including potential .gz files
   while IFS= read -r f; do
     [[ -n "$f" ]] && files+=("$f")
   done < <(
@@ -46,25 +51,98 @@ try:
         path = os.path.join(root, name)
         if not os.path.isfile(path):
             continue
-        if not fnmatch.fnmatch(name, pattern):
+        # Check for both original pattern and compressed pattern
+        if not fnmatch.fnmatch(name, pattern) and not fnmatch.fnmatch(name, pattern + ".gz"):
             continue
         items.append((os.path.getmtime(path), path))
 except FileNotFoundError:
     pass
-for _, path in sorted(items, reverse=True):
+# Sort oldest first for easier processing
+for _, path in sorted(items, reverse=False):
     print(path)
 PY
   )
 
-  local total="${#files[@]}"
-  if (( total <= max_files )); then
+  # If no files were found for this prefix, exit gracefully
+  if [[ "${#files[@]}" -eq 0 ]]; then
     return 0
   fi
 
-  local i
-  for (( i=max_files; i<total; i++ )); do
-    rm -f -- "${files[$i]}"
+  local files_to_keep=()
+  local compressed_files_count=0
+  local uncompressed_files_count=0
+
+  for file in "${files[@]}"; do
+    local file_mtime
+    # Use 'stat -f %m' for macOS and 'stat -c %Y' for Linux
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+      file_mtime=$(stat -f %m "$file")
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+      file_mtime=$(stat -c %Y "$file")
+    else
+      log ERROR "Unsupported OS for stat command: $OSTYPE"
+      exit 1
+    fi
+
+    # 1. Delete files older than 7 days
+    if (( file_mtime < seven_days_ago )); then
+      log INFO "Deleting old log file (older than 7 days): $file"
+      rm -f -- "$file"
+      continue # Skip to next file
+    fi
+
+    # 2. Compress files older than 2 days if not already compressed
+    if (( file_mtime < two_days_ago )) && [[ "$file" != *.gz ]]; then
+      log INFO "Compressing old log file (older than 2 days): $file"
+      gzip "$file" || log ERROR "Failed to compress $file"
+      local compressed_file="${file}.gz"
+      if [[ -f "$compressed_file" ]]; then
+        files_to_keep+=("$compressed_file")
+        compressed_files_count=$((compressed_files_count + 1))
+      else
+        log ERROR "Compressed file $compressed_file not found after gzip operation."
+      fi
+    elif [[ "$file" == *.gz ]]; then
+      files_to_keep+=("$file")
+      compressed_files_count=$((compressed_files_count + 1))
+    else # Keep uncompressed file
+      files_to_keep+=("$file")
+      uncompressed_files_count=$((uncompressed_files_count + 1))
+    fi
   done
+
+  # Re-sort files_to_keep by modification time (newest first) for pruning by count
+  # This step is crucial because the previous loop modified and added files out of order
+  local sorted_files_to_keep=()
+  if [[ "${#files_to_keep[@]}" -gt 0 ]]; then
+    while IFS= read -r f; do
+      [[ -n "$f" ]] && sorted_files_to_keep+=("$f")
+    done < <(
+      printf "%s\n" "${files_to_keep[@]}" | python3 - <<'PY'
+import os
+import sys
+file_paths = [line.strip() for line in sys.stdin if line.strip()]
+items = []
+for path in file_paths:
+    try:
+        items.append((os.path.getmtime(path), path))
+    except FileNotFoundError:
+        # File might have been deleted by another process or during compression step
+        pass
+for _, path in sorted(items, reverse=True):
+    print(path)
+PY
+    )
+  fi
+
+  # 3. Prune excess files, keeping only MAX_LOG_FILES_PER_WORKER (newest)
+  local total_current="${#sorted_files_to_keep[@]}"
+  if (( total_current > max_files )); then
+    for (( i=max_files; i<total_current; i++ )); do
+      log INFO "Pruning excess log file (beyond max_files): ${sorted_files_to_keep[$i]}"
+      rm -f -- "${sorted_files_to_keep[$i]}"
+    done
+  fi
 }
 
 run_cli_prompt() {
