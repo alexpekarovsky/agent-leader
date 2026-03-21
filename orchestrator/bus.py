@@ -165,6 +165,59 @@ class EventBus:
 
         return _gen()
 
+    def compact_events(self, retention_limit: int = 500) -> Dict[str, Any]:
+        """Archive events beyond retention limit to a rotated file.
+
+        Keeps the newest *retention_limit* events in events.jsonl and writes
+        older events to bus/archive/events.<timestamp>.jsonl.
+
+        Returns dict with archived count, retained count, and the offset
+        adjustment that callers must apply to agent cursors.
+        """
+        archive_dir = self.root / "archive"
+
+        with self._file_lock(self._events_lock):
+            if not self.events_path.exists():
+                return {"archived": 0, "retained": 0, "offset_adjustment": 0}
+
+            # Read raw lines (preserves original JSON exactly).
+            with self.events_path.open("r", encoding="utf-8") as fh:
+                lines = [l for l in fh if l.strip()]
+
+            total = len(lines)
+            if total <= retention_limit:
+                return {"archived": 0, "retained": total, "offset_adjustment": 0}
+
+            cut = total - retention_limit
+            to_archive = lines[:cut]
+            to_retain = lines[cut:]
+
+            # Write archive file.
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            archive_path = archive_dir / f"events.{ts}.jsonl"
+            with archive_path.open("w", encoding="utf-8") as fh:
+                for raw in to_archive:
+                    fh.write(raw if raw.endswith("\n") else raw + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+
+            # Atomic rewrite of events.jsonl with retained events only.
+            tmp = self.events_path.with_suffix(".jsonl.tmp")
+            with tmp.open("w", encoding="utf-8") as fh:
+                for raw in to_retain:
+                    fh.write(raw if raw.endswith("\n") else raw + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            tmp.replace(self.events_path)
+
+            return {
+                "archived": cut,
+                "retained": len(to_retain),
+                "offset_adjustment": cut,
+                "archive_path": str(archive_path),
+            }
+
     def write_command(self, task_id: str, command: Dict[str, Any]) -> Path:
         path = self.commands_dir / f"{task_id}.json"
         lock = self._lock_for(path)

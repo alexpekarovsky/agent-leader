@@ -326,6 +326,22 @@ class Orchestrator:
         )
         return task
 
+    def orchestrator_create_github_issue(
+        self,
+        bug_id: str,
+        repo: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Creates a GitHub issue from an orchestrator bug record.
+        This is an MCP tool that wraps _create_github_issue_from_bug.
+        """
+        with self._state_lock():
+            bugs = self._read_json_list(self.bugs_path)
+            bug = next((b for b in bugs if b["id"] == bug_id), None)
+            if bug is None:
+                raise ValueError(f"Bug not found: {bug_id}")
+
+            return self._create_github_issue_from_bug(bug, repo_full_name=repo)
+
     def dedupe_open_tasks(self, source: str) -> Dict[str, Any]:
         with self._state_lock():
             tasks = self._read_json(self.tasks_path)
@@ -778,7 +794,7 @@ class Orchestrator:
                     },
                     source=report["agent"],
                 )
-                return {**report, "deduplicated": True}
+                return {**existing_report, "deduplicated": True}
             # --- End Report Deduplication ---
 
             # Pass the current mocked time as mtime for consistent testing of cleanup logic
@@ -1044,7 +1060,8 @@ class Orchestrator:
         }
 
     def requeue_stale_in_progress_tasks(self, stale_after_seconds: int = 1800) -> List[Dict[str, Any]]:
-        # Cleanup old reports first
+        # Periodic maintenance: compact event bus and cleanup old reports.
+        self.compact_events()
         report_retention_days = self.policy.triggers.get("report_retention_days", 30)
         self._cleanup_old_reports(max_age_seconds=report_retention_days * 24 * 60 * 60)
 
@@ -2965,6 +2982,43 @@ class Orchestrator:
             cursors[agent] = max(0, int(cursor))
             self._write_json(self.cursors_path, cursors)
 
+    def compact_events(self, retention_limit: Optional[int] = None) -> Dict[str, Any]:
+        """Compact the event bus: archive old events and adjust agent cursors.
+
+        Uses ``policy.triggers.event_retention_limit`` (default 500) unless
+        *retention_limit* is passed explicitly.  Agent cursors are shifted so
+        that every connected agent continues to point at the correct event
+        after compaction — no events are lost for any agent whose cursor is
+        still within the retained window.
+        """
+        if retention_limit is None:
+            retention_limit = int(self.policy.triggers.get("event_retention_limit", 500))
+
+        with self._state_lock():
+            result = self.bus.compact_events(retention_limit=retention_limit)
+            offset_adj = result.get("offset_adjustment", 0)
+
+            if offset_adj > 0:
+                cursors = self._read_json(self.cursors_path)
+                if isinstance(cursors, dict):
+                    for agent in cursors:
+                        cursors[agent] = max(0, int(cursors[agent]) - offset_adj)
+                    self._write_json(self.cursors_path, cursors)
+                    result["cursors_adjusted"] = len(cursors)
+
+        if result.get("archived", 0) > 0:
+            self.bus.emit(
+                "events.compacted",
+                {
+                    "archived": result["archived"],
+                    "retained": result["retained"],
+                    "offset_adjustment": result["offset_adjustment"],
+                },
+                source="orchestrator",
+            )
+
+        return result
+
     def _close_bugs_for_task(self, task_id: str, note: str) -> None:
         bugs = self._read_json_list(self.bugs_path)
         changed = False
@@ -3062,7 +3116,108 @@ class Orchestrator:
         }
         bugs.append(bug)
         self._write_json(self.bugs_path, bugs)
+
+        # Attempt to create a GitHub issue for the newly opened bug
+        self._create_github_issue_from_bug(bug)
+
         return bug
+
+    def _create_github_issue_from_bug(
+        self,
+        bug: Dict[str, Any],
+        repo_full_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Creates a GitHub issue from a bug record.
+        This method simulates GitHub API interaction.
+        """
+        bug_id = bug.get("id", "UNKNOWN_BUG")
+        source_task = bug.get("source_task", "UNKNOWN_TASK")
+        owner = bug.get("owner", "UNKNOWN_OWNER")
+        severity = bug.get("severity", "medium")
+        repro_steps = bug.get("repro_steps", "No reproduction steps provided.")
+        expected = bug.get("expected", "Expected behavior not specified.")
+        actual = bug.get("actual", "Actual behavior not specified.")
+
+        repo = repo_full_name or os.getenv("GITHUB_REPOSITORY")
+        if not repo:
+            print(
+                "WARNING: GITHUB_REPOSITORY environment variable not set and no repo_full_name provided. "
+                "Cannot create GitHub issue.",
+                file=sys.stderr,
+                flush=True,
+            )
+            return {
+                "status": "skipped",
+                "reason": "GITHUB_REPOSITORY missing",
+                "bug_id": bug_id,
+            }
+
+        github_token = os.getenv("GITHUB_TOKEN")
+        if not github_token:
+            print(
+                "WARNING: GITHUB_TOKEN environment variable not set. Cannot perform GitHub API actions.",
+                file=sys.stderr,
+                flush=True,
+            )
+            return {
+                "status": "skipped",
+                "reason": "GITHUB_TOKEN missing",
+                "bug_id": bug_id,
+            }
+
+        issue_title = f"[{severity.upper()} Bug] Task {source_task}: {actual}"
+        issue_body = (
+            f"**Bug ID:** {bug_id}\n"
+            f"**Task ID:** {source_task}\n"
+            f"**Owner:** {owner}\n"
+            f"**Severity:** {severity}\n\n"
+            f"**Reproduction Steps:**\n```\n{repro_steps}\n```\n\n"
+            f"**Expected Behavior:**\n```\n{expected}\n```\n\n"
+            f"**Actual Behavior:**\n```\n{actual}\n```\n"
+        )
+        labels = [severity, "bug", f"task:{source_task}"]
+        assignees = [owner]  # Assign to the owner of the orchestrator bug
+
+        print(f"INFO: Simulating GitHub API call to create issue for bug {bug_id} in repo {repo}", file=sys.stderr, flush=True)
+        print(f"  Issue Title: {issue_title}", file=sys.stderr, flush=True)
+        print(f"  Issue Body: {issue_body}", file=sys.stderr, flush=True)
+        print(f"  Labels: {labels}", file=sys.stderr, flush=True)
+        print(f"  Assignees: {assignees}", file=sys.stderr, flush=True)
+
+        # Simulate GitHub API call response
+        # In a real implementation, you would use a library like PyGithub here.
+        # For now, generate a placeholder issue number.
+        simulated_issue_number = int(uuid.uuid4().hex[:8], 16) % 10000 + 1 # Pseudo-random issue number
+        issue_url = f"https://github.com/{repo}/issues/{simulated_issue_number}"
+
+        with self._state_lock():
+            # Update the bug record with GitHub issue information
+            bugs = self._read_json_list(self.bugs_path)
+            for b in bugs:
+                if b["id"] == bug_id:
+                    b["github_issue"] = {
+                        "repo": repo,
+                        "issue_number": simulated_issue_number,
+                        "url": issue_url,
+                        "title": issue_title,
+                        "status": "open",
+                        "created_at": self._now(),
+                    }
+                    b["updated_at"] = self._now()
+                    break
+            self._write_json(self.bugs_path, bugs)
+
+        result = {
+            "status": "success",
+            "action": "simulated_github_issue_creation",
+            "bug_id": bug_id,
+            "repo": repo,
+            "issue_number": simulated_issue_number,
+            "issue_url": issue_url,
+            "issue_title": issue_title,
+        }
+        self.bus.emit("bug.github_issue_created", result, source="orchestrator")
+        return result
 
     def _validate_report_payload(self, report: Dict[str, Any]) -> None:
         if not isinstance(report.get("commit_sha"), str) or not report.get("commit_sha", "").strip():
