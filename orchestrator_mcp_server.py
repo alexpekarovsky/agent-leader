@@ -1589,6 +1589,8 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
     for p in processed:
         logger.info("  report %s: %s", p.get("task_id"), "ACCEPTED" if p.get("passed") else "REJECTED")
 
+    ORCH._run_bus_housekeeping() # Run bus housekeeping after all manager actions
+
     return {
         "processed_reports": processed,
         "deferred_reports": deferred,

@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Deque, Dict, Iterable, Iterator, Optional, Tuple
+import gzip
 
 logger = logging.getLogger("orchestrator.bus")
 
@@ -171,6 +172,34 @@ class EventBus:
 
         return _gen()
 
+    def _cleanup_archives(self, archive_dir: Path) -> None:
+        """Compress and delete old files in the archive directory."""
+        now = datetime.now(timezone.utc)
+        for f in archive_dir.iterdir():
+            if not f.is_file():
+                continue
+            
+            try:
+                # Check creation/modification time
+                file_mtime = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc)
+                age = now - file_mtime
+
+                # Delete files older than 30 days
+                if age.days > 30:
+                    f.unlink()
+                    logger.info("Deleted old archive file: %s", f.name)
+                    continue
+
+                # Compress files older than 7 days if not already compressed
+                if age.days > 7 and f.suffix != ".gz":
+                    with f.open("rb") as f_in:
+                        with gzip.open(str(f) + ".gz", "wb") as f_out:
+                            f_out.writelines(f_in)
+                    f.unlink()
+                    logger.info("Compressed archive file: %s", f.name)
+            except Exception as e:
+                logger.warning("Error processing archive file %s: %s", f.name, e)
+
     def compact_events(self, retention_limit: int = 500) -> Dict[str, Any]:
         """Archive events beyond retention limit to a rotated file.
 
@@ -216,6 +245,7 @@ class EventBus:
                 fh.flush()
                 os.fsync(fh.fileno())
             tmp.replace(self.events_path)
+            self._cleanup_archives(archive_dir)
 
             return {
                 "archived": cut,
@@ -261,19 +291,25 @@ class EventBus:
                     os.fsync(fh.fileno())
                 except OSError as e:
                     logger.warning("audit fsync failed: %s", e)
-            # Rotate audit log if it grows too large (>10k lines)
             try:
-                line_count = sum(1 for _ in self.audit_path.open("r", encoding="utf-8"))
-                if line_count > 10000:
-                    archive_dir = self.bus_dir / "archive"
+                # Rotate audit log if it grows too large (>50MB)
+                if self.audit_path.stat().st_size > 50 * 1024 * 1024: # 50 MB
+                    archive_dir = self.root / "archive"
                     archive_dir.mkdir(parents=True, exist_ok=True)
-                    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-                    archive_path = archive_dir / f"audit-{ts}.jsonl"
+                    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                    archive_path = archive_dir / f"audit.{ts}.jsonl"
                     self.audit_path.rename(archive_path)
-                    logger.info("audit.rotated lines=%d archive=%s", line_count, archive_path.name)
+                    logger.info("audit.rotated size=%d archive=%s", archive_path.stat().st_size, archive_path.name)
+                    # Compress immediately after rotation
+                    with archive_path.open("rb") as f_in:
+                        with gzip.open(str(archive_path) + ".gz", "wb") as f_out:
+                            f_out.writelines(f_in)
+                    archive_path.unlink() # Delete the uncompressed archive
+                    logger.info("Compressed rotated audit file: %s", archive_path.name + ".gz")
+                self._cleanup_archives(archive_dir)
             except Exception as e:
                 logger.debug("audit rotation check failed: %s", e)
-        return entry
+            return entry
 
     def read_audit(
         self,

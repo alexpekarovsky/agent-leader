@@ -1321,6 +1321,13 @@ class Orchestrator:
                 "threshold_seconds": threshold,
             }
 
+    def _run_bus_housekeeping(self) -> None:
+        """Runs periodic cleanup for the event bus, including audit and event log rotation."""
+        self.bus.compact_events()
+        # The append_audit method now also handles its own rotation and cleanup
+        # This will trigger audit rotation if needed and clean up its archives
+        self.bus.append_audit({"event": "bus.housekeeping", "status": "ok"})
+
     def run_quality_gates(self, task: Dict[str, Any], report: Dict[str, Any]) -> QualityGateOutcome:
         """Run policy-configured quality gates against a task report."""
         gates_config = self.policy.triggers.get("quality_gates", {})
