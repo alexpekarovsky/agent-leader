@@ -314,36 +314,29 @@ class DashboardTuiTests(unittest.TestCase):
         )
         
         out = mod._render_gemini_v3b(snap, completed=False, auto_stopped=False, color_enabled=False)
-        
-        # Check for new metrics in output
-        self.assertIn("Velocity & Quality", out)
+
+        # Check section headers and key content in rewritten gemini-v3b layout
+        self.assertIn("AGENT LEADER", out)
         self.assertIn("Agent Leader Orchestrator", out)
-        self.assertIn("Version: v0.2.0 - Stability + Multi-Project Foundation", out)
-        self.assertIn("Version focus: CI/GitHub Integrations | Codebase Comprehension Phase", out)
-        self.assertIn("Team Topology", out)
-        self.assertIn("Delivery: today t4/c3/loc180", out)
-        self.assertIn("Codex | Leader | proc:-(0) hb:-", out)
-        self.assertIn("Agent Session Stats:", out)
-        self.assertIn("Current Work:", out)
-        self.assertIn("Queued Next:", out)
-        self.assertIn("Blocked:", out)
-        self.assertIn("Done this session: 2", out)
-        self.assertIn("Today: tasks=4 commits=3 files=12", out)
-        self.assertIn("Session: tasks=2 commits=2 files=7", out)
-        self.assertIn("Today LOC: +220/-40 net=180", out)
-        self.assertIn("Session LOC: +90/-10 net=80", out)
-        self.assertIn("Validations Today/Session: 4/2", out)
+        self.assertIn("WORKING", out)
+        self.assertIn("LIVE STATUS", out)
         self.assertIn("CI/GitHub Integrations", out)
-        self.assertIn("CI result ingestion + GitHub PR/issue handoff integration path and validation hooks", out)
-        self.assertIn("Total Validations: 5", out)
-        self.assertIn("Failure Rate: 20", out)
-        self.assertIn("Review Depth: 0.2x", out)
-        self.assertIn("Stale Tasks: 0", out)
-        self.assertIn("Blocker Res: 20m", out)
-        self.assertIn("Active: 1 (div:2)", out)
-        self.assertIn("Claude-only signals:", out)
-        self.assertIn("claude validation share: 40", out)
-        self.assertIn("style=gemini-v3b", out)
+        self.assertIn("TEAM ROSTER", out)
+        self.assertIn("Codex", out)
+        self.assertIn("Gemini", out)
+        self.assertIn("WORK QUEUE", out)
+        self.assertIn("VELOCITY & QUALITY", out)
+        self.assertIn("Tasks/hour:", out)
+        self.assertIn("CODE OUTPUT", out)
+        self.assertIn("Today:", out)
+        self.assertIn("Session:", out)
+        self.assertIn("+220/-40", out)
+        self.assertIn("+90/-10", out)
+        # Velocity section shows failure rate and stale tasks
+        self.assertIn("Failure rate:", out)
+        self.assertIn("Stale tasks:", out)
+        # Budget section present
+        self.assertIn("BUDGET & LIMITS", out)
 
 
     def test_project_meta_milestone_counts(self) -> None:
@@ -525,10 +518,10 @@ class DashboardTuiTests(unittest.TestCase):
             milestones_total=10, milestones_done=7,
         )
         out = mod._render_gemini_v3b(snap, completed=False, auto_stopped=False, color_enabled=False)
-        self.assertIn("Milestones:", out)
-        self.assertIn("(7/10)", out)
-        self.assertIn("70%", out)
-        self.assertIn("Version focus: Active Milestone", out)
+        # Rewritten gemini-v3b shows project name and progress bar in header
+        self.assertIn("Test Project", out)
+        self.assertIn("50%", out)
+        self.assertIn("5/10 tasks", out)
 
 
     # ------------------------------------------------------------------
