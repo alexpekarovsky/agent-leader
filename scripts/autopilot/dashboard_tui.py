@@ -718,6 +718,9 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
     blockers_open = sum(1 for b in blockers if str(b.get("status", "")).lower() == "open")
     bugs_open = sum(1 for b in bugs if str(b.get("status", "")).lower() == "open")
 
+    roles = _load_json(root / "state" / "roles.json", {})
+    live_leader = str(roles.get("leader", "")).strip()
+
     supervisor_processes = _read_supervisor_processes(root)
     active_agents: List[Dict[str, Any]] = []
     operator_agent_names = set(AGENT_OPERATOR_PROFILES.keys())
@@ -750,6 +753,13 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
                     "age_s": proc_entry.get("age_s"),
                     "started_at": proc_entry.get("started_at"),
                 })
+        # Override role_label from live roles.json — the actual leader may differ from the hardcoded profile.
+        effective_role = profile["role_label"]
+        if live_leader and agent == live_leader:
+            effective_role = "Leader/Manager"
+        elif live_leader and agent != live_leader and effective_role == "Leader/Manager":
+            effective_role = "Worker"
+
         active_agents.append(
             {
                 "agent": agent,
@@ -760,7 +770,7 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
                 "client": profile["type_label"],
                 "model": profile["model_label"],
                 "display_name": profile["display_name"],
-                "role_label": profile["role_label"],
+                "role_label": effective_role,
                 "provider": profile["provider"],
                 "process_state": process_state,
                 "process_count": len(running_processes),
@@ -1664,7 +1674,7 @@ def _render_gemini(snapshot: DashboardSnapshot, completed: bool, auto_stopped: b
 
 
 def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, color_enabled: bool = True) -> str:
-    width = max(72, _term_width())
+    width = min(180, max(72, _term_width()))
     height = max(24, _term_height())
     sep = _color(color_enabled, "34;1", "=" * width)
     lines: List[str] = []
