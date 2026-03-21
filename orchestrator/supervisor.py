@@ -27,7 +27,7 @@ from orchestrator.policy import Policy
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Default process names in canonical order.
-_BASE_PROCS = ("manager", "wingman", "claude", "gemini", "codex_worker", "watchdog")
+_BASE_PROCS = ("manager", "wingman", "claude", "claude_2", "claude_3", "gemini", "codex_worker", "watchdog")
 
 STOP_WAIT_SECONDS = 10
 
@@ -76,6 +76,7 @@ class SupervisorConfig:
     gemini_team_id: str = ""
     codex_team_id: str = ""
     wingman_team_id: str = ""
+    claude_lanes: int = 1  # Number of parallel Claude workers (1-3).
     extra_workers: List[ExtraWorker] = field(default_factory=list)
     max_restarts: int = 5
     backoff_base: int = 10
@@ -158,10 +159,21 @@ def _is_alive(pid: int) -> bool:
 # Topology
 # ---------------------------------------------------------------------------
 
-def proc_enabled(name: str, leader_agent: str) -> bool:
-    """Return whether *name* should run given *leader_agent*."""
-    if name == "claude":
-        return leader_agent != "claude_code"
+def proc_enabled(name: str, leader_agent: str, claude_lanes: int = 1) -> bool:
+    """Return whether *name* should run given *leader_agent*.
+
+    *claude_lanes* controls how many parallel Claude workers are active (1-3).
+    ``claude`` is always enabled (when leader permits), ``claude_2`` requires
+    ``claude_lanes >= 2``, and ``claude_3`` requires ``claude_lanes >= 3``.
+    """
+    if name in ("claude", "claude_2", "claude_3"):
+        if leader_agent == "claude_code":
+            return False
+        if name == "claude_2":
+            return claude_lanes >= 2
+        if name == "claude_3":
+            return claude_lanes >= 3
+        return True  # "claude" enabled when leader != claude_code
     if name == "gemini":
         return leader_agent != "gemini"
     if name == "codex_worker":
@@ -219,10 +231,14 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             f" --daily-call-budget {cfg.daily_call_budget}"
             f"{_event_driven_arg()}"
         )
-    if name == "claude":
+    if name in ("claude", "claude_2", "claude_3"):
+        # Each Claude lane gets a distinct instance-id for claim isolation.
+        instance_id = f"claude_code#headless-default-{name.split('_')[1]}" if "_" in name else ""
+        instance_arg = f" --instance-id {instance_id}" if instance_id else ""
         return (
             f"{scripts}/worker_loop.sh"
             f" --cli claude --agent claude_code{_team_arg(cfg.claude_team_id)}"
+            f"{instance_arg}"
             f" --project-root {cfg.claude_project_root}"
             f" --interval {cfg.worker_interval}"
             f" --cli-timeout {cfg.worker_cli_timeout}"
@@ -290,9 +306,10 @@ class ProcessStatus:
     state: str  # running | stopped | dead | disabled
     pid: Optional[int]
     restarts: int
-    heartbeat_status: str # active | stale | unknown
-    task_activity: str # idle | working | blocked | reporting | no_tasks
+    heartbeat_status: str # active | stale | unknown | n/a
+    task_activity: str # idle | working | blocked | reporting | no_tasks | expected_stopped
     capacity_errors: int = 0  # gemini capacity error streak count
+    leader_heartbeat_stale: bool = False  # True when leader process is up but heartbeat is stale/unknown
 
 
 class Supervisor:
@@ -342,7 +359,7 @@ class Supervisor:
         return _is_alive(pid)
 
     def _start_proc(self, name: str) -> None:
-        if not proc_enabled(name, self.cfg.leader_agent):
+        if not proc_enabled(name, self.cfg.leader_agent, self.cfg.claude_lanes):
             _log("INFO", f"skipping disabled process {name} (leader_agent={self.cfg.leader_agent})")
             return
         if self._is_running(name):
@@ -407,7 +424,7 @@ class Supervisor:
             except (ValueError, OSError):
                 pass
 
-        if not proc_enabled(name, self.cfg.leader_agent):
+        if not proc_enabled(name, self.cfg.leader_agent, self.cfg.claude_lanes):
             return ProcessStatus(name, "disabled", None, restarts, "unknown", "no_tasks")
 
         pid = _read_pid(self.cfg.pid_dir, name)
@@ -415,9 +432,19 @@ class Supervisor:
         heartbeat_status = "unknown"
         task_activity = "no_tasks"
 
-        # Query orchestrator for heartbeat and task activity if it's an agent process
-        if name in ("claude", "gemini", "codex_worker", "wingman", "manager"):
-            agent_name = name if name != "codex_worker" else "codex"
+        # Query orchestrator for heartbeat and task activity if it's an agent process.
+        # Map process name → heartbeat agent name (processes and agents use
+        # different identifiers, e.g. process "claude" heartbeats as "claude_code").
+        _proc_to_agent = {
+            "manager": self.cfg.leader_agent,
+            "claude": "claude_code",
+            "claude_2": "claude_code",
+            "claude_3": "claude_code",
+            "codex_worker": "codex",
+            "wingman": self.cfg.wingman_agent,
+        }
+        if name in _proc_to_agent or name == "gemini":
+            agent_name = _proc_to_agent.get(name, name)
             agent_info = next(
                 (a for a in self.orchestrator.list_agents(active_only=False) if a.get("agent") == agent_name),
                 None,
@@ -435,7 +462,26 @@ class Supervisor:
                     task_activity = "reporting"
                 else:
                     task_activity = "idle"
+        elif name == "watchdog":
+            # Watchdog is a monitoring process, not an agent — derive status
+            # from process liveness rather than orchestrator heartbeat.
+            watchdog_pid = _read_pid(self.cfg.pid_dir, name)
+            if watchdog_pid is not None and _is_alive(watchdog_pid):
+                heartbeat_status = "active"
+                task_activity = "monitoring"
+            else:
+                heartbeat_status = "n/a"
+                task_activity = "idle"
 
+
+        # Detect stale leader heartbeat: process alive but agent heartbeat not active.
+        leader_heartbeat_stale = False
+        if name == "manager" and heartbeat_status in ("stale", "unknown"):
+            # The leader process may be running but its orchestrator heartbeat
+            # can lag between manager cycles.  Flag this explicitly so status
+            # consumers can surface a remediation hint.
+            if pid is not None and _is_alive(pid):
+                leader_heartbeat_stale = True
 
         # Read capacity error streak for gemini workers
         capacity_errors = 0
@@ -452,7 +498,7 @@ class Supervisor:
         if pid is None:
             return ProcessStatus(name, "stopped", None, restarts, heartbeat_status, task_activity, capacity_errors)
         if _is_alive(pid):
-            return ProcessStatus(name, "running", pid, restarts, heartbeat_status, task_activity, capacity_errors)
+            return ProcessStatus(name, "running", pid, restarts, heartbeat_status, task_activity, capacity_errors, leader_heartbeat_stale)
         return ProcessStatus(name, "dead", pid, restarts, heartbeat_status, task_activity, capacity_errors)
 
     def _get_agent_display_info(self, name: str) -> Dict[str, str]:
@@ -461,8 +507,9 @@ class Supervisor:
         if name == "manager":
             info["role"] = "Leader/Manager"
             info["type"] = self.cfg.leader_agent
-        elif name == "claude":
-            info["role"] = "Main Claude implementation worker"
+        elif name in ("claude", "claude_2", "claude_3"):
+            lane_label = name.replace("claude_", "lane ") if "_" in name else "lane 1"
+            info["role"] = f"Claude worker ({lane_label})"
             info["type"] = "claude"
             info["model"] = "claude-v3"
         elif name == "gemini":
@@ -493,7 +540,7 @@ class Supervisor:
         os.makedirs(self.cfg.pid_dir, exist_ok=True)
         _log("INFO", f"starting all processes (project={self.cfg.project_root})")
         for name in self._procs:
-            if proc_enabled(name, self.cfg.leader_agent):
+            if proc_enabled(name, self.cfg.leader_agent, self.cfg.claude_lanes):
                 self._start_proc(name)
             else:
                 self._stop_proc(name)
@@ -580,7 +627,7 @@ class Supervisor:
         try:
             while True:
                 for name in self._procs:
-                    if not proc_enabled(name, self.cfg.leader_agent):
+                    if not proc_enabled(name, self.cfg.leader_agent, self.cfg.claude_lanes):
                         continue
                     
                     ps = self._status_proc(name)
@@ -613,6 +660,7 @@ class Supervisor:
         results = []
         for name in self._procs:
             ps = self._status_proc(name)
+            display = self._get_agent_display_info(name)
             entry = {
                 "name": ps.name,
                 "state": ps.state,
@@ -620,9 +668,17 @@ class Supervisor:
                 "restarts": ps.restarts,
                 "heartbeat_status": ps.heartbeat_status,
                 "task_activity": ps.task_activity,
+                "role": display["role"],
+                "model": display["model"],
             }
+            # Include instance_id for multi-lane Claude workers.
+            if name in ("claude_2", "claude_3"):
+                lane_num = name.split("_")[1]
+                entry["instance_id"] = f"claude_code#headless-default-{lane_num}"
             if ps.capacity_errors > 0:
                 entry["capacity_errors"] = ps.capacity_errors
+            if ps.leader_heartbeat_stale:
+                entry["leader_heartbeat_stale"] = True
             results.append(entry)
         return results
 
@@ -680,6 +736,8 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> Tuple[str, Supe
     parser.add_argument("--gemini-fallback-model", default="")
     parser.add_argument("--gemini-capacity-retries", type=int, default=2)
     parser.add_argument("--gemini-capacity-backoff", type=int, default=15)
+    parser.add_argument("--claude-lanes", type=int, default=1,
+                        help="Number of parallel Claude worker lanes (1-3)")
     parser.add_argument("--claude-team-id", default="")
     parser.add_argument("--gemini-team-id", default="")
     parser.add_argument("--codex-team-id", default="")
@@ -716,6 +774,7 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> Tuple[str, Supe
         gemini_fallback_model=args.gemini_fallback_model,
         gemini_capacity_retries=args.gemini_capacity_retries,
         gemini_capacity_backoff=args.gemini_capacity_backoff,
+        claude_lanes=max(1, min(3, args.claude_lanes)),
         claude_team_id=args.claude_team_id,
         gemini_team_id=args.gemini_team_id,
         codex_team_id=args.codex_team_id,
