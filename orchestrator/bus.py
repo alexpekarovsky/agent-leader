@@ -88,7 +88,10 @@ class EventBus:
             with self.events_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(event) + "\n")
                 fh.flush()
-                os.fsync(fh.fileno())
+                try:
+                    os.fsync(fh.fileno())
+                except OSError as e:
+                    logger.warning("event fsync failed: %s", e)
         return event
 
     def iter_events(self) -> Iterable[Dict[str, Any]]:
@@ -254,7 +257,22 @@ class EventBus:
             with self.audit_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(entry) + "\n")
                 fh.flush()
-                os.fsync(fh.fileno())
+                try:
+                    os.fsync(fh.fileno())
+                except OSError as e:
+                    logger.warning("audit fsync failed: %s", e)
+            # Rotate audit log if it grows too large (>10k lines)
+            try:
+                line_count = sum(1 for _ in self.audit_path.open("r", encoding="utf-8"))
+                if line_count > 10000:
+                    archive_dir = self.bus_dir / "archive"
+                    archive_dir.mkdir(parents=True, exist_ok=True)
+                    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+                    archive_path = archive_dir / f"audit-{ts}.jsonl"
+                    self.audit_path.rename(archive_path)
+                    logger.info("audit.rotated lines=%d archive=%s", line_count, archive_path.name)
+            except Exception as e:
+                logger.debug("audit rotation check failed: %s", e)
         return entry
 
     def read_audit(

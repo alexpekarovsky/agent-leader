@@ -268,6 +268,7 @@ class Orchestrator:
                 owner=resolved_owner,
             )
             if duplicate is not None:
+                logger.info("task.deduplicated title=%s existing_id=%s owner=%s", title[:60], duplicate.get("id"), resolved_owner)
                 echoed = dict(duplicate)
                 echoed["deduplicated"] = True
                 echoed["dedupe_reason"] = "matching open task already exists"
@@ -674,7 +675,8 @@ class Orchestrator:
                     continue
                 try:
                     created_dt = datetime.fromisoformat(str(created_at_raw))
-                except Exception:
+                except Exception as _e:
+                    logger.debug("claim_noop: failed to parse created_at=%s: %s", created_at_raw, _e)
                     created_dt = now_dt
                 age = int((now_dt - created_dt).total_seconds())
                 if age < threshold:
