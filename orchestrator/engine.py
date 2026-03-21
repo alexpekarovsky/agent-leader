@@ -1078,7 +1078,7 @@ class Orchestrator:
                 )
 
         with self._state_lock():
-            queue = self._read_json(self.report_retry_queue_path)
+            queue = self._read_json(self.report_retry_queue_path, make_copy=False)
             if not isinstance(queue, list):
                 queue = []
         pending = len([item for item in queue if item.get("status") == "pending"])
@@ -2573,7 +2573,7 @@ class Orchestrator:
         return str(self.get_roles().get("leader", self.policy.manager()))
 
     def get_roles(self) -> Dict[str, Any]:
-        roles = self._read_json(self.roles_path)
+        roles = self._read_json(self.roles_path, make_copy=False)
         if not isinstance(roles, dict):
             roles = {}
         leader = roles.get("leader")
@@ -2910,7 +2910,7 @@ class Orchestrator:
         current = self._current_agent_instance_id_unlocked(agent)
         if current and current != f"{agent}#default":
             return current
-        instances = self._read_json(self.agent_instances_path)
+        instances = self._read_json(self.agent_instances_path, make_copy=False)
         if isinstance(instances, dict):
             latest: Optional[Dict[str, Any]] = None
             for entry in instances.values():
@@ -3028,7 +3028,7 @@ class Orchestrator:
         stale_after_seconds: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         stale_after = stale_after_seconds if stale_after_seconds is not None else self._heartbeat_timeout_seconds()
-        instances = self._read_json(self.agent_instances_path)
+        instances = self._read_json(self.agent_instances_path, make_copy=False)
         if not isinstance(instances, dict):
             return []
         now = datetime.now(timezone.utc)
@@ -4045,7 +4045,7 @@ class Orchestrator:
         if not self._agent_is_operational(agent):
             raise ValueError(f"agent_not_operational_or_wrong_project: {agent}")
 
-    def _read_json(self, path: Path) -> Any:
+    def _read_json(self, path: Path, make_copy: bool = True) -> Any:
         key = str(path)
         try:
             mtime_ns = path.stat().st_mtime_ns
@@ -4054,11 +4054,11 @@ class Orchestrator:
             return []
         cached = self._json_cache.get(key)
         if cached is not None and cached[0] == mtime_ns:
-            return copy.deepcopy(cached[1])
+            return copy.deepcopy(cached[1]) if make_copy else cached[1]
         with path.open("r", encoding="utf-8") as fh:
             data = json.load(fh)
         self._json_cache[key] = (mtime_ns, data)
-        return copy.deepcopy(data)
+        return copy.deepcopy(data) if make_copy else data
 
     def _ensure_list_file(self, path: Path) -> List[Dict[str, Any]]:
         data = self._read_json(path)
