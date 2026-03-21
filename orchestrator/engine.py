@@ -16,6 +16,7 @@ from orchestrator.bus import EventBus
 from orchestrator.policy import Policy
 from orchestrator.quality_gates import QualityGateOutcome, run_quality_gates
 from orchestrator.self_review import SelfReviewConfig
+from orchestrator.github_ci import normalize_github_ci_result
 from orchestrator import pr_stack as _pr_stack
 
 try:
@@ -67,6 +68,7 @@ class Orchestrator:
         self.decisions_dir = self.root / "decisions"
         self.decisions_dir.mkdir(parents=True, exist_ok=True)
         self.state_lock_path = self.state_dir / ".state.lock"
+        self.github_repo_config_path = self.state_dir / "github_repo_config.json"
         if fcntl is None:
             print(
                 "WARNING: fcntl unavailable; state lock disabled. Multi-process safety is degraded.",
@@ -111,6 +113,8 @@ class Orchestrator:
             self.consults_path.write_text("[]\n", encoding="utf-8")
         if not self.pr_stacks_path.exists():
             self.pr_stacks_path.write_text("[]\n", encoding="utf-8")
+        if not self.github_repo_config_path.exists():
+            self.github_repo_config_path.write_text("{}\n", encoding="utf-8")
         if not self.roles_path.exists():
             self.roles_path.write_text(
                 json.dumps(
@@ -756,6 +760,23 @@ class Orchestrator:
             report["project_name"] = str(task.get("project_name", ""))
             report["tags"] = self._normalize_task_tags(tags=task.get("tags"))
 
+            # --- Report Deduplication ---
+            existing_report = self.bus.read_report(task_id=task_id)
+            if existing_report and existing_report.get("commit_sha") == report.get("commit_sha"):
+                self.bus.emit(
+                    "task.reported.deduplicated",
+                    {
+                        "task_id": task_id,
+                        "agent": report["agent"],
+                        "commit_sha": report["commit_sha"],
+                        "status": report["status"],
+                        "reason": "report with same commit_sha already exists",
+                    },
+                    source=report["agent"],
+                )
+                return {**report, "deduplicated": True}
+            # --- End Report Deduplication ---
+
             self.bus.write_report(task_id=task_id, report=report)
 
             review_gate = report.get("review_gate")
@@ -996,6 +1017,10 @@ class Orchestrator:
         }
 
     def requeue_stale_in_progress_tasks(self, stale_after_seconds: int = 1800) -> List[Dict[str, Any]]:
+        # Cleanup old reports first
+        report_retention_days = self.policy.triggers.get("report_retention_days", 30)
+        self._cleanup_old_reports(max_age_seconds=report_retention_days * 24 * 60 * 60)
+
         with self._state_lock():
             tasks = self._read_json(self.tasks_path)
             agents = self._read_json(self.agents_path)
@@ -1213,6 +1238,29 @@ class Orchestrator:
     def self_review_config(self) -> SelfReviewConfig:
         """Return the policy-configured self-review loop settings."""
         return SelfReviewConfig.from_policy(self.policy.triggers)
+
+    def _cleanup_old_reports(self, max_age_seconds: int = 30 * 24 * 60 * 60) -> int:
+        """Removes old reports from the bus/reports directory."""
+        removed_count = 0
+        now = time.time()
+        # No need for a separate _state_lock here as it's typically called within a locked context
+        # or the bus.write_report/read_report handles file locks for individual reports.
+        # This operation is more about directory management than shared state.
+        for report_file in self.bus.reports_dir.iterdir():
+            if report_file.is_file() and report_file.suffix == ".json":
+                try:
+                    modified_time = report_file.stat().st_mtime
+                    if (now - modified_time) > max_age_seconds:
+                        report_file.unlink()
+                        removed_count += 1 # Removed_count was incremented twice.
+                        self.bus.emit(
+                            "report.cleaned",
+                            {"file": str(report_file.name), "reason": "exceeded max age"},
+                            source="orchestrator",
+                        )
+                except OSError as e:
+                    print(f"WARNING: Could not remove old report file {report_file}: {e}", file=sys.stderr, flush=True)
+        return removed_count
 
     def validate_task(
         self,
@@ -1769,6 +1817,14 @@ class Orchestrator:
             "next_ready": [{"id": p["id"], "branch": p["branch"]} for p in ready_prs],
         }
 
+        return {
+            "status": "success",
+            "action": "simulated_github_issue_creation",
+            "task_id": task_id,
+            "issue_title": issue_title,
+            "log_message": log_message,
+        }
+
     def process_github_handoff_event(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Process a github.handoff_required event and simulate GitHub API interaction.
 
@@ -1833,6 +1889,239 @@ class Orchestrator:
                 "issue_title": issue_title,
                 "log_message": log_message,
             }
+        
+        return {
+            "status": "unhandled_action",
+            "reason": f"No specific handler for action_required: {action_required}",
+            "task_id": task_id,
+            "log_message": log_message,
+        }
+
+    def _find_pr_in_stacks_unlocked(
+        self,
+        *,
+        repo: str,
+        pr_number: Optional[int] = None,
+        branch: Optional[str] = None,
+        head_sha: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Helper to find a PR entry in any stack by number, branch, or SHA.
+
+        Must be called with _state_lock held.
+        """
+        stacks = self._read_json_list(self.pr_stacks_path)
+        for stack in stacks:
+            if stack.get("repo") != repo:
+                continue
+            for pr_entry in stack.get("prs", []):
+                matched = False
+                if pr_number is not None and pr_entry.get("pr_number") == pr_number:
+                    matched = True
+                elif branch and pr_entry.get("branch") == branch:
+                    if head_sha and pr_entry.get("head_sha") != head_sha and pr_entry.get("head_sha") is not None:
+                        matched = False
+                    else:
+                        matched = True
+                elif head_sha and pr_entry.get("head_sha") == head_sha:
+                    if not pr_entry.get("pr_number") and not pr_entry.get("branch"):
+                        matched = True
+
+                if matched:
+                    pr_entry["stack"] = stack
+                    return pr_entry
+        return None
+
+    def process_github_webhook(self, payload: Dict[str, Any], source: str) -> Dict[str, Any]:
+        """Process a GitHub webhook payload, normalize CI results, and update orchestrator tasks."""
+        # Extract headers from the payload itself, as the tool definition doesn't pass them separately.
+        # This is a convention for our internal MCP tools.
+        headers = payload.get("headers", {})
+        event_type = headers.get("X-GitHub-Event")
+        if not event_type:
+            print("WARNING: X-GitHub-Event header missing. Cannot process webhook.", file=sys.stderr, flush=True)
+            return {"status": "error", "reason": "X-GitHub-Event header missing"}
+
+        repo_full_name = payload.get("repository", {}).get("full_name")
+        if not repo_full_name:
+            # Try to get it from the top-level payload if not in a nested 'repository' key
+            repo_full_name = payload.get("repo", {}).get("full_name") or payload.get("repository", {}).get("full_name")
+
+            if not repo_full_name:
+                print("WARNING: Repository full name missing from payload. Cannot process webhook.", file=sys.stderr, flush=True)
+                return {"status": "error", "reason": "repository.full_name missing"}
+
+
+        processed_summary: Dict[str, Any] = {
+            "event_type": event_type,
+            "repo": repo_full_name,
+            "status": "ignored",
+            "details": "webhook event type not handled",
+        }
+
+        with self._state_lock():
+            # Handle Pull Request events
+            if event_type == "pull_request":
+                pr_data = payload.get("pull_request")
+                action = payload.get("action")
+                if not pr_data or not action:
+                    return {**processed_summary, "status": "skipped", "details": "missing pull_request data or action"}
+
+                pr_number = pr_data.get("number")
+                pr_branch = pr_data.get("head", {}).get("ref")
+                pr_head_sha = pr_data.get("head", {}).get("sha")
+                pr_state = pr_data.get("state") # open, closed, etc.
+                pr_merged = pr_data.get("merged") # boolean
+
+                pr_entry = self._find_pr_in_stacks_unlocked(
+                    repo=repo_full_name, pr_number=pr_number, branch=pr_branch, head_sha=pr_head_sha
+                )
+
+                if pr_entry:
+                    current_stack = pr_entry.pop("stack") # Remove the temporarily attached stack
+                    _pr_stack.update_pr_state(
+                        stack=current_stack, # Pass the full stack dictionary
+                        pr_id=pr_entry["id"],
+                        state=pr_state,
+                        pr_number=pr_number,
+                    )
+                    
+                    if action == "closed":
+                        if pr_merged:
+                            ungated_prs = _pr_stack.process_merge_event(current_stack, pr_entry["id"])
+                            processed_summary.update({
+                                "status": "pr_merged",
+                                "details": f"PR {pr_number} merged in stack {pr_entry.get('stack_id')}",
+                                "pr_id": pr_entry["id"],
+                                "pr_number": pr_number,
+                                "ungated_child_prs": [p["id"] for p in ungated_prs]
+                            })
+                        else:
+                            _pr_stack.process_close_event(current_stack, pr_entry["id"])
+                            processed_summary.update({
+                                "status": "pr_closed",
+                                "details": f"PR {pr_number} closed (not merged) in stack {pr_entry.get('stack_id')}",
+                                "pr_id": pr_entry["id"],
+                                "pr_number": pr_number,
+                            })
+                    else: # opened, reopened, synchronize, edited, ready_for_review, etc.
+                        processed_summary.update({
+                            "status": "pr_updated",
+                            "details": f"PR {pr_number} {action} in stack {pr_entry.get('stack_id')}",
+                            "pr_id": pr_entry["id"],
+                            "pr_number": pr_number,
+                        })
+                    stacks = self._read_json_list(self.pr_stacks_path) # Re-read all stacks to find the one that contains `current_stack` and update it
+                    for i, s in enumerate(stacks):
+                        if s["id"] == current_stack["id"]:
+                            stacks[i] = current_stack
+                            break
+                    self._write_json(self.pr_stacks_path, stacks) # Write back the modified stacks
+                else:
+                    processed_summary.update({
+                        "status": "pr_not_in_stack",
+                        "details": f"PR {pr_number} {action}, but not found in any existing stack. Manual intervention might be needed.",
+                        "pr_number": pr_number,
+                    })
+
+                self.bus.emit(f"github.pr.{action}", processed_summary, source=source)
+                return processed_summary
+
+            # Handle Check Run events
+            elif event_type == "check_run":
+                check_run = payload.get("check_run")
+                if not check_run:
+                    return {**processed_summary, "status": "skipped", "details": "missing check_run data"}
+
+                normalized_ci = normalize_github_ci_result(check_run)
+                head_sha = normalized_ci.get("sha")
+                pull_requests = check_run.get("pull_requests", []) # check_run can be linked to multiple PRs
+
+                if not head_sha:
+                    return {**processed_summary, "status": "skipped", "details": "check_run missing head_sha"}
+
+                updated_prs: List[Dict[str, Any]] = []
+                
+                # Prioritize matching via linked pull_requests in the check_run payload
+                if pull_requests:
+                    for pr_link in pull_requests:
+                        pr_number = pr_link.get("number")
+                        pr_branch = pr_link.get("head", {}).get("ref")
+
+                        pr_entry = self._find_pr_in_stacks_unlocked(
+                            repo=repo_full_name, pr_number=pr_number, branch=pr_branch, head_sha=head_sha
+                        )
+
+                        if pr_entry:
+                            current_stack = pr_entry.pop("stack") # Remove the temporarily attached stack
+                            _pr_stack.update_pr_state(
+                                stack=current_stack,
+                                pr_id=pr_entry["id"],
+                                ci_status=normalized_ci.get("state"),
+                                pr_number=pr_number, # Ensure pr_number is set if it wasn't before
+                            )
+                            stacks = self._read_json_list(self.pr_stacks_path) # Re-read all stacks to find the one that contains `current_stack` and update it
+                            for i, s in enumerate(stacks):
+                                if s["id"] == current_stack["id"]:
+                                    stacks[i] = current_stack
+                                    break
+                            self._write_json(self.pr_stacks_path, stacks)
+                            updated_prs.append({
+                                "pr_id": pr_entry["id"],
+                                "pr_number": pr_number,
+                                "stack_id": pr_entry["stack_id"],
+                                "ci_state": normalized_ci.get("state"),
+                            })
+                        else:
+                            print(f"INFO: Check run for PR {pr_number} ({pr_branch}) in {repo_full_name} received, but PR not found in any stack.", file=sys.stderr, flush=True)
+                
+                # If no linked PRs or if PRs were not found in stacks, try matching directly by branch/SHA
+                if not updated_prs and check_run.get("head_branch"):
+                    branch = check_run.get("head_branch")
+                    pr_entry = self._find_pr_in_stacks_unlocked(
+                        repo=repo_full_name, branch=branch, head_sha=head_sha
+                    )
+                    if pr_entry:
+                        current_stack = pr_entry.pop("stack")
+                        _pr_stack.update_pr_state(
+                            stack=current_stack,
+                            pr_id=pr_entry["id"],
+                            ci_status=normalized_ci.get("state"),
+                            pr_number=pr_entry.get("pr_number"),
+                        )
+                        stacks = self._read_json_list(self.pr_stacks_path) # Re-read all stacks to find the one that contains `current_stack` and update it
+                        for i, s in enumerate(stacks):
+                            if s["id"] == current_stack["id"]:
+                                stacks[i] = current_stack
+                                break
+                        self._write_json(self.pr_stacks_path, stacks)
+                        updated_prs.append({
+                            "pr_id": pr_entry["id"],
+                            "pr_number": pr_entry.get("pr_number"),
+                            "stack_id": pr_entry.get("stack_id"),
+                            "ci_state": normalized_ci.get("state"),
+                        })
+                    else:
+                        print(f"INFO: Check run for branch {branch} ({head_sha}) in {repo_full_name} received, but no matching PR in any stack.", file=sys.stderr, flush=True)
+
+                if updated_prs:
+                    processed_summary.update({
+                        "status": "ci_updated",
+                        "details": f"CI status updated for {len(updated_prs)} PR(s)",
+                        "ci_state": normalized_ci.get("state"),
+                        "updated_prs": updated_prs,
+                    })
+                else:
+                    processed_summary.update({
+                        "status": "ci_no_matching_pr_in_stack",
+                        "details": f"Check run for {head_sha} has no matching PR in any stack.",
+                        "ci_state": normalized_ci.get("state"),
+                    })
+
+                self.bus.emit("github.check_run", processed_summary, source=source)
+                return processed_summary
+
+            self.bus.emit(f"github.webhook.unhandled.{event_type}", payload, source=source)
+            return processed_summary
         
         return {
             "status": "unhandled_action",

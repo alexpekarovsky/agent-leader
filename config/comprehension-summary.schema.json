@@ -1,0 +1,49 @@
+{
+  "type": "object",
+  "description": "Structured codebase comprehension summary produced by comprehend_project tasks.",
+  "required": ["modules", "patterns", "dependencies"],
+  "properties": {
+    "modules": {
+      "type": "array",
+      "description": "Key modules/packages and their responsibilities.",
+      "items": {
+        "type": "object",
+        "required": ["name", "responsibility"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Module or package name."
+          },
+          "responsibility": {
+            "type": "string",
+            "description": "What this module is responsible for."
+          },
+          "key_files": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Important files within this module."
+          }
+        }
+      }
+    },
+    "patterns": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Architectural patterns observed (e.g., event-driven, MVC, plugin-based)."
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Key external dependencies and frameworks."
+    },
+    "entry_points": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Main entry points for user flows or system startup."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Additional observations about codebase structure or conventions."
+    }
+  }
+}
