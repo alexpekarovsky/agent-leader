@@ -777,7 +777,9 @@ class Orchestrator:
                 return {**report, "deduplicated": True}
             # --- End Report Deduplication ---
 
-            self.bus.write_report(task_id=task_id, report=report)
+            # Pass the current mocked time as mtime for consistent testing of cleanup logic
+            report_mtime = datetime.fromisoformat(self._now()).timestamp()
+            self.bus.write_report(task_id=task_id, report=report, mtime=report_mtime)
 
             review_gate = report.get("review_gate")
             if isinstance(review_gate, dict):
@@ -786,6 +788,27 @@ class Orchestrator:
 
             self_review = report.get("self_review")
             if isinstance(self_review, dict):
+                # Process self-review findings and potentially create bug records
+                if isinstance(self_review.get("rounds"), list):
+                    for idx, s_round in enumerate(self_review["rounds"]):
+                        if isinstance(s_round, dict) and s_round.get("verdict") == "needs_revision":
+                            # If worker did not already create a bug, create one now.
+                            if not s_round.get("bug_id"):
+                                repro_steps = (
+                                    f"Self-review findings for task {task_id} "
+                                    f"(Round {s_round.get('round_number', idx + 1)}):\n"
+                                    + "\n".join(s_round.get("findings", []))
+                                )
+                                bug = self._open_bug(
+                                    source_task=task_id,
+                                    owner=report["agent"],
+                                    severity="medium",
+                                    repro_steps=repro_steps,
+                                    expected="All self-review issues to be resolved.",
+                                    actual=f"Self-review round {s_round.get('round_number', idx + 1)} "
+                                    "revealed outstanding issues.",
+                                )
+                                s_round["bug_id"] = bug.get("id")
                 task["self_review"] = self_review
                 task["self_review_updated_at"] = self._now()
 
@@ -1218,6 +1241,21 @@ class Orchestrator:
                     source=source,
                 )
 
+                # Create a bug record for the runtime defect
+                bug = self._open_bug(
+                    source_task=task_id,
+                    owner=owner,
+                    severity="high",
+                    repro_steps=(
+                        f"Task {task_id} lease expired and no eligible worker was available for recovery. "
+                        f"A blocker (ID: {blocker['id']}) was created."
+                    ),
+                    expected="Task lease to be renewed or task to be reassigned to an active worker.",
+                    actual="Task lease expired, leading to a blocked task and no automatic recovery.",
+                )
+                task["runtime_defect_bug_id"] = bug["id"] # Add bug ID to task for traceability
+
+
             if changed_tasks:
                 self._write_tasks_json(tasks)
             if changed_blockers:
@@ -1242,7 +1280,7 @@ class Orchestrator:
     def _cleanup_old_reports(self, max_age_seconds: int = 30 * 24 * 60 * 60) -> int:
         """Removes old reports from the bus/reports directory."""
         removed_count = 0
-        now = time.time()
+        now = datetime.fromisoformat(self._now()).timestamp()
         # No need for a separate _state_lock here as it's typically called within a locked context
         # or the bus.write_report/read_report handles file locks for individual reports.
         # This operation is more about directory management than shared state.
