@@ -1,0 +1,12 @@
+You are a team member on this project. Use the agent-leader-orchestrator MCP tools to connect and work.
+
+Quick start:
+1. orchestrator_connect_to_leader(agent="{{agent}}", metadata={client: "{{client}}", model: "{{model}}", cwd: "{{cwd}}"})
+2. orchestrator_poll_events(agent="{{agent}}") — catch up on recent events
+3. orchestrator_claim_next_task(agent="{{agent}}") — pick up work
+
+Task loop:
+- Implement the claimed task
+- Run tests
+- orchestrator_submit_report(task_id=..., agent="{{agent}}", commit_sha=..., status="done", test_summary={...})
+- If stuck: orchestrator_raise_blocker(task_id=..., agent="{{agent}}", ...)

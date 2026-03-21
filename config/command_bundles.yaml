@@ -1,0 +1,119 @@
+# Slash-command bundles for agent-leader orchestrator v0.3.0
+# Each bundle groups related MCP tools into a named workflow shortcut.
+
+bundles:
+  manager-start:
+    description: "Full manager startup cycle: set role, heartbeat, bootstrap, and run one manager cycle."
+    category: manager
+    steps:
+      - tool: orchestrator_set_role
+        args:
+          role: leader
+        description: "Claim leader role"
+      - tool: orchestrator_heartbeat
+        args: {}
+        description: "Send heartbeat with identity metadata"
+      - tool: orchestrator_bootstrap
+        args: {}
+        description: "Initialize state if not bootstrapped"
+      - tool: orchestrator_manager_cycle
+        args:
+          strict: true
+        description: "Run one manager cycle"
+
+  worker-connect:
+    description: "Worker startup: connect to leader, poll events, claim next task."
+    category: team
+    steps:
+      - tool: orchestrator_connect_to_leader
+        args: {}
+        description: "Attach to leader with identity"
+      - tool: orchestrator_poll_events
+        args:
+          timeout_ms: 1000
+        description: "Poll recent events"
+      - tool: orchestrator_claim_next_task
+        args: {}
+        description: "Claim next available task"
+
+  check-status:
+    description: "Quick status overview: tasks, blockers, bugs, and live status."
+    category: ops
+    steps:
+      - tool: orchestrator_status
+        args: {}
+        description: "Get orchestration status"
+      - tool: orchestrator_list_tasks
+        args: {}
+        description: "List all tasks"
+      - tool: orchestrator_list_blockers
+        args:
+          status: open
+        description: "List open blockers"
+      - tool: orchestrator_list_bugs
+        args:
+          status: open
+        description: "List open bugs"
+
+  team-health:
+    description: "Team health check: discover agents, check roles, run doctor diagnostics."
+    category: ops
+    steps:
+      - tool: orchestrator_discover_agents
+        args: {}
+        description: "Discover all registered agents"
+      - tool: orchestrator_get_roles
+        args: {}
+        description: "Show current role assignments"
+      - tool: orchestrator_doctor
+        args: {}
+        description: "Run diagnostics"
+
+  task-complete:
+    description: "Task completion flow: submit report with test results."
+    category: team
+    steps:
+      - tool: orchestrator_submit_report
+        args: {}
+        description: "Submit implementation report with commit and test summary"
+
+  blocker-workflow:
+    description: "Raise and manage blockers for stuck tasks."
+    category: team
+    steps:
+      - tool: orchestrator_raise_blocker
+        args: {}
+        description: "Raise a structured blocker"
+      - tool: orchestrator_list_blockers
+        args:
+          status: open
+        description: "List open blockers"
+
+  consult-request:
+    description: "Request team feedback without starting execution."
+    category: team
+    steps:
+      - tool: orchestrator_create_consult
+        args: {}
+        description: "Create consult-only review request"
+      - tool: orchestrator_list_consults
+        args:
+          status: open
+        description: "List open consults"
+
+  headless-control:
+    description: "Manage headless supervisor: start, stop, status, restart."
+    category: ops
+    steps:
+      - tool: orchestrator_headless_status
+        args: {}
+        description: "Check headless supervisor status"
+      - tool: orchestrator_headless_start
+        args: {}
+        description: "Start headless supervisor"
+      - tool: orchestrator_headless_stop
+        args: {}
+        description: "Stop headless supervisor"
+      - tool: orchestrator_headless_restart
+        args: {}
+        description: "Restart headless supervisor"
