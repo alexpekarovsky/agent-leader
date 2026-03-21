@@ -132,5 +132,4 @@ class ManagerLoopOnceFailureTests(unittest.TestCase):
             self.assertIn("Missing required command", proc.stderr)
 
 
-if __name__ == "__main__":
-    unittest.main()
+

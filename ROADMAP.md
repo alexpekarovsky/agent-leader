@@ -28,6 +28,12 @@ This document tracks planned direction for `agent-leader`.
   - blockers
   - next actions
 - Improve prompts/templates for manager and team member startup.
+- **dashboard_tui.py efficiency overhaul**:
+  - Replace busy-poll loop with kqueue/inotify file watching on bus/ directory
+  - Only re-render when source data actually changes (hash comparison of snapshot)
+  - Increase default `--refresh-seconds` from 2.0 to 5.0 (data doesn't change faster)
+  - Add `--watch` mode using `select.kqueue()` (macOS) / `inotify` (Linux) for near-zero idle CPU
+  - Current problem: 80-90% CPU per instance with `--refresh-seconds 1`, `build_snapshot()` does full I/O every tick
 
 ## v0.4 - Reliability
 - Add stale-task reassignment policies (configurable thresholds).

@@ -172,11 +172,13 @@ class EventBus:
             self._atomic_write_json(path, command)
         return path
 
-    def write_report(self, task_id: str, report: Dict[str, Any]) -> Path:
+    def write_report(self, task_id: str, report: Dict[str, Any], mtime: Optional[float] = None) -> Path:
         path = self.reports_dir / f"{task_id}.json"
         lock = self._lock_for(path)
         with self._file_lock(lock):
             self._atomic_write_json(path, report)
+            if mtime is not None:
+                os.utime(path, (mtime, mtime)) # Set access and modification times
         return path
 
     def read_report(self, task_id: str) -> Optional[Dict[str, Any]]:

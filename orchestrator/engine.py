@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -50,6 +51,9 @@ class Orchestrator:
         # In-memory per-agent cooldown tracker for empty claim_next_task calls.
         # Maps agent name -> (monotonic_ts, tasks_file_mtime) at last empty claim.
         self._claim_cooldowns: Dict[str, tuple] = {}
+        # In-memory mtime-based JSON file cache.
+        # Maps str(path) -> (mtime_ns: int, parsed_data: Any).
+        self._json_cache: Dict[str, tuple] = {}
         self.state_dir = self.root / "state"
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.tasks_path = self.state_dir / "tasks.json"
@@ -3657,12 +3661,20 @@ class Orchestrator:
         if not self._agent_is_operational(agent):
             raise ValueError(f"agent_not_operational_or_wrong_project: {agent}")
 
-    @staticmethod
-    def _read_json(path: Path) -> Any:
-        if not path.exists():
+    def _read_json(self, path: Path) -> Any:
+        key = str(path)
+        try:
+            mtime_ns = path.stat().st_mtime_ns
+        except FileNotFoundError:
+            self._json_cache.pop(key, None)
             return []
+        cached = self._json_cache.get(key)
+        if cached is not None and cached[0] == mtime_ns:
+            return copy.deepcopy(cached[1])
         with path.open("r", encoding="utf-8") as fh:
-            return json.load(fh)
+            data = json.load(fh)
+        self._json_cache[key] = (mtime_ns, data)
+        return copy.deepcopy(data)
 
     def _ensure_list_file(self, path: Path) -> List[Dict[str, Any]]:
         data = self._read_json(path)
@@ -3739,17 +3751,21 @@ class Orchestrator:
                     "set ORCHESTRATOR_ALLOW_TASK_COUNT_SHRINK=1 to override intentionally"
                 )
         self._write_json(self.tasks_path, tasks)
-        self._touch_wakeup_signals()
+        self._touch_wakeup_signals(tasks)
 
-    def _touch_wakeup_signals(self) -> None:
+    def _touch_wakeup_signals(self, tasks: Any = None) -> None:
         """Touch per-agent wakeup signal files so event-driven loops can detect changes.
 
         Creates/updates state/.wakeup-{agent} for each agent that owns an
         assigned or bug_open task.  Workers using --event-driven watch these
         files instead of polling on a timer.
+
+        Accepts an optional *tasks* list to avoid re-reading from disk when
+        called immediately after a write.
         """
         try:
-            tasks = self._read_json(self.tasks_path)
+            if tasks is None:
+                tasks = self._read_json(self.tasks_path)
             if not isinstance(tasks, list):
                 return
             agents_with_work: set = set()
@@ -3764,8 +3780,7 @@ class Orchestrator:
         except Exception:
             pass  # Best-effort; never block task mutations
 
-    @staticmethod
-    def _write_json(path: Path, value: Any) -> None:
+    def _write_json(self, path: Path, value: Any) -> None:
         tmp = path.with_suffix(path.suffix + ".tmp")
         with tmp.open("w", encoding="utf-8") as fh:
             json.dump(value, fh, indent=2)
@@ -3780,6 +3795,8 @@ class Orchestrator:
                 os.close(dir_fd)
         except Exception:
             pass
+        # Invalidate cache so next _read_json re-reads from disk.
+        self._json_cache.pop(str(path), None)
 
     @staticmethod
     def _now() -> str:

@@ -1434,5 +1434,4 @@ class AutopilotTimeoutBehaviorTests(unittest.TestCase):
             self.assertIn("[AUTOPILOT] CLI timeout after 1s for claude", logs[0].read_text(encoding="utf-8"))
 
 
-if __name__ == "__main__":
-    unittest.main()
+

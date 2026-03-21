@@ -98,5 +98,4 @@ class ManagerLoopTimeoutNamingTests(unittest.TestCase):
         self.assertNotEqual(0, proc.returncode)
 
 
-if __name__ == "__main__":
-    unittest.main()
+

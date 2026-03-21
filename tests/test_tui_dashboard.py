@@ -531,5 +531,221 @@ class DashboardTuiTests(unittest.TestCase):
         self.assertIn("Version focus: Active Milestone", out)
 
 
+    # ------------------------------------------------------------------
+    # AC3 — Idle lifecycle: leader / worker / watchdog visibility
+    # ------------------------------------------------------------------
+
+    def test_idle_leader_with_stale_heartbeat_triggers_remediation(self) -> None:
+        """When leader process is up but heartbeat is stale, next_actions must
+        include a stale-leader remediation hint."""
+        active_agents = [
+            {
+                "agent": "codex",
+                "status": "stale",
+                "heartbeat_state": "stale",
+                "age_s": 900,
+                "process_state": "up",
+                "process_count": 1,
+                "process_names": ["manager"],
+                "task_activity": "idle",
+                "role_label": "Leader/Manager",
+                "display_name": "Codex",
+                "provider": "OpenAI",
+                "client": "Codex CLI",
+                "model": "-",
+                "instance_id": "codex#default",
+            },
+        ]
+        actions = mod._compute_next_actions(
+            open_tasks=3,
+            assigned_count=2,
+            in_progress_count=1,
+            blockers_open=0,
+            bugs_open=0,
+            stale_in_progress=0,
+            supervisor_processes=[{"name": "manager", "alive": True}],
+            active_agents=active_agents,
+        )
+        stale_leader_actions = [a for a in actions if "Leader heartbeat stale" in a]
+        self.assertEqual(len(stale_leader_actions), 1, "Expected exactly one stale-leader remediation action")
+        self.assertIn("manager_loop", stale_leader_actions[0])
+
+    def test_idle_leader_active_heartbeat_no_remediation(self) -> None:
+        """When leader heartbeat is active, no stale-leader action should appear."""
+        active_agents = [
+            {
+                "agent": "codex",
+                "heartbeat_state": "active",
+                "process_state": "up",
+                "task_activity": "idle",
+                "role_label": "Leader/Manager",
+            },
+        ]
+        actions = mod._compute_next_actions(
+            open_tasks=0,
+            assigned_count=0,
+            in_progress_count=0,
+            blockers_open=0,
+            bugs_open=0,
+            stale_in_progress=0,
+            supervisor_processes=[],
+            active_agents=active_agents,
+        )
+        self.assertFalse(
+            any("Leader heartbeat stale" in a for a in actions),
+            "Active leader should not trigger stale-leader action",
+        )
+
+    def test_watchdog_disabled_state_in_snapshot(self) -> None:
+        """When watchdog has no PID file, supervisor should report 'disabled'
+        state with task_activity='expected_stopped' rather than 'stopped'."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "state").mkdir(parents=True, exist_ok=True)
+            (root / "bus" / "reports").mkdir(parents=True, exist_ok=True)
+            (root / ".autopilot-logs").mkdir(parents=True, exist_ok=True)
+            (root / ".autopilot-pids").mkdir(parents=True, exist_ok=True)
+
+            project_root = "/tmp/test-watchdog"
+            (root / "state" / "tasks.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "blockers.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "bugs.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "agents.json").write_text("{}", encoding="utf-8")
+            (root / "bus" / "events.jsonl").write_text("", encoding="utf-8")
+
+            # Manager PID exists (current process) — no watchdog PID file at all.
+            now_ts = mod._now_utc().timestamp()
+            pid_file = root / ".autopilot-pids" / "manager.pid"
+            pid_file.write_text(str(os.getpid()), encoding="utf-8")
+            os.utime(pid_file, (now_ts, now_ts))
+
+            # Read supervisor processes as the TUI does.
+            procs = mod._read_supervisor_processes(root)
+            proc_names = {p["name"] for p in procs}
+            # Watchdog should not appear in supervisor processes (no PID file).
+            self.assertNotIn("watchdog", proc_names)
+            # Manager should appear and be alive.
+            manager = next(p for p in procs if p["name"] == "manager")
+            self.assertTrue(manager["alive"])
+
+    def test_idle_worker_visible_with_no_tasks(self) -> None:
+        """An idle worker with active heartbeat and no owned tasks should show
+        task_activity='idle' and remain visible in the agent list."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "state").mkdir(parents=True, exist_ok=True)
+            (root / "bus" / "reports").mkdir(parents=True, exist_ok=True)
+            (root / ".autopilot-logs").mkdir(parents=True, exist_ok=True)
+            (root / ".autopilot-pids").mkdir(parents=True, exist_ok=True)
+
+            project_root = "/tmp/test-idle-worker"
+            # Tasks owned by other agents, none by claude_code.
+            tasks = [
+                {"id": "T1", "project_root": project_root, "status": "done", "owner": "codex", "title": "Done task"},
+            ]
+            (root / "state" / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
+            (root / "state" / "blockers.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "bugs.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "agents.json").write_text(
+                json.dumps({
+                    "claude_code": {
+                        "status": "active",
+                        "last_seen": mod._now_utc().isoformat(),
+                        "metadata": {"instance_id": "claude_code#default"},
+                    },
+                    "codex": {
+                        "status": "active",
+                        "last_seen": mod._now_utc().isoformat(),
+                        "metadata": {"instance_id": "codex#default"},
+                    },
+                }),
+                encoding="utf-8",
+            )
+            (root / "bus" / "events.jsonl").write_text("", encoding="utf-8")
+
+            now_ts = mod._now_utc().timestamp()
+            for name in ("claude.pid", "manager.pid"):
+                pf = root / ".autopilot-pids" / name
+                pf.write_text(str(os.getpid()), encoding="utf-8")
+                os.utime(pf, (now_ts, now_ts))
+
+            snap = mod.build_snapshot(project_root=project_root, root=root)
+            rows = {row["agent"]: row for row in snap.active_agents}
+
+            # claude_code should be visible, up, active heartbeat, idle task activity
+            self.assertIn("claude_code", rows)
+            self.assertEqual(rows["claude_code"]["process_state"], "up")
+            self.assertEqual(rows["claude_code"]["heartbeat_state"], "active")
+            self.assertEqual(rows["claude_code"]["task_activity"], "idle")
+
+            # Idle agent count should include claude_code
+            self.assertGreaterEqual(snap.idle_agent_count, 1)
+
+    def test_leader_stale_worker_idle_watchdog_disabled_snapshot(self) -> None:
+        """Combined scenario: leader has stale heartbeat, worker is idle, and
+        watchdog is disabled (no PID).  Verifies all three visibility semantics."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "state").mkdir(parents=True, exist_ok=True)
+            (root / "bus" / "reports").mkdir(parents=True, exist_ok=True)
+            (root / ".autopilot-logs").mkdir(parents=True, exist_ok=True)
+            (root / ".autopilot-pids").mkdir(parents=True, exist_ok=True)
+
+            project_root = "/tmp/test-combined"
+            tasks = [
+                {"id": "T1", "project_root": project_root, "status": "assigned", "owner": "gemini", "title": "Queued"},
+            ]
+            (root / "state" / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
+            (root / "state" / "blockers.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "bugs.json").write_text("[]", encoding="utf-8")
+            # Leader heartbeat is stale (old last_seen); worker heartbeat active.
+            (root / "state" / "agents.json").write_text(
+                json.dumps({
+                    "codex": {
+                        "status": "active",
+                        "last_seen": "2025-01-01T00:00:00+00:00",
+                        "metadata": {"instance_id": "codex#default"},
+                    },
+                    "claude_code": {
+                        "status": "active",
+                        "last_seen": mod._now_utc().isoformat(),
+                        "metadata": {"instance_id": "claude_code#default"},
+                    },
+                }),
+                encoding="utf-8",
+            )
+            (root / "bus" / "events.jsonl").write_text("", encoding="utf-8")
+
+            # Manager and claude processes up; no watchdog PID.
+            now_ts = mod._now_utc().timestamp()
+            for name in ("manager.pid", "claude.pid"):
+                pf = root / ".autopilot-pids" / name
+                pf.write_text(str(os.getpid()), encoding="utf-8")
+                os.utime(pf, (now_ts, now_ts))
+
+            snap = mod.build_snapshot(project_root=project_root, root=root)
+            rows = {row["agent"]: row for row in snap.active_agents}
+
+            # Leader: process up, heartbeat stale/offline
+            self.assertEqual(rows["codex"]["process_state"], "up")
+            self.assertIn(rows["codex"]["heartbeat_state"], {"stale", "offline"})
+
+            # Worker: process up, heartbeat active, idle
+            self.assertEqual(rows["claude_code"]["process_state"], "up")
+            self.assertEqual(rows["claude_code"]["heartbeat_state"], "active")
+            self.assertEqual(rows["claude_code"]["task_activity"], "idle")
+
+            # Watchdog: not in supervisor processes (no PID)
+            proc_names = {p["name"] for p in snap.supervisor_processes}
+            self.assertNotIn("watchdog", proc_names)
+
+            # Next actions should include stale-leader remediation
+            stale_leader_hints = [a for a in snap.next_actions if "Leader heartbeat stale" in a]
+            self.assertTrue(
+                len(stale_leader_hints) >= 1,
+                f"Expected stale-leader remediation in next_actions, got: {snap.next_actions}",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

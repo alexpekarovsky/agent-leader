@@ -120,5 +120,4 @@ class LoopMaxLogsPropagationTests(unittest.TestCase):
             self.assertEqual(1, len(manager_logs), "unrelated prefixed logs should be untouched")
 
 
-if __name__ == "__main__":
-    unittest.main()
+

@@ -94,5 +94,4 @@ class WorkerLoopUnsupportedCliTests(unittest.TestCase):
         self.assertIn("agent=test_agent", proc.stderr)
 
 
-if __name__ == "__main__":
-    unittest.main()
+

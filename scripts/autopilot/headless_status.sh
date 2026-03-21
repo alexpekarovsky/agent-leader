@@ -195,6 +195,8 @@ proc = {
     "manager": proc_status("manager"),
     "wingman": proc_status("wingman"),
     "claude": proc_status("claude"),
+    "claude_2": proc_status("claude_2"),
+    "claude_3": proc_status("claude_3"),
     "gemini": proc_status("gemini"),
     "codex_worker": proc_status("codex_worker"),
     "watchdog": proc_status("watchdog"),
@@ -218,6 +220,23 @@ for agent_name in sorted(operator_names):
     hb_state = heartbeat_state(age)
     pnames = process_names_for_agent(agent_name, proc)
     running = [name for name in pnames if proc.get(name, {}).get("status") == "running"]
+    # Build per-lane details for agents with multiple processes (e.g. claude lanes).
+    lane_details = []
+    for pn in pnames:
+        ps = proc.get(pn, {})
+        if pn == "claude":
+            ll = "lane 1"
+        elif pn.startswith("claude_") and "_" in pn:
+            ll = pn.replace("claude_", "lane ")
+        else:
+            ll = pn
+        lane_details.append({
+            "process_name": pn,
+            "lane_label": ll,
+            "status": ps.get("status", "stopped"),
+            "pid": ps.get("pid"),
+            "instance_id": f"claude_code#headless-default-{pn.split('_')[1]}" if pn.startswith("claude_") and "_" in pn else ("claude_code#headless-default-1" if pn == "claude" else None),
+        })
     operator_agents.append({
         "agent": agent_name,
         "heartbeat_state": hb_state,
@@ -226,6 +245,7 @@ for agent_name in sorted(operator_names):
         "process_count": len(running),
         "task_activity": task_activity_for_agent(agent_name, tasks),
         "instance_id": (entry.get("metadata") or {}).get("instance_id") if isinstance(entry.get("metadata"), dict) else None,
+        "lane_details": lane_details,
     })
 
 def _collect_budget_metrics(budgets_dir: Path):
@@ -326,7 +346,7 @@ if recovery_actions:
 
 print()
 print("Processes")
-preferred = ("manager", "wingman", "claude", "gemini", "codex_worker", "watchdog")
+preferred = ("manager", "wingman", "claude", "claude_2", "claude_3", "gemini", "codex_worker", "watchdog")
 ordered = [name for name in preferred if name in payload["processes"]]
 ordered.extend(sorted([name for name in payload["processes"].keys() if name not in preferred]))
 for k in ordered:
@@ -341,6 +361,12 @@ for a in payload["operator_agents"]:
         f"  {a['agent']:12s} proc={a['process_state']:<4s} hb={a['heartbeat_state']:<7s} "
         f"task={a['task_activity']:<7s} age={age:>6s} instance={inst:20s}"
     )
+    lane_details = a.get("lane_details", [])
+    if len(lane_details) > 1:
+        for ld in lane_details:
+            state_str = "up" if ld["status"] == "running" else "down"
+            lid = ld.get("instance_id") or "-"
+            print(f"    {ld['lane_label']:<10s} {state_str:<5s} pid={ld['pid'] if ld['pid'] is not None else '-':<8} instance={lid}")
 budget = payload.get("budget", {})
 if budget:
     print()

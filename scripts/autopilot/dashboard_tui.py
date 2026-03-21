@@ -649,6 +649,7 @@ def _compute_next_actions(
     bugs_open: int,
     stale_in_progress: int,
     supervisor_processes: List[Dict[str, Any]],
+    active_agents: Optional[List[Dict[str, Any]]] = None,
 ) -> List[str]:
     actions: List[str] = []
     if blockers_open > 0:
@@ -664,6 +665,19 @@ def _compute_next_actions(
     dead = [p for p in supervisor_processes if not p.get("alive")]
     if dead:
         actions.append(f"Supervisor has stale pid files for {len(dead)} process(es); run clean if needed.")
+    # Stale leader heartbeat: leader process up but orchestrator heartbeat stale.
+    if active_agents:
+        for agent in active_agents:
+            if (
+                str(agent.get("role_label", "")) == "Leader/Manager"
+                and str(agent.get("process_state", "")) == "up"
+                and str(agent.get("heartbeat_state", "")) in ("stale", "offline", "missing")
+            ):
+                actions.append(
+                    "Leader heartbeat stale: manager process is running but orchestrator heartbeat is not active. "
+                    "Check manager_loop health or restart supervisor."
+                )
+                break
     if not actions:
         actions.append("Flow healthy. Continue monitoring throughput and review cadence.")
     return actions
@@ -722,6 +736,20 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
         ]
         process_state = "up" if running_processes else "down"
         task_activity = _task_activity_for_agent(agent, scoped)
+        # Build per-lane details for agents with multiple processes (e.g. claude lanes).
+        lane_details: List[Dict[str, Any]] = []
+        for pname in process_names:
+            proc_entry = next((p for p in supervisor_processes if p.get("name") == pname), None)
+            if proc_entry:
+                lane_label = "lane 1" if pname == "claude" else (pname.replace("claude_", "lane ") if "_" in pname and pname.startswith("claude") else pname)
+                lane_details.append({
+                    "process_name": pname,
+                    "lane_label": lane_label,
+                    "alive": bool(proc_entry.get("alive")),
+                    "pid": proc_entry.get("pid"),
+                    "age_s": proc_entry.get("age_s"),
+                    "started_at": proc_entry.get("started_at"),
+                })
         active_agents.append(
             {
                 "agent": agent,
@@ -737,6 +765,7 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
                 "process_state": process_state,
                 "process_count": len(running_processes),
                 "process_names": process_names,
+                "lane_details": lane_details,
                 "task_activity": task_activity,
             }
         )
@@ -1116,6 +1145,7 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
         bugs_open=bugs_open,
         stale_in_progress=stale_in_progress,
         supervisor_processes=supervisor_processes,
+        active_agents=active_agents,
     )
 
     agent_delivery_stats: List[Dict[str, Any]] = []
@@ -1370,6 +1400,11 @@ def _render_claude_v3a(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
     fleet_rows: List[str] = []
     for a in snapshot.active_agents[:6]:
         fleet_rows.append(f"{a['agent']:<12} {a['status']:<8} age={_format_age(a['age_s']):>7}")
+        lane_details = a.get("lane_details", [])
+        if len(lane_details) > 1:
+            for ld in lane_details:
+                state_str = "UP" if ld.get("alive") else "DOWN"
+                fleet_rows.append(f"  {ld.get('lane_label', '-'):<10} {state_str:<6} pid={ld.get('pid', '-')}")
     if not fleet_rows:
         fleet_rows.append("no agents connected")
     fleet_rows.append(
@@ -1476,6 +1511,11 @@ def _render_claude(snapshot: DashboardSnapshot, completed: bool, auto_stopped: b
     agent_rows: List[str] = []
     for a in snapshot.active_agents[:8]:
         agent_rows.append(f"{a['agent']:<11} {a['status']:<8} age={_format_age(a['age_s']):>7}")
+        lane_details = a.get("lane_details", [])
+        if len(lane_details) > 1:
+            for ld in lane_details:
+                state = _color(color_enabled, "32", "UP") if ld.get("alive") else _color(color_enabled, "31;1", "DOWN")
+                agent_rows.append(f"  {ld.get('lane_label', '-'):<9} {state} pid={ld.get('pid', '-')}")
     if not agent_rows:
         agent_rows = ["none"]
     for proc in snapshot.supervisor_processes[:8]:
@@ -1726,6 +1766,15 @@ def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stoppe
         fleet_rows.append(
             f"  task:{a.get('task_activity','-')} | {a['agent']} / {_compact_type(str(a.get('provider','-')), str(a.get('client','-')))} / {a.get('model','-')} / age={_format_age(a['age_s'])}"
         )
+        # Per-lane detail rows for multi-lane agents (e.g. claude_code with 2-3 lanes).
+        lane_details = a.get("lane_details", [])
+        if len(lane_details) > 1:
+            for ld in lane_details:
+                state_str = "UP" if ld.get("alive") else "DOWN"
+                fleet_rows.append(
+                    f"    {ld.get('lane_label', ld.get('process_name', '-'))}: "
+                    f"{state_str} pid={ld.get('pid', '-')} age={_format_age(ld.get('age_s'))}"
+                )
     fleet_rows.append("-")
     fleet_rows.append(
         f"Heartbeat active={snapshot.active_agent_count} | process-idle={snapshot.idle_agent_count}"

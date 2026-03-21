@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SUPERVISOR = str(REPO_ROOT / "scripts" / "autopilot" / "supervisor.sh")
 
 _TIMEOUT = 30
-_PROCS = ("manager", "wingman", "claude", "gemini", "codex_worker", "watchdog")
+_PROCS = ("manager", "wingman", "claude", "claude_2", "claude_3", "gemini", "codex_worker", "watchdog")
 
 
 def _make_stub_cli(stub_dir: Path, name: str) -> None:
