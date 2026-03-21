@@ -485,3 +485,28 @@ Compatibility note:
 |---|---|---|---|
 | `orchestrator_manager_cycle` | Runs one manager automation cycle (validate reports first, then summarize pending). Also auto-attempts reconnect for stale team members with active tasks before fallback reassignment/requeue. | optional `strict` | Processed reports, `auto_connect` result, by-owner summary, blockers, stale reassignments/requeues. |
 | `orchestrator_reassign_stale_tasks` | Reassigns stale-owner tasks to active team members to continue flow. | optional `source`, `stale_after_seconds`, `include_blocked` | Reassignment summary and details. |
+
+## MCP Tool Contract Freeze (v1.0)
+
+The file `tools.json` at the project root is the **frozen MCP tool contract**. It captures every tool name, description, and `inputSchema` as of v1.0.0.
+
+### Rules
+
+1. **No silent schema changes.** Adding, removing, or modifying any tool (name, description, or inputSchema) **must** be accompanied by a `contract_version` bump in `tools.json`.
+2. **Contract test gate.** The test suite (`tests/test_mcp_tool_contract.py`) validates that the live server matches `tools.json` exactly. CI will fail on any drift.
+3. **Version bumps follow semver:**
+   - **Patch** (1.0.x): description-only changes, no schema impact.
+   - **Minor** (1.x.0): new tools added (backwards-compatible).
+   - **Major** (x.0.0): tools removed or inputSchema breaking changes.
+4. **Regenerating the contract:** After intentional changes, run:
+   ```bash
+   python3 -c "
+   import sys, json; sys.path.insert(0, '.')
+   from orchestrator_mcp_server import handle_tools_list
+   result = handle_tools_list('regen')
+   tools = result['result']['tools']
+   contract = {'contract_version': 'X.Y.Z', 'description': 'Frozen MCP tool contract for agent-leader-orchestrator. Any schema change requires a version bump.', 'tool_count': len(tools), 'tools': {t['name']: {'description': t['description'], 'inputSchema': t['inputSchema']} for t in tools}}
+   print(json.dumps(contract, indent=2))
+   " > tools.json
+   ```
+   Replace `X.Y.Z` with the new version, then run `pytest tests/test_mcp_tool_contract.py` to confirm.

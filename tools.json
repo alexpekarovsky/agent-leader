@@ -1,0 +1,1373 @@
+{
+  "contract_version": "1.0.0",
+  "description": "Frozen MCP tool contract for agent-leader-orchestrator. Any schema change requires a version bump.",
+  "tool_count": 47,
+  "tools": {
+    "orchestrator_guide": {
+      "description": "Return the orchestration playbook and exact MCP-only workflow for manager and team members.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    "orchestrator_status": {
+      "description": "Show redacted status plus ready-to-paste live status report. When user asks for status updates, return live_status_text verbatim. Set ORCHESTRATOR_STATUS_VERBOSE_PATHS=1 for full paths.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    "orchestrator_headless_start": {
+      "description": "Start headless supervisor lanes (manager/workers/watchdog) for this project without shell wrappers.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project_root": {
+            "type": "string"
+          },
+          "leader_agent": {
+            "type": "string",
+            "description": "codex|claude_code|gemini"
+          },
+          "manager_interval": {
+            "type": "integer"
+          },
+          "worker_interval": {
+            "type": "integer"
+          },
+          "manager_cli_timeout": {
+            "type": "integer"
+          },
+          "worker_cli_timeout": {
+            "type": "integer"
+          },
+          "claude_project_root": {
+            "type": "string"
+          },
+          "gemini_project_root": {
+            "type": "string"
+          },
+          "codex_project_root": {
+            "type": "string"
+          },
+          "wingman_project_root": {
+            "type": "string"
+          },
+          "claude_team_id": {
+            "type": "string"
+          },
+          "gemini_team_id": {
+            "type": "string"
+          },
+          "codex_team_id": {
+            "type": "string"
+          },
+          "wingman_team_id": {
+            "type": "string"
+          },
+          "claude_lanes": {
+            "type": "integer",
+            "description": "Number of parallel Claude worker lanes (1-3).",
+            "default": 1
+          },
+          "low_burn": {
+            "type": "boolean",
+            "description": "Enable conservative low-burn mode: longer intervals, bounded idle cycles. Default: true.",
+            "default": true
+          },
+          "idle_backoff": {
+            "type": "string",
+            "description": "Comma-separated idle backoff seconds (default: 30,60,120,300,900).",
+            "default": "30,60,120,300,900"
+          },
+          "max_idle_cycles": {
+            "type": "integer",
+            "description": "Auto-exit loop after N idle cycles. 0 disables. Default: 30.",
+            "default": 30
+          },
+          "daily_call_budget": {
+            "type": "integer",
+            "description": "Per-process daily LLM call budget. 0 disables. Default: 100.",
+            "default": 100
+          },
+          "extra_workers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "cli": {
+                  "type": "string"
+                },
+                "agent": {
+                  "type": "string"
+                },
+                "team_id": {
+                  "type": "string"
+                },
+                "project_root": {
+                  "type": "string"
+                },
+                "lane": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "cli",
+                "agent",
+                "team_id",
+                "project_root"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "orchestrator_headless_stop": {
+      "description": "Stop headless supervisor lanes for this project.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project_root": {
+            "type": "string"
+          },
+          "leader_agent": {
+            "type": "string",
+            "description": "codex|claude_code|gemini"
+          },
+          "claude_project_root": {
+            "type": "string"
+          },
+          "gemini_project_root": {
+            "type": "string"
+          },
+          "codex_project_root": {
+            "type": "string"
+          },
+          "wingman_project_root": {
+            "type": "string"
+          },
+          "claude_team_id": {
+            "type": "string"
+          },
+          "gemini_team_id": {
+            "type": "string"
+          },
+          "codex_team_id": {
+            "type": "string"
+          },
+          "wingman_team_id": {
+            "type": "string"
+          },
+          "claude_lanes": {
+            "type": "integer",
+            "description": "Number of parallel Claude worker lanes (1-3).",
+            "default": 1
+          },
+          "extra_workers": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "orchestrator_headless_status": {
+      "description": "Return machine-readable headless supervisor process status for this project.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project_root": {
+            "type": "string"
+          },
+          "leader_agent": {
+            "type": "string",
+            "description": "codex|claude_code|gemini"
+          },
+          "claude_project_root": {
+            "type": "string"
+          },
+          "gemini_project_root": {
+            "type": "string"
+          },
+          "codex_project_root": {
+            "type": "string"
+          },
+          "wingman_project_root": {
+            "type": "string"
+          },
+          "claude_team_id": {
+            "type": "string"
+          },
+          "gemini_team_id": {
+            "type": "string"
+          },
+          "codex_team_id": {
+            "type": "string"
+          },
+          "wingman_team_id": {
+            "type": "string"
+          },
+          "claude_lanes": {
+            "type": "integer",
+            "description": "Number of parallel Claude worker lanes (1-3).",
+            "default": 1
+          },
+          "extra_workers": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "orchestrator_headless_restart": {
+      "description": "Restart headless supervisor lanes for this project.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project_root": {
+            "type": "string"
+          },
+          "leader_agent": {
+            "type": "string",
+            "description": "codex|claude_code|gemini"
+          },
+          "claude_project_root": {
+            "type": "string"
+          },
+          "gemini_project_root": {
+            "type": "string"
+          },
+          "codex_project_root": {
+            "type": "string"
+          },
+          "wingman_project_root": {
+            "type": "string"
+          },
+          "claude_team_id": {
+            "type": "string"
+          },
+          "gemini_team_id": {
+            "type": "string"
+          },
+          "codex_team_id": {
+            "type": "string"
+          },
+          "wingman_team_id": {
+            "type": "string"
+          },
+          "claude_lanes": {
+            "type": "integer",
+            "description": "Number of parallel Claude worker lanes (1-3).",
+            "default": 1
+          },
+          "extra_workers": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "orchestrator_headless_clean": {
+      "description": "Clean stale pid/log artifacts for headless supervisor lanes in this project.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project_root": {
+            "type": "string"
+          },
+          "leader_agent": {
+            "type": "string",
+            "description": "codex|claude_code|gemini"
+          },
+          "claude_project_root": {
+            "type": "string"
+          },
+          "gemini_project_root": {
+            "type": "string"
+          },
+          "codex_project_root": {
+            "type": "string"
+          },
+          "wingman_project_root": {
+            "type": "string"
+          },
+          "claude_team_id": {
+            "type": "string"
+          },
+          "gemini_team_id": {
+            "type": "string"
+          },
+          "codex_team_id": {
+            "type": "string"
+          },
+          "wingman_team_id": {
+            "type": "string"
+          },
+          "claude_lanes": {
+            "type": "integer",
+            "description": "Number of parallel Claude worker lanes (1-3).",
+            "default": 1
+          },
+          "extra_workers": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "orchestrator_doctor": {
+      "description": "Run actionable diagnostics for root/policy/auth/connectivity checks, including binding and identity verification hints.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "stale_after_seconds": {
+            "type": "integer",
+            "default": 600
+          }
+        }
+      }
+    },
+    "orchestrator_parity_smoke": {
+      "description": "Run an operational parity smoke test checking lifecycle, status, and task flow, returning a diagnostic report.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    "orchestrator_normalize_github_ci": {
+      "description": "Normalize a GitHub CI/check payload into an orchestration-friendly summary.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "payload": {
+            "type": "object",
+            "description": "Raw check_run/workflow fragment."
+          }
+        },
+        "required": [
+          "payload"
+        ]
+      }
+    },
+    "orchestrator_create_github_issue": {
+      "description": "Creates a new GitHub issue from an orchestrator bug record and links it to a task.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "bug_id": {
+            "type": "string",
+            "description": "The ID of the bug record to create an issue for.",
+            "pattern": "^BUG-[a-f0-9]{8}$"
+          },
+          "repo": {
+            "type": "string",
+            "description": "Optional: The full name of the GitHub repository (e.g., 'owner/repo'). Defaults to GITHUB_REPOSITORY env var.",
+            "pattern": "^[^/]+/[^/]+$"
+          }
+        },
+        "required": [
+          "bug_id"
+        ]
+      }
+    },
+    "orchestrator_process_github_webhook": {
+      "description": "Process a GitHub webhook payload, normalize CI results, and update orchestrator tasks.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "payload": {
+            "type": "object",
+            "description": "Raw GitHub webhook payload."
+          },
+          "source": {
+            "type": "string",
+            "description": "Source of the webhook (e.g., github).",
+            "default": "github"
+          }
+        },
+        "required": [
+          "payload"
+        ]
+      }
+    },
+    "orchestrator_get_roles": {
+      "description": "Get current orchestrator role assignments (leader, team_members). Default leader is codex via policy unless changed.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    "orchestrator_set_role": {
+      "description": "Set runtime role for an agent. role=leader or role=team_member. This allows non-codex leaders when desired.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "description": "leader|team_member"
+          },
+          "source": {
+            "type": "string"
+          },
+          "instance_id": {
+            "type": "string",
+            "description": "Optional instance_id to bind when assigning leader role."
+          },
+          "source_instance_id": {
+            "type": "string",
+            "description": "Optional source instance_id for leader-instance auth checks."
+          }
+        },
+        "required": [
+          "agent",
+          "role",
+          "source"
+        ]
+      }
+    },
+    "orchestrator_list_audit_logs": {
+      "description": "List append-only MCP audit records (tool calls, status, args, results/errors).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "default": 100
+          },
+          "tool": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "ok|error"
+          }
+        }
+      }
+    },
+    "orchestrator_live_status_report": {
+      "description": "Generate the manager's live status update in the standard percentage + pipeline format. Call every 10 minutes (600s).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "overall_percent": {
+            "type": "integer"
+          },
+          "phase_1_percent": {
+            "type": "integer"
+          },
+          "phase_2_percent": {
+            "type": "integer"
+          },
+          "phase_3_percent": {
+            "type": "integer"
+          },
+          "backend_task_id": {
+            "type": "string"
+          },
+          "backend_percent": {
+            "type": "integer"
+          },
+          "frontend_task_id": {
+            "type": "string"
+          },
+          "frontend_percent": {
+            "type": "integer"
+          },
+          "qa_percent": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "orchestrator_register_agent": {
+      "description": "Register agent/tenant in the collaboration pool.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object",
+            "default": {},
+            "description": "Recommended keys: client, model, version, cwd, session_id, host, platform."
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      }
+    },
+    "orchestrator_heartbeat": {
+      "description": "Update last-seen heartbeat for agent/tenant.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object",
+            "default": {},
+            "description": "Optional runtime updates (e.g., current_task, model alias, cwd)."
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      }
+    },
+    "orchestrator_connect_team_members": {
+      "description": "Manager one-shot team member activation handshake. Returns connected only for verified, same-project team members.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "Manager/source agent id (usually codex)."
+          },
+          "team_members": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Target team member agent IDs."
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "default": 60
+          },
+          "poll_interval_seconds": {
+            "type": "integer",
+            "default": 2
+          },
+          "stale_after_seconds": {
+            "type": "integer",
+            "default": 600
+          }
+        },
+        "required": [
+          "source",
+          "team_members"
+        ]
+      }
+    },
+    "orchestrator_connect_to_leader": {
+      "description": "Team member one-shot attach flow with identity verification. Connection is considered valid only when identity is verified for this project.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "Team member agent id (e.g., claude_code, gemini)."
+          },
+          "metadata": {
+            "type": "object",
+            "default": {},
+            "description": "Identity payload. Required for verified=true: client, model, cwd, permissions_mode, sandbox_mode, session_id, connection_id, server_version, verification_source."
+          },
+          "status": {
+            "type": "string",
+            "default": "idle"
+          },
+          "announce": {
+            "type": "boolean",
+            "default": true
+          },
+          "source": {
+            "type": "string",
+            "description": "Caller/source agent id. Must match agent for verified connection."
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      }
+    },
+    "orchestrator_list_agents": {
+      "description": "List discovered tenants in pool with active/offline status plus identity and verification details.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "active_only": {
+            "type": "boolean",
+            "default": false
+          },
+          "stale_after_seconds": {
+            "type": "integer",
+            "default": 600
+          }
+        }
+      }
+    },
+    "orchestrator_discover_agents": {
+      "description": "Deep discovery view: registered agents plus inferred tenants, including identity and verification details.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "active_only": {
+            "type": "boolean",
+            "default": false
+          },
+          "stale_after_seconds": {
+            "type": "integer",
+            "default": 600
+          }
+        }
+      }
+    },
+    "orchestrator_bootstrap": {
+      "description": "Initialize orchestrator runtime state for a new project session. Call once before creating tasks.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    "orchestrator_create_task": {
+      "description": "Create a task and assign owner via policy routing unless owner override is provided. Use for every delegated unit of work.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Concise task title."
+          },
+          "workstream": {
+            "type": "string",
+            "description": "One of: backend|frontend|qa|devops|default. Controls policy-based assignment."
+          },
+          "description": {
+            "type": "string",
+            "default": "",
+            "description": "Detailed implementation brief, constraints, and dependencies."
+          },
+          "acceptance_criteria": {
+            "type": "array",
+            "description": "Definition of done checklist used by manager validation.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "owner": {
+            "type": "string",
+            "description": "Optional explicit owner override"
+          },
+          "risk": {
+            "type": "string",
+            "description": "Lean mode risk bucket: low|medium|high"
+          },
+          "test_plan": {
+            "type": "string",
+            "description": "Lean mode test plan: smoke|targeted|full"
+          },
+          "doc_impact": {
+            "type": "string",
+            "description": "Lean mode doc impact: none|readme|runbook|roadmap"
+          },
+          "project_root": {
+            "type": "string",
+            "description": "Optional project root override for multi-project manager mode."
+          },
+          "project_name": {
+            "type": "string",
+            "description": "Optional project name tag override."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional content tags. project:* and workstream:* are auto-added."
+          },
+          "team_id": {
+            "type": "string",
+            "description": "Optional team id tag for multi-team routing."
+          },
+          "task_type": {
+            "type": "string",
+            "description": "Task type: standard (default) or comprehend_project."
+          },
+          "parent_task_id": {
+            "type": "string",
+            "description": "Optional parent task id for sub-task relationships."
+          }
+        },
+        "required": [
+          "title",
+          "workstream"
+        ]
+      }
+    },
+    "orchestrator_dedupe_tasks": {
+      "description": "Close duplicate open tasks (same normalized title/workstream/owner), keeping oldest canonical task.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "Actor applying dedupe (usually manager).",
+            "default": "codex"
+          }
+        }
+      }
+    },
+    "orchestrator_list_tasks": {
+      "description": "List tasks, optionally filtered by status, owner, or lane. Use for planning dashboards and polling.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Optional status filter (assigned|in_progress|reported|done|bug_open|blocked)."
+          },
+          "owner": {
+            "type": "string",
+            "description": "Optional owner filter (codex|claude_code|gemini)."
+          },
+          "project_name": {
+            "type": "string",
+            "description": "Optional project_name filter."
+          },
+          "project_root": {
+            "type": "string",
+            "description": "Optional project_root filter."
+          },
+          "team_id": {
+            "type": "string",
+            "description": "Optional team_id filter."
+          },
+          "lane": {
+            "type": "string",
+            "description": "Optional lane filter (e.g., 'wingman' for tasks awaiting review)."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional tags filter (all tags must match)."
+          }
+        }
+      }
+    },
+    "orchestrator_get_tasks_for_agent": {
+      "description": "Get tasks for a specific agent. Team members should use this when they need full queue visibility.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "codex|claude_code|gemini"
+          },
+          "status": {
+            "type": "string",
+            "description": "Optional status filter"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      }
+    },
+    "orchestrator_claim_next_task": {
+      "description": "Claim next task for an agent and move it to in_progress. Team members should call this before coding.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "codex|claude_code|gemini"
+          },
+          "instance_id": {
+            "type": "string",
+            "description": "Optional explicit worker instance id for same-agent multi-session claims."
+          },
+          "team_id": {
+            "type": "string",
+            "description": "Optional team_id scope for multi-team routing."
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      }
+    },
+    "orchestrator_renew_task_lease": {
+      "description": "Renew an active task lease for the task owner and current worker instance.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "lease_id": {
+            "type": "string"
+          },
+          "instance_id": {
+            "type": "string",
+            "description": "Optional explicit worker instance id for same-agent multi-session lease renewal."
+          }
+        },
+        "required": [
+          "task_id",
+          "agent",
+          "lease_id"
+        ]
+      }
+    },
+    "orchestrator_set_claim_override": {
+      "description": "Manager-enforced claim target: force next claim by agent to pick specific task_id first.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent",
+          "task_id",
+          "source"
+        ]
+      }
+    },
+    "orchestrator_update_task_status": {
+      "description": "Update task lifecycle status (in_progress, blocked, etc.) with note metadata. Do not use for completion: use orchestrator_submit_report.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "description": "Agent or manager writing the state change"
+          },
+          "note": {
+            "type": "string",
+            "default": ""
+          }
+        },
+        "required": [
+          "task_id",
+          "status",
+          "source"
+        ]
+      }
+    },
+    "orchestrator_submit_report": {
+      "description": "Submit team_member delivery report. Mandatory before claiming task completion. Rejects wrong owner/task mismatches.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Task ID being reported."
+          },
+          "agent": {
+            "type": "string",
+            "description": "Reporter agent id (must match task owner)."
+          },
+          "commit_sha": {
+            "type": "string",
+            "description": "Commit containing implementation."
+          },
+          "status": {
+            "type": "string",
+            "description": "done|blocked|needs_review"
+          },
+          "test_summary": {
+            "type": "object",
+            "description": "Required executed test summary.",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "Exact test command run."
+              },
+              "passed": {
+                "type": "integer",
+                "description": "Count of passing tests."
+              },
+              "failed": {
+                "type": "integer",
+                "description": "Count of failing tests."
+              }
+            },
+            "required": [
+              "command",
+              "passed",
+              "failed"
+            ]
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional changed files / evidence."
+          },
+          "review_gate": {
+            "type": "object",
+            "description": "Optional wingman review decision metadata (required/status/reviewer_* fields)."
+          },
+          "notes": {
+            "type": "string",
+            "default": "",
+            "description": "Implementation summary and residual risks."
+          },
+          "comprehension_summary": {
+            "type": "object",
+            "description": "Structured codebase comprehension summary (for comprehend_project tasks). Requires modules, patterns, dependencies.",
+            "properties": {
+              "modules": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "responsibility": {
+                      "type": "string"
+                    },
+                    "key_files": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "responsibility"
+                  ]
+                }
+              },
+              "patterns": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Architectural patterns observed (e.g., 'event-driven', 'MVC')."
+              },
+              "dependencies": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Key external dependencies."
+              },
+              "entry_points": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Main entry points for user flows."
+              },
+              "notes": {
+                "type": "string",
+                "description": "Additional observations."
+              }
+            },
+            "required": [
+              "modules",
+              "patterns",
+              "dependencies"
+            ]
+          }
+        },
+        "required": [
+          "task_id",
+          "agent",
+          "commit_sha",
+          "status",
+          "test_summary"
+        ]
+      }
+    },
+    "orchestrator_validate_task": {
+      "description": "Manager validation step. passed=true closes task (and closes related bugs); passed=false opens/keeps bug loop.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "passed",
+          "notes",
+          "source"
+        ]
+      }
+    },
+    "orchestrator_list_bugs": {
+      "description": "List validation-generated bugs, optionally filtered by status/owner.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "orchestrator_raise_blocker": {
+      "description": "Team member raises structured blocker requiring manager/user input. Marks task as blocked.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string",
+            "description": "Task owner agent id."
+          },
+          "question": {
+            "type": "string",
+            "description": "Exact question for manager/user."
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional explicit choices."
+          },
+          "severity": {
+            "type": "string",
+            "description": "low|medium|high",
+            "default": "medium"
+          }
+        },
+        "required": [
+          "task_id",
+          "agent",
+          "question"
+        ]
+      }
+    },
+    "orchestrator_list_blockers": {
+      "description": "List blockers raised by team members. Manager polls this to ask user for missing input.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "open|resolved"
+          },
+          "agent": {
+            "type": "string",
+            "description": "Optional blocker agent filter."
+          }
+        }
+      }
+    },
+    "orchestrator_resolve_blocker": {
+      "description": "Resolve blocker with manager/user decision and resume blocked task to in_progress.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "blocker_id": {
+            "type": "string"
+          },
+          "resolution": {
+            "type": "string",
+            "description": "Answer/decision from manager/user."
+          },
+          "source": {
+            "type": "string",
+            "description": "Resolver id (usually codex)."
+          }
+        },
+        "required": [
+          "blocker_id",
+          "resolution",
+          "source"
+        ]
+      }
+    },
+    "orchestrator_publish_event": {
+      "description": "Publish an event to the collaboration bus. Use for async notifications and coordination messages.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Event type, e.g., task.note, manager.announcement, team_member.ready."
+          },
+          "source": {
+            "type": "string",
+            "description": "Agent/source publishing the event."
+          },
+          "payload": {
+            "type": "object",
+            "description": "Arbitrary event payload body.",
+            "default": {}
+          },
+          "audience": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional target agents. Omit for broadcast."
+          }
+        },
+        "required": [
+          "type",
+          "source"
+        ]
+      }
+    },
+    "orchestrator_poll_events": {
+      "description": "Poll collaboration events for an agent with cursor-based replay. Supports optional long-poll timeout.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "Polling agent id (codex|claude_code|gemini)."
+          },
+          "cursor": {
+            "type": "integer",
+            "description": "Optional start offset. Defaults to stored agent cursor."
+          },
+          "limit": {
+            "type": "integer",
+            "default": 50
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "default": 0,
+            "description": "Wait time before returning when no new events."
+          },
+          "auto_advance": {
+            "type": "boolean",
+            "default": true,
+            "description": "Advance stored cursor automatically."
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      }
+    },
+    "orchestrator_ack_event": {
+      "description": "Acknowledge a specific event id for an agent.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "event_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent",
+          "event_id"
+        ]
+      }
+    },
+    "orchestrator_get_agent_cursor": {
+      "description": "Get current event cursor offset for an agent.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      }
+    },
+    "orchestrator_manager_cycle": {
+      "description": "Run one manager cycle automatically: validate reported tasks first, auto-connect stale team members with active tasks, then summarize remaining work by owner.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "strict": {
+            "type": "boolean",
+            "default": false,
+            "description": "If true, fail validation when status != done OR failed tests > 0. If false, same default behavior."
+          }
+        }
+      }
+    },
+    "orchestrator_reassign_stale_tasks": {
+      "description": "Re-advertise and reassign stale-owner tasks to other active team members so execution continues when one team member is degraded.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "default": "codex"
+          },
+          "stale_after_seconds": {
+            "type": "integer",
+            "default": 600
+          },
+          "include_blocked": {
+            "type": "boolean",
+            "default": true
+          }
+        }
+      }
+    },
+    "orchestrator_decide_architecture": {
+      "description": "Record equal-rights architecture decision and create ADR artifact under decisions/.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "topic": {
+            "type": "string"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "votes": {
+            "type": "object",
+            "description": "{agent: option}"
+          },
+          "rationale": {
+            "type": "object",
+            "description": "{agent: rationale}"
+          }
+        },
+        "required": [
+          "topic",
+          "options",
+          "votes"
+        ]
+      }
+    },
+    "orchestrator_create_consult": {
+      "description": "Create a consult-only review request. Manager asks team for design/bug/architecture feedback without creating tasks or triggering execution.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "Requesting agent id (usually manager)."
+          },
+          "consult_type": {
+            "type": "string",
+            "description": "design|bug|architecture|general"
+          },
+          "question": {
+            "type": "string",
+            "description": "The review question or topic."
+          },
+          "context": {
+            "type": "string",
+            "description": "Optional supporting context (code refs, links, background).",
+            "default": ""
+          },
+          "target_agents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional list of agents to target. Consult auto-closes when all respond."
+          }
+        },
+        "required": [
+          "source",
+          "consult_type",
+          "question"
+        ]
+      }
+    },
+    "orchestrator_respond_consult": {
+      "description": "Team member responds to a consult-only review request. No task claim or execution side effects.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "consult_id": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string",
+            "description": "Responding agent id."
+          },
+          "body": {
+            "type": "string",
+            "description": "Structured review response."
+          }
+        },
+        "required": [
+          "consult_id",
+          "agent",
+          "body"
+        ]
+      }
+    },
+    "orchestrator_list_consults": {
+      "description": "List consult-only review requests. Filter by status, type, or agent involvement.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "open|closed"
+          },
+          "consult_type": {
+            "type": "string",
+            "description": "design|bug|architecture|general"
+          },
+          "agent": {
+            "type": "string",
+            "description": "Filter by source or target agent."
+          }
+        }
+      }
+    }
+  }
+}
