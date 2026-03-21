@@ -1656,6 +1656,23 @@ def _avg_int(values: List[int]) -> Optional[int]:
     return int(round(sum(values) / len(values)))
 
 
+def _format_seconds(s: Any) -> str:
+    """Format seconds into human-readable duration like '5m', '2h30m', '3d'."""
+    if s is None:
+        return "-"
+    try:
+        s = int(s)
+    except (ValueError, TypeError):
+        return "-"
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m"
+    if s < 86400:
+        return f"{s // 3600}h{(s % 3600) // 60}m"
+    return f"{s // 86400}d{(s % 86400) // 3600}h"
+
+
 def _collect_commit_metrics(commit_sha: str) -> Dict[str, Any]:
     sha = str(commit_sha).strip()
     if not sha:
@@ -2199,120 +2216,126 @@ def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
     in_progress_count = len([t for t in tasks if t.get("status") == "in_progress"])
     assigned_count = len([t for t in tasks if t.get("status") == "assigned"])
 
-    lines = [
-        f"ORCHESTRATOR STATUS: {status_state}",
-        f"PROJECT: {project_identity['project_name']} ({ROOT_DIR.name})",
-        f"VERSION: {project_identity['version_current']} | {project_identity['version_name']}",
-        f"LEADER: {leader_identity['display_name']} ({leader}) | {leader_identity['role_label']} | TEAM: {team or 'none'}",
-        f"PIPELINE: {total_tasks} Tasks | {assigned_count} Assigned | {in_progress_count} IP | {reported_count} Review | {done_tasks} Done",
-        f"BLOCKERS: {len(blockers_open)} Open | BUGS: {len(bugs_open)} Open",
-    ]
-    if wingman_count > 0 or "ccm" in by_agent or "wingman" in team.lower():
-        wingman_agent = "ccm" if "ccm" in by_agent else "none"
-        wingman_status = by_agent.get(wingman_agent, {}).get("status", "offline") if wingman_agent != "none" else "n/a"
-        wingman_identity = _agent_identity(wingman_agent, by_agent.get(wingman_agent, {})) if wingman_agent != "none" else {
-            "display_name": "none",
-            "type_label": "-",
-            "model": "-",
-        }
-        lines.append(
-            f"WINGMAN LANE: {wingman_identity['display_name']} ({wingman_agent}) [{wingman_status}] | "
-            f"{wingman_identity['type_label']} | model: {wingman_identity['model']} | {wingman_count} Tasks Awaiting Review"
-        )
-    
-    lines.extend([
-        "",
-        "Progress details:",
-        f"- Overall project: {overall}%",
-        f"- Phase 1 (Architecture + Vertical Slice): {phase_1}%",
-        f"- Phase 2 (Content Pipeline): {phase_2}%",
-        f"- Phase 3 (Full Production): {phase_3}%",
-        f"- Backend vertical slice ({backend_task_id}): {backend_percent}%",
-        f"- Frontend vertical slice ({frontend_task_id}): {frontend_percent}%",
-        f"- QA/validation completion: {qa_percent}%",
-        "",
-        "Pipeline health:",
-        f"- Reported tasks: {reported_count}",
-        f"- Open blockers: {len(blockers_open)}",
-        f"- Open bugs: {len(bugs_open)}",
-    ])
+    # Unicode progress bar helper
+    def _ubar(pct: int, w: int = 20) -> str:
+        pct = max(0, min(100, int(pct)))
+        fill = int(w * pct / 100)
+        return "\u2588" * fill + "\u2591" * (w - fill)
 
-    # Team member operational summary for manager-friendly status checks.
-    lines.extend(["", "Team members:"])
-    lines.append(f"{'Agent':<15} {'Status':<10} {'Role':<30} {'Type':<15} {'Model':<20} {'Current Activity'}")
-    lines.append("-" * 110)
+    sep = "\u2500" * 70
+    thick_sep = "\u2550" * 70
+
+    lines = [
+        thick_sep,
+        f"  AGENT LEADER   {status_state.upper()}   {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}",
+        f"  {project_identity['project_name']} | v{project_identity['version_current']} {project_identity['version_name']}",
+        f"  Progress:   [{_ubar(overall, 30)}] {overall:>3}%  ({done_tasks}/{total_tasks} tasks)",
+        thick_sep,
+    ]
+
+    if len(blockers_open) or len(bugs_open):
+        lines.append(f"  \u26a0 {len(blockers_open)} blocker(s) | {len(bugs_open)} bug(s) open")
+
+    # LIVE STATUS
+    lines.append("")
+    lines.append(f"\u25b6 LIVE STATUS")
+    ip_tasks = [t for t in tasks if t.get("status") == "in_progress"]
+    if ip_tasks:
+        for t in ip_tasks[:4]:
+            own = _agent_identity(str(t.get("owner", "")), by_agent.get(str(t.get("owner", "")), {}))
+            lines.append(f"  \u25cf {own['display_name']:<16} {str(t.get('title',''))[:50]}  [{t.get('id','-')}]")
+    elif assigned_count > 0:
+        lines.append(f"  \u25cb {assigned_count} task(s) queued, waiting for workers")
+    else:
+        lines.append(f"  \u25cb All work done. Swarm idle.")
+
+    # TEAM ROSTER
+    lines.extend(["", sep])
+    lines.append(f"\u2692 TEAM")
+    lines.append(f"  {'Agent':<20} {'Role':<10} {'Status':<10} {'Model':<18}  {'Activity'}")
 
     role_by_agent: Dict[str, str] = {}
     leader = str(roles.get("leader", ""))
     if leader:
-        role_by_agent[leader] = "manager"
+        role_by_agent[leader] = "Leader"
     for member in roles.get("team_members", []) or []:
         if isinstance(member, str) and member and member not in role_by_agent:
-            role_by_agent[member] = "team member"
+            role_by_agent[member] = "Worker"
 
-    # Include discovered agents even if roles file doesn't list them yet.
     all_agent_names = sorted({*(role_by_agent.keys()), *(a for a in by_agent.keys() if isinstance(a, str))})
     for agent in all_agent_names:
         info = by_agent.get(agent, {})
-        status = str(info.get("status", "unknown"))
+        status = str(info.get("status", "offline"))
         identity = _agent_identity(agent, info)
-        role = role_by_agent.get(agent, identity["role_label"])
+        role = role_by_agent.get(agent, "Worker")
+        if agent == "ccm":
+            role = "Wingman"
+        model = identity.get("model", "-")
+        inst = str((info.get("metadata") or {}).get("instance_id", "") if isinstance(info.get("metadata"), dict) else "")
+        tag = inst[-4:] if len(inst) >= 4 else ""
+        name_tag = f"{identity['display_name']} #{tag}" if tag else identity['display_name']
 
-        in_progress_ids = [t.get("id") for t in tasks if t.get("owner") == agent and t.get("status") == "in_progress"]
-        reported_ids = [t.get("id") for t in tasks if t.get("owner") == agent and t.get("status") == "reported"]
-        
-        activity = []
-        if in_progress_ids:
-            activity.append("IP on " + ", ".join(in_progress_ids))
-        if reported_ids:
-            activity.append("Reported: " + ", ".join(reported_ids))
-        activity_str = "; ".join(activity)
+        ip_ids = [t.get("id","") for t in tasks if t.get("owner") == agent and t.get("status") == "in_progress"]
+        if ip_ids:
+            activity = "working: " + ", ".join(ip_ids[:2])
+            badge = "\u25cf WORKING"
+        elif status == "active":
+            activity = "ready"
+            badge = "\u25cb READY"
+        else:
+            activity = "offline"
+            badge = "\u25cf OFFLINE"
 
-        line = (
-            f"- {identity['display_name']} ({agent}) | {role} | "
-            f"{identity['provider']} {identity['type_label']} | model: {identity['model']} | {status}"
-        )
-        if activity_str:
-            line += f" | {activity_str}"
-        lines.append(line)
+        lines.append(f"  {name_tag:<20} {role:<10} {badge:<10} {model:<18}  {activity}")
 
-    # Per-team lane snapshot
-    team_lanes = _aggregate_team_lanes(tasks)
-    if team_lanes:
-        lines.extend(["", "Team lanes:"])
-        for tid in sorted(team_lanes):
-            lc = team_lanes[tid]
-            parts = []
-            for key in ("in_progress", "reported", "blocked"):
-                count = lc.get(key, 0)
-                if count:
-                    parts.append(f"{key}={count}")
-            total = lc.get("total", 0)
-            done = lc.get("done", 0)
-            summary = f"{done}/{total} done"
-            if parts:
-                summary += ", " + ", ".join(parts)
-            lines.append(f"- {tid}: {summary}")
+    # VELOCITY
+    lines.extend(["", sep])
+    lines.append(f"\u26a1 VELOCITY")
+    metrics = _status_metrics(tasks=tasks, bugs_open=bugs_open, blockers_open=blockers_open)
+    tp = metrics.get("throughput", {})
+    tm = metrics.get("timings_seconds", {})
+    rel = metrics.get("reliability", {})
+    lines.append(f"  Tasks done/hour:  {tp.get('tasks_done_per_hour', tp.get('completion_rate_percent', 0))}  |  Stale in-progress: {rel.get('stale_in_progress_over_30m', 0)}")
+    avg_claim = tm.get("avg_time_to_claim")
+    avg_report = tm.get("avg_time_to_report")
+    lines.append(f"  Avg claim time:   {_format_seconds(avg_claim) if avg_claim else '-'}  |  Avg report time: {_format_seconds(avg_report) if avg_report else '-'}")
+    lines.append(f"  Completion:       {tp.get('completion_rate_percent', 0)}%  |  Failure rate: {rel.get('stale_reported_over_10m', 0)} stale reports")
 
-    cross_project_summary = args.get("cross_project_summary")
-    if cross_project_summary:
-        lines.extend(["", "Cross-Project Summary:"])
-        for project_root, summary in cross_project_summary.items():
-            lines.append(f"- Project: {summary.get('project_name', project_root)}")
-            lines.append(f"  Tasks: {summary.get('total_tasks', 0)} (Done: {summary.get('done_tasks', 0)}, "
-                         f"In Progress: {summary.get('in_progress_tasks', 0)}, "
-                         f"Blocked: {summary.get('blocked_tasks', 0)})")
-            lines.append(f"  Agents: {summary.get('active_agents', 0)} active, "
-                         f"{summary.get('total_agents', 0)} total")
-            lines.append(f"  Bugs: {summary.get('open_bugs', 0)} open, "
-                         f"Blockers: {summary.get('open_blockers', 0)} open")
-            lines.append(f"  Completion: {_percent(summary.get('done_tasks', 0), summary.get('total_tasks', 0))}%")
+    # CODE OUTPUT
+    code = args.get("_code_output_override") or {}
+    if not code:
+        report_metrics = _report_metrics_snapshot()
+        code = report_metrics.get("totals", {})
+        code["by_agent"] = report_metrics.get("by_agent", {})
+    lines.extend(["", sep])
+    lines.append(f"\u2692 CODE OUTPUT")
+    lines.append(f"  Commits: {code.get('unique_commits', 0)}  |  +{code.get('lines_added_total', 0)}/-{code.get('lines_deleted_total', 0)} ({code.get('net_lines_total', 0)} net lines)")
+    for ag_name, ag_stats in sorted((code.get("by_agent") or {}).items()):
+        if isinstance(ag_stats, dict) and ag_stats.get("commits", 0) > 0:
+            ag_display = _agent_identity(ag_name).get("display_name", ag_name)
+            lines.append(f"    {ag_display:<16} {ag_stats.get('commits',0)} commits  +{ag_stats.get('lines_added',0)}/-{ag_stats.get('lines_deleted',0)} ({ag_stats.get('net_lines',0)} net)")
 
+    # WORK QUEUE
+    queued = [t for t in tasks if t.get("status") in ("assigned", "reported", "bug_open")]
+    blocked = [t for t in tasks if t.get("status") == "blocked"]
+    if queued or blocked:
+        lines.extend(["", sep])
+        lines.append(f"\u2630 WORK QUEUE")
+        for t in queued[:5]:
+            own = _agent_identity(str(t.get("owner", ""))).get("display_name", "?")
+            lines.append(f"  \u25b7 {own:<14} {str(t.get('title',''))[:45]}  [{t.get('id','-')}]")
+        for t in blocked[:3]:
+            lines.append(f"  \u2716 BLOCKED  {str(t.get('title',''))[:45]}  [{t.get('id','-')}]")
+
+    # RECOVERY ACTIONS
     if recovery_actions:
-        lines.extend(["", "Suggested recovery actions:"])
+        lines.extend(["", sep])
+        lines.append(f"\u26a0 RECOVERY ACTIONS")
         for action in recovery_actions[:5]:
-            lines.append(f"- [{action['type']}] {action['message']}")
-            lines.append(f"  Suggested: {action['action']}")
+            lines.append(f"  [{action['type']}] {action['message']}")
+
+    lines.append("")
+    lines.append(thick_sep)
 
     payload = {
         "report_text": "\n".join(lines),
