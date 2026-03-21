@@ -1328,6 +1328,30 @@ class Orchestrator:
         # This will trigger audit rotation if needed and clean up its archives
         self.bus.append_audit({"event": "bus.housekeeping", "status": "ok"})
 
+        log_dir = self.root / ".autopilot-logs"
+        max_logs_per_worker = 50
+        compress_after_days = 2
+        delete_after_days = 7
+
+        # Prune manager logs
+        self.bus._prune_logs_directory(
+            log_dir=log_dir,
+            prefix="manager-",
+            max_files=max_logs_per_worker,
+            compress_after_days=compress_after_days,
+            delete_after_days=delete_after_days,
+        )
+
+        # Prune worker logs
+        for agent_name in ["claude", "gemini", "codex", "wingman"]: # Assuming these are the agent CLIs that generate logs
+            self.bus._prune_logs_directory(
+                log_dir=log_dir,
+                prefix=f"worker-{agent_name}-",
+                max_files=max_logs_per_worker,
+                compress_after_days=compress_after_days,
+                delete_after_days=delete_after_days,
+            )
+
     def run_quality_gates(self, task: Dict[str, Any], report: Dict[str, Any]) -> QualityGateOutcome:
         """Run policy-configured quality gates against a task report."""
         gates_config = self.policy.triggers.get("quality_gates", {})
@@ -2379,6 +2403,159 @@ class Orchestrator:
             )
 
         return {"ok": len(warnings) == 0, "warnings": warnings}
+
+    def plan_from_roadmap(
+        self,
+        source: str,
+        version: Optional[str] = None,
+        limit: int = 5,
+        team_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Read project.yaml roadmap, find backlog items, and create orchestrator tasks.
+
+        Args:
+            source: Agent initiating the planning (typically the manager).
+            version: Optional roadmap version filter (e.g. "v1.1.0"). If None, uses first roadmap entry.
+            limit: Max number of backlog items to plan per invocation.
+            team_id: Optional team_id to assign to created tasks.
+
+        Returns:
+            Dict with created tasks, skipped (deduplicated), and metadata.
+        """
+        try:
+            import yaml  # type: ignore
+        except ImportError:
+            return {"error": "PyYAML not installed", "created": [], "skipped": []}
+
+        project_yaml_path = self.root / "project.yaml"
+        if not project_yaml_path.exists():
+            return {"error": "project.yaml not found", "created": [], "skipped": []}
+
+        try:
+            raw = yaml.safe_load(project_yaml_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return {"error": f"Failed to parse project.yaml: {exc}", "created": [], "skipped": []}
+
+        if not isinstance(raw, dict):
+            return {"error": "project.yaml root is not a mapping", "created": [], "skipped": []}
+
+        roadmap = raw.get("roadmap")
+        if not isinstance(roadmap, list) or not roadmap:
+            return {"error": "No roadmap entries in project.yaml", "created": [], "skipped": []}
+
+        # Find the target version block.
+        target_block = None
+        for block in roadmap:
+            if not isinstance(block, dict):
+                continue
+            if version:
+                if str(block.get("version", "")) == version:
+                    target_block = block
+                    break
+            else:
+                target_block = block
+                break
+
+        if target_block is None:
+            return {"error": f"Roadmap version '{version}' not found", "created": [], "skipped": []}
+
+        items = target_block.get("items")
+        if not isinstance(items, list):
+            return {"error": "No items in roadmap version block", "created": [], "skipped": []}
+
+        # Filter to backlog items only.
+        backlog_items = [item for item in items if isinstance(item, dict) and item.get("status") == "backlog"]
+        if not backlog_items:
+            return {"version": str(target_block.get("version", "")), "created": [], "skipped": [], "message": "No backlog items found"}
+
+        created: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
+        planned_count = 0
+
+        for item in backlog_items:
+            if planned_count >= limit:
+                break
+
+            title = str(item.get("title", "")).strip()
+            if not title:
+                continue
+
+            item_id = str(item.get("id", "")).strip()
+            details = str(item.get("details", "")).strip()
+            item_tags = item.get("tags", [])
+            if not isinstance(item_tags, list):
+                item_tags = []
+            effort = str(item.get("effort", "")).strip()
+
+            # Derive workstream from tags, defaulting to "backend".
+            workstream = "backend"
+            workstream_tags = {"frontend", "backend", "qa", "devops", "default"}
+            for tag in item_tags:
+                if str(tag).strip().lower() in workstream_tags:
+                    workstream = str(tag).strip().lower()
+                    break
+
+            # Build acceptance criteria from details.
+            acceptance_criteria = []
+            if details:
+                acceptance_criteria.append(f"Implement: {details[:200]}")
+            acceptance_criteria.append(f"Tests pass for {title[:80]}")
+            acceptance_criteria.append("Code reviewed and merged")
+
+            # Add roadmap provenance tag.
+            task_tags = list(item_tags)
+            if item_id:
+                task_tags.append(f"roadmap:{item_id}")
+            roadmap_version = str(target_block.get("version", ""))
+            if roadmap_version:
+                task_tags.append(f"version:{roadmap_version}")
+
+            risk = "medium"
+            if effort in ("XS", "S"):
+                risk = "low"
+            elif effort in ("L", "XL"):
+                risk = "high"
+
+            try:
+                task = self.create_task(
+                    title=title,
+                    description=details or f"Roadmap item: {title}",
+                    workstream=workstream,
+                    acceptance_criteria=acceptance_criteria,
+                    risk=risk,
+                    test_plan="targeted",
+                    doc_impact="none",
+                    tags=task_tags,
+                    team_id=team_id,
+                    task_type="standard",
+                )
+                if task.get("deduplicated"):
+                    skipped.append({"roadmap_id": item_id, "title": title, "existing_task_id": task.get("id"), "reason": "duplicate"})
+                else:
+                    created.append({"roadmap_id": item_id, "title": title, "task_id": task.get("id"), "owner": task.get("owner")})
+                    planned_count += 1
+            except Exception as exc:
+                skipped.append({"roadmap_id": item_id, "title": title, "reason": str(exc)})
+
+        logger.info("plan_from_roadmap source=%s version=%s created=%d skipped=%d", source, roadmap_version, len(created), len(skipped))
+
+        self.publish_event(
+            event_type="manager.roadmap_planned",
+            source=source,
+            payload={
+                "version": roadmap_version,
+                "created_count": len(created),
+                "skipped_count": len(skipped),
+                "created": created,
+            },
+        )
+
+        return {
+            "version": roadmap_version,
+            "created": created,
+            "skipped": skipped,
+            "backlog_remaining": len(backlog_items) - planned_count,
+        }
 
     def publish_event(
         self,
@@ -3994,14 +4171,6 @@ class Orchestrator:
             fh.flush()
             os.fsync(fh.fileno())
         tmp.replace(path)
-        try:
-            dir_fd = os.open(str(path.parent), os.O_RDONLY)
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
-        except Exception:
-            pass
         # Invalidate cache so next _read_json re-reads from disk.
         self._json_cache.pop(str(path), None)
 

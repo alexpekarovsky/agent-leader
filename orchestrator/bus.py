@@ -235,6 +235,74 @@ class EventBus:
             except Exception as e:
                 logger.warning("Error processing archive file %s: %s", f.name, e)
 
+    def _prune_logs_directory(
+        self,
+        log_dir: Path,
+        prefix: str,
+        max_files: int,
+        compress_after_days: int,
+        delete_after_days: int,
+    ) -> None:
+        """Prunes log files in a directory, keeping newest, compressing older, and deleting oldest."""
+        if not log_dir.is_dir():
+            return
+
+        now = datetime.now(timezone.utc)
+        files_to_process: List[Tuple[float, Path]] = []
+
+        for f in log_dir.iterdir():
+            if not f.is_file():
+                continue
+            # Handle both original and compressed files
+            if f.name.startswith(prefix) and (f.suffix == ".log" or f.suffix == ".gz"):
+                files_to_process.append((f.stat().st_mtime, f))
+
+        # Sort by modification time, newest first
+        files_to_process.sort(key=lambda x: x[0], reverse=True)
+
+        # Separate files for count-based pruning and age-based processing
+        files_to_prune_by_count = files_to_process[max_files:]
+        files_for_age_processing = files_to_process[:max_files] # only process the ones we're keeping by count for age
+
+        # Perform age-based processing on all files that are not immediately pruned by count
+        for mtime, f in files_for_age_processing + files_to_prune_by_count:
+            file_mtime = datetime.fromtimestamp(mtime, tz=timezone.utc)
+            age_days = (now - file_mtime).days
+
+            if age_days > delete_after_days:
+                try:
+                    f.unlink()
+                    logger.info("Deleted old log file (age > %d days): %s", delete_after_days, f.name)
+                except Exception as e:
+                    logger.warning("Error deleting log file %s: %s", f.name, e)
+            elif age_days > compress_after_days and f.suffix != ".gz":
+                try:
+                    with f.open("rb") as f_in:
+                        with gzip.open(str(f) + ".gz", "wb") as f_out:
+                            f_out.writelines(f_in)
+                    f.unlink()
+                    logger.info("Compressed old log file (age > %d days): %s", compress_after_days, f.name)
+                except Exception as e:
+                    logger.warning("Error compressing log file %s: %s", f.name, e)
+        
+        # Finally, delete any files that are still left and exceed max_files (if not already handled by age)
+        # Re-list to get the current state after age-based processing
+        current_files_for_prefix = []
+        for f in log_dir.iterdir():
+            if not f.is_file():
+                continue
+            if f.name.startswith(prefix) and (f.suffix == ".log" or f.suffix == ".gz"):
+                current_files_for_prefix.append((f.stat().st_mtime, f))
+        current_files_for_prefix.sort(key=lambda x: x[0], reverse=True)
+
+        if len(current_files_for_prefix) > max_files:
+            for mtime, f in current_files_for_prefix[max_files:]:
+                try:
+                    f.unlink()
+                    logger.info("Pruning excess log file (beyond max_files): %s", f.name)
+                except Exception as e:
+                    logger.warning("Error pruning excess log file %s: %s", f.name, e)
+
     def compact_events(self, retention_limit: int = 500) -> Dict[str, Any]:
         """Archive events beyond retention limit to a rotated file.
 

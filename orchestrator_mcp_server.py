@@ -1150,6 +1150,33 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
             },
         },
         {
+            "name": "orchestrator_plan_from_roadmap",
+            "description": "Read project.yaml roadmap, find backlog items, and create orchestrator tasks. Use for daily auto-planning.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Agent initiating the planning (typically the manager).",
+                    },
+                    "version": {
+                        "type": "string",
+                        "description": "Optional roadmap version filter (e.g. 'v1.1.0'). If omitted, uses first roadmap entry.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 5,
+                        "description": "Max number of backlog items to plan per invocation.",
+                    },
+                    "team_id": {
+                        "type": "string",
+                        "description": "Optional team_id to assign to created tasks.",
+                    },
+                },
+                "required": ["source"],
+            },
+        },
+        {
             "name": "orchestrator_reassign_stale_tasks",
             "description": "Re-advertise and reassign stale-owner tasks to other active team members so execution continues when one team member is degraded.",
             "inputSchema": {
@@ -1589,6 +1616,20 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
     for p in processed:
         logger.info("  report %s: %s", p.get("task_id"), "ACCEPTED" if p.get("passed") else "REJECTED")
 
+    # Auto-plan from roadmap when no pending tasks remain (or on first cycle).
+    auto_plan: Dict[str, Any] = {"attempted": False}
+    if pending_total == 0 and ORCH.policy.triggers.get("auto_plan_from_roadmap", True):
+        try:
+            auto_plan = ORCH.plan_from_roadmap(
+                source=ORCH.manager_agent(),
+                limit=int(ORCH.policy.triggers.get("auto_plan_limit", 5)),
+                team_id=str(ORCH.policy.triggers.get("auto_plan_team_id", "")) or None,
+            )
+            auto_plan["attempted"] = True
+        except Exception as exc:
+            auto_plan = {"attempted": True, "error": str(exc)}
+            logger.warning("manager_cycle.auto_plan_failed: %s", exc)
+
     ORCH._run_bus_housekeeping() # Run bus housekeeping after all manager actions
 
     return {
@@ -1605,6 +1646,7 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
         "pending_total": pending_total,
         "open_blockers": open_blockers,
         "stop_policy": stop_policy,
+        "auto_plan": auto_plan,
     }
 
 
@@ -3084,6 +3126,15 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             strict = bool(args.get("strict", False))
             cycle = _manager_cycle(strict=strict)
             return _ok_and_audit(request_id, name, args, cycle)
+
+        if name == "orchestrator_plan_from_roadmap":
+            result = ORCH.plan_from_roadmap(
+                source=args.get("source", ORCH.manager_agent()),
+                version=args.get("version"),
+                limit=int(args.get("limit", 5)),
+                team_id=args.get("team_id"),
+            )
+            return _ok_and_audit(request_id, name, args, result)
 
         if name == "orchestrator_reassign_stale_tasks":
             result = ORCH.reassign_stale_tasks_to_active_workers(
