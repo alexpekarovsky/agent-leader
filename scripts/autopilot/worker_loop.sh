@@ -18,6 +18,9 @@ CLI_TIMEOUT=600
 IDLE_BACKOFF="30,60,120,300,900"
 MAX_IDLE_CYCLES=30
 DAILY_CALL_BUDGET=100
+DAILY_TOKEN_BUDGET=0
+HOURLY_TOKEN_BUDGET=0
+TOKENS_PER_CALL=10000
 EVENT_DRIVEN=false
 EVENT_POLL_INTERVAL=2
 EVENT_MAX_WAIT=300
@@ -37,6 +40,9 @@ while [[ $# -gt 0 ]]; do
     --idle-backoff) IDLE_BACKOFF="$2"; shift 2 ;;
     --max-idle-cycles) MAX_IDLE_CYCLES="$2"; shift 2 ;;
     --daily-call-budget) DAILY_CALL_BUDGET="$2"; shift 2 ;;
+    --daily-token-budget) DAILY_TOKEN_BUDGET="$2"; shift 2 ;;
+    --hourly-token-budget) HOURLY_TOKEN_BUDGET="$2"; shift 2 ;;
+    --tokens-per-call) TOKENS_PER_CALL="$2"; shift 2 ;;
     --event-driven) EVENT_DRIVEN=true; shift ;;
     --event-poll-interval) EVENT_POLL_INTERVAL="$2"; shift 2 ;;
     --event-max-wait) EVENT_MAX_WAIT="$2"; shift 2 ;;
@@ -141,7 +147,17 @@ while true; do
         else
           log INFO "idle gate: no wakeup signal after ${EVENT_MAX_WAIT}s for $AGENT (streak=$idle_streak)"
           if [[ "$MAX_IDLE_CYCLES" =~ ^[0-9]+$ ]] && (( MAX_IDLE_CYCLES > 0 )) && (( idle_streak >= MAX_IDLE_CYCLES )); then
-            log INFO "max idle cycles reached ($MAX_IDLE_CYCLES); exiting worker loop for $AGENT"
+            # Auto-resume: check roadmap backlog before exiting
+            if roadmap_has_backlog "$PROJECT_ROOT"; then
+              log INFO "auto-resume: roadmap backlog detected; triggering plan_from_roadmap for $AGENT"
+              _created="$(auto_resume_from_roadmap "$PROJECT_ROOT" "$AGENT" "$TEAM_ID")" || true
+              if [[ "$_created" =~ ^[0-9]+$ ]] && (( _created > 0 )); then
+                log INFO "auto-resume: created $_created tasks from roadmap; resetting idle streak"
+                idle_streak=0
+                continue
+              fi
+            fi
+            log INFO "max idle cycles reached ($MAX_IDLE_CYCLES); no backlog remaining; exiting worker loop for $AGENT"
             exit 0
           fi
           continue  # Retry with incremented streak
@@ -150,7 +166,17 @@ while true; do
         sleep_s="$(backoff_interval_for_streak "$idle_streak" "$IDLE_BACKOFF" "$INTERVAL")"
         log INFO "idle gate: no claimable work for $AGENT (streak=$idle_streak sleep=${sleep_s}s)"
         if [[ "$MAX_IDLE_CYCLES" =~ ^[0-9]+$ ]] && (( MAX_IDLE_CYCLES > 0 )) && (( idle_streak >= MAX_IDLE_CYCLES )); then
-          log INFO "max idle cycles reached ($MAX_IDLE_CYCLES); exiting worker loop for $AGENT"
+          # Auto-resume: check roadmap backlog before exiting
+          if roadmap_has_backlog "$PROJECT_ROOT"; then
+            log INFO "auto-resume: roadmap backlog detected; triggering plan_from_roadmap for $AGENT"
+            _created="$(auto_resume_from_roadmap "$PROJECT_ROOT" "$AGENT" "$TEAM_ID")" || true
+            if [[ "$_created" =~ ^[0-9]+$ ]] && (( _created > 0 )); then
+              log INFO "auto-resume: created $_created tasks from roadmap; resetting idle streak"
+              idle_streak=0
+              continue
+            fi
+          fi
+          log INFO "max idle cycles reached ($MAX_IDLE_CYCLES); no backlog remaining; exiting worker loop for $AGENT"
           exit 0
         fi
         sleep_with_jitter "$sleep_s"
@@ -160,6 +186,18 @@ while true; do
     idle_streak=0
     if ! consume_daily_budget "$DAILY_CALL_BUDGET" "worker-${CLI}-${AGENT}" "$LOG_DIR"; then
       log WARN "daily call budget exhausted (budget=$DAILY_CALL_BUDGET); exiting worker loop for $AGENT"
+      exit 0
+    fi
+    if ! consume_token_budget "$DAILY_TOKEN_BUDGET" "$HOURLY_TOKEN_BUDGET" "$TOKENS_PER_CALL" "worker-${CLI}-${AGENT}" "$LOG_DIR"; then
+      _exhaust_window="daily"
+      if [[ "$HOURLY_TOKEN_BUDGET" =~ ^[0-9]+$ ]] && (( HOURLY_TOKEN_BUDGET > 0 )); then
+        _exhaust_window="hourly"
+      fi
+      log WARN "token budget exhausted (daily=$DAILY_TOKEN_BUDGET hourly=$HOURLY_TOKEN_BUDGET); exiting worker loop for $AGENT"
+      write_budget_exhaustion_marker "$PROJECT_ROOT/.autopilot-pids" "worker-${CLI}-${AGENT}" "$_exhaust_window"
+      emit_token_budget_alert "$PROJECT_ROOT" "$AGENT" "$_exhaust_window" \
+        "$(( DAILY_TOKEN_BUDGET > 0 ? DAILY_TOKEN_BUDGET : HOURLY_TOKEN_BUDGET ))" "0"
+      emit_agent_heartbeat "$PROJECT_ROOT" "$AGENT" "$CLI" "$LANE" "$INSTANCE_ID" "budget_exhausted"
       exit 0
     fi
   fi

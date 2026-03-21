@@ -135,9 +135,9 @@ for path in file_paths:
 for _, path in sorted(items, reverse=True):
     print(path)
 PY
-    )
-    fi
 
+      )
+      fi
     log DEBUG "Sorted files to keep for prefix '$prefix': ${sorted_files_to_keep[*]}"
     # 3. Prune excess files, keeping only MAX_LOG_FILES_PER_WORKER (newest)
     local total_current="${#sorted_files_to_keep[@]}"
@@ -408,7 +408,7 @@ consume_token_budget() {
       daily_current="$(cat "$daily_file" 2>/dev/null || echo 0)"
     fi
     [[ "$daily_current" =~ ^[0-9]+$ ]] || daily_current=0
-    if (( daily_current >= daily_ceiling )); then
+    if (( daily_current + tokens > daily_ceiling )); then
       return 1
     fi
     echo $(( daily_current + tokens )) > "$daily_file"
@@ -422,7 +422,7 @@ consume_token_budget() {
       hourly_current="$(cat "$hourly_file" 2>/dev/null || echo 0)"
     fi
     [[ "$hourly_current" =~ ^[0-9]+$ ]] || hourly_current=0
-    if (( hourly_current >= hourly_ceiling )); then
+    if (( hourly_current + tokens > hourly_ceiling )); then
       return 1
     fi
     echo $(( hourly_current + tokens )) > "$hourly_file"
@@ -585,6 +585,101 @@ try:
     orch.heartbeat(agent=agent, metadata=metadata)
 except Exception:
     raise SystemExit(0)
+PY
+}
+
+# Check if project.yaml roadmap has any items with status: backlog.
+# Returns 0 if backlog items exist, 1 otherwise.
+roadmap_has_backlog() {
+  local project_root="$1"
+  python3 - "$project_root" <<'PY'
+import sys
+from pathlib import Path
+
+try:
+    import yaml
+except ImportError:
+    sys.exit(1)
+
+root = Path(sys.argv[1])
+project_yaml = root / "project.yaml"
+if not project_yaml.exists():
+    sys.exit(1)
+
+try:
+    raw = yaml.safe_load(project_yaml.read_text(encoding="utf-8"))
+except Exception:
+    sys.exit(1)
+
+if not isinstance(raw, dict):
+    sys.exit(1)
+
+roadmap = raw.get("roadmap")
+if not isinstance(roadmap, list):
+    sys.exit(1)
+
+for block in roadmap:
+    if not isinstance(block, dict):
+        continue
+    items = block.get("items")
+    if not isinstance(items, list):
+        continue
+    for item in items:
+        if isinstance(item, dict) and item.get("status") == "backlog":
+            sys.exit(0)
+
+sys.exit(1)
+PY
+}
+
+# Trigger plan_from_roadmap via the orchestrator engine to create tasks from
+# roadmap backlog items.  Returns 0 if new tasks were created, 1 otherwise.
+# Stdout receives the number of tasks created (e.g. "3").
+auto_resume_from_roadmap() {
+  local project_root="$1"
+  local agent="$2"
+  local team_id="${3:-}"
+  python3 - "$ROOT_DIR" "$project_root" "$agent" "$team_id" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+repo_root = Path(os.environ.get("ORCHESTRATOR_ROOT", sys.argv[1])).resolve()
+project_root = str(Path(sys.argv[2]).resolve())
+agent = sys.argv[3]
+team_id = sys.argv[4].strip() if len(sys.argv) > 4 and sys.argv[4].strip() else None
+
+sys.path.insert(0, str(repo_root))
+
+try:
+    from orchestrator.engine import Orchestrator
+    from orchestrator.policy import Policy
+except Exception:
+    print("0")
+    sys.exit(1)
+
+policy_path = repo_root / "config" / "policy.codex-manager.json"
+if not policy_path.exists():
+    print("0")
+    sys.exit(1)
+
+try:
+    policy = Policy.load(policy_path)
+    orch = Orchestrator(root=repo_root, policy=policy)
+    result = orch.plan_from_roadmap(source=agent, team_id=team_id, limit=5)
+    created = len(result.get("created", []))
+    print(str(created))
+    if created > 0:
+        # Touch the wakeup signal so event-driven workers notice immediately.
+        signal_file = Path(project_root) / "state" / f".wakeup-{agent}"
+        signal_file.parent.mkdir(parents=True, exist_ok=True)
+        signal_file.write_text(str(created), encoding="utf-8")
+        sys.exit(0)
+    else:
+        sys.exit(1)
+except Exception:
+    print("0")
+    sys.exit(1)
 PY
 }
 
