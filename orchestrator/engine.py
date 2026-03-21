@@ -4159,7 +4159,8 @@ class Orchestrator:
                     "set ORCHESTRATOR_ALLOW_TASK_COUNT_SHRINK=1 to override intentionally"
                 )
         self._current_tasks = tasks
-        self._tasks_dirty = True
+        self._tasks_dirty = False
+        self._write_json(self.tasks_path, tasks)
         self._touch_wakeup_signals(tasks)
 
     def _flush_tasks_if_dirty(self) -> None:
