@@ -266,6 +266,8 @@ High-risk no-restrictions modes:
 
 Use no-restrictions only in trusted local environments.
 
+For production deployments, see [docs/security-hardening.md](docs/security-hardening.md) — covers file permissions, least-privilege setup, secrets handling, sandbox mode, and agent identity trust boundaries.
+
 Example startup commands (no restrictions):
 ```bash
 # Terminal A
@@ -307,8 +309,8 @@ connect to leader. Then wait for tasks, implement only assigned scope, run tests
 
 ### Gemini disconnected
 - restart Gemini MCP/session, then run `connect to leader`
-- `orchestrator_connect_to_leader` now auto-fills missing Gemini identity fields (`permissions_mode`, `sandbox_mode`, `session_id`, `connection_id`, `server_version`, `verification_source`) when possible.
-- `cwd` / `project_root` are still required to match the active project root for `same_project` verification.
+- all 9 identity fields are required for verification — ensure Gemini provides `client`, `model`, `cwd`, `permissions_mode`, `sandbox_mode`, `session_id`, `connection_id`, `server_version`, `verification_source`
+- `cwd` / `project_root` must match the active project root for `same_project` verification
 
 ## Autopilot (Autonomous Loops)
 
