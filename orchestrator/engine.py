@@ -19,6 +19,7 @@ from orchestrator.quality_gates import QualityGateOutcome, run_quality_gates
 from orchestrator.self_review import SelfReviewConfig
 from orchestrator.github_ci import normalize_github_ci_result
 from orchestrator import pr_stack as _pr_stack
+from orchestrator.migration import migrate_state as _migrate_state
 
 try:
     import fcntl
@@ -132,6 +133,12 @@ class Orchestrator:
                 + "\n",
                 encoding="utf-8",
             )
+        # Migrate legacy (v0) state files to current schema version.
+        try:
+            _migrate_state(self.state_dir, self.bus.root)
+        except Exception as exc:
+            print(f"WARNING: state migration failed: {exc}", file=sys.stderr, flush=True)
+
         self.bus.emit(
             "orchestrator.bootstrapped",
             {"policy": self.policy.name, "manager": self.policy.manager()},
