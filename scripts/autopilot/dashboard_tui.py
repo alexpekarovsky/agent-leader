@@ -1916,7 +1916,7 @@ def _render(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, st
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(description="Headless live TUI dashboard")
     p.add_argument("--project-root", required=True)
-    p.add_argument("--refresh-seconds", type=float, default=2.0)
+    p.add_argument("--refresh-seconds", type=float, default=5.0)
     p.add_argument("--auto-stop-on-complete", action="store_true")
     p.add_argument("--complete-streak", type=int, default=3)
     p.add_argument("--stale-seconds", type=int, default=1800)
@@ -1967,20 +1967,17 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         out = _render(snap, completed=completed, auto_stopped=auto_stopped, style=args.style)
         out_lines = out.splitlines()
+        term_cols = min(180, max(72, _term_width()))
         term_rows = max(10, _term_height())
+        # Truncate lines to terminal width to prevent wrapping artifacts.
+        out_lines = [line[:term_cols] for line in out_lines]
         if len(out_lines) > term_rows:
             out_lines = out_lines[:term_rows]
         elif len(out_lines) < term_rows:
             out_lines = out_lines + ([""] * (term_rows - len(out_lines)))
-        if args.full_clear:
-            sys.stdout.write("\x1b[2J\x1b[H")
-            sys.stdout.write("\n".join(out_lines) + "\n")
-        else:
-            # top-like static redraw: move cursor home and overwrite old content.
-            sys.stdout.write("\x1b[H")
-            sys.stdout.write("\n".join(out_lines) + "\n")
-            if last_lines > len(out_lines):
-                sys.stdout.write(("\n" * (last_lines - len(out_lines))))
+        # Clear screen and redraw — handles resize cleanly.
+        sys.stdout.write("\x1b[2J\x1b[H")
+        sys.stdout.write("\n".join(out_lines) + "\n")
         last_lines = len(out_lines)
         sys.stdout.flush()
 
