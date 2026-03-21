@@ -1674,188 +1674,207 @@ def _render_gemini(snapshot: DashboardSnapshot, completed: bool, auto_stopped: b
     return "\n".join(lines)
 
 
-def _ubar(pct: int, w: int = 20) -> str:
-    pct = max(0, min(100, pct))
+def _ubar(pct, w=20):
+    pct = max(0, min(100, int(pct)))
     fill = int(w * pct / 100)
     return "\u2588" * fill + "\u2591" * (w - fill)
 
 
-def _render_gemini_v3b(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, color_enabled: bool = True) -> str:
-    width = min(140, max(80, _term_width()))
-    lines: List[str] = []
+def _box(title, rows, w, h, color_enabled=True):
+    """Render a bordered box with title, fixed width and height."""
+    c = lambda code, text: _color(color_enabled, code, text)
+    inner = w - 2
+    out = []
+    out.append(c("34", "\u250c\u2500 ") + c("1", title) + c("34", " " + "\u2500" * max(0, inner - len(title) - 3) + "\u2510"))
+    for i in range(h):
+        content = rows[i] if i < len(rows) else ""
+        # Strip ANSI for length calculation
+        import re
+        visible = re.sub(r"\x1b\[[0-9;]*m", "", content)
+        pad = max(0, inner - len(visible))
+        out.append(c("34", "\u2502") + content + " " * pad + c("34", "\u2502"))
+    out.append(c("34", "\u2514" + "\u2500" * inner + "\u2518"))
+    return out
+
+
+def _merge_boxes(left_lines, right_lines):
+    """Merge two box column lists side by side."""
+    h = max(len(left_lines), len(right_lines))
+    merged = []
+    for i in range(h):
+        l = left_lines[i] if i < len(left_lines) else ""
+        r = right_lines[i] if i < len(right_lines) else ""
+        merged.append(l + " " + r)
+    return merged
+
+
+def _render_gemini_v3b(snapshot, completed, auto_stopped, color_enabled=True):
+    tw = min(160, max(80, _term_width()))
+    th = max(30, _term_height())
+    lines = []
     now = _now_utc().strftime("%H:%M:%S UTC")
     c = lambda code, text: _color(color_enabled, code, text)
-    thin = c("34", "\u2500" * width)
-    thick = c("34;1", "\u2550" * width)
-    bar20 = lambda p: "\u2588" * int(20 * max(0, min(100, p)) / 100) + "\u2591" * (20 - int(20 * max(0, min(100, p)) / 100))
+    thick = c("34;1", "\u2550" * tw)
+    bar = lambda p, w=20: "\u2588" * int(w * max(0, min(100, p)) / 100) + "\u2591" * (w - int(w * max(0, min(100, p)) / 100))
 
     if completed:
-        state_lbl = c("32;1", "\u2714 ALL DONE")
+        st = c("32;1", "\u2714 ALL DONE")
     elif snapshot.in_progress:
-        state_lbl = c("33;1", "\u25b6 WORKING")
+        st = c("33;1", "\u25b6 WORKING")
     elif snapshot.blockers_open:
-        state_lbl = c("31;1", "\u26a0 BLOCKED")
+        st = c("31;1", "\u26a0 BLOCKED")
     elif snapshot.assigned:
-        state_lbl = c("33", "\u23f3 QUEUED")
+        st = c("33", "\u23f3 QUEUED")
     else:
-        state_lbl = c("36", "\u23f8 IDLE")
+        st = c("36", "\u23f8 IDLE")
 
     # HEADER
     lines.append(thick)
-    lines.append(c("1", f"  AGENT LEADER DASHBOARD   {state_lbl}   {c('34', now)}"))
-    ver = f"v{snapshot.version_current or '?'} {snapshot.version_name or ''}"
-    lines.append(f"  {snapshot.project_name_display}  |  {ver}")
-    lines.append(f"  Progress:    [{bar20(snapshot.progress_percent)}] {snapshot.progress_percent:>3}%  ({snapshot.done_tasks}/{snapshot.total_tasks} tasks)")
+    lines.append(c("1", f"  AGENT LEADER   {st}   {c('34', now)}"))
+    lines.append(f"  {snapshot.project_name_display} | v{snapshot.version_current or '?'} {snapshot.version_name or ''}")
+    lines.append(f"  Progress:   [{bar(snapshot.progress_percent, 30)}] {snapshot.progress_percent:>3}%  ({snapshot.done_tasks}/{snapshot.total_tasks} tasks)")
     if snapshot.milestones_total > 0:
         ms_pct = int((snapshot.milestones_done / snapshot.milestones_total) * 100)
-        lines.append(f"  Milestones:  [{bar20(ms_pct)}] {ms_pct:>3}%  ({snapshot.milestones_done}/{snapshot.milestones_total})")
+        lines.append(f"  Milestones: [{bar(ms_pct, 30)}] {ms_pct:>3}%  ({snapshot.milestones_done}/{snapshot.milestones_total})")
     if snapshot.bugs_open or snapshot.blockers_open:
-        lines.append(c("31;1", f"  \u26a0  {snapshot.blockers_open} blocker(s)  |  {snapshot.bugs_open} bug(s) open"))
+        lines.append(c("31;1", f"  \u26a0 {snapshot.blockers_open} blocker(s) | {snapshot.bugs_open} bug(s) open"))
     lines.append(thick)
 
-    # LIVE STATUS
-    lines.append(c("1", "  \u25b6 LIVE STATUS"))
+    # Calculate panel dimensions
+    half_w = tw // 2
+    panel_h = max(6, (th - 14) // 3)  # divide remaining height into 3 rows of panels
+
+    # ── ROW 1: LIVE STATUS + WORK QUEUE ──
+    live_rows = []
     if snapshot.in_progress:
-        for t in snapshot.in_progress[:4]:
+        for t in snapshot.in_progress[:panel_h - 1]:
             own = _agent_profile(str(t.get("owner", ""))).get("display_name", "?")
             age = _format_age(_age_s(t.get("updated_at")))
             title = _clean_task_title(t.get("title", "-"))
-            lines.append(f"    {c('32', '\u25cf')} {c('1', own):<16} {_truncate(title, width - 35)}  ({age})")
+            live_rows.append(f" {c('32', '\u25cf')} {c('1', own):<14} {_truncate(title, half_w - 25)}")
+            live_rows.append(f"   {age} ago  [{t.get('id','-')}]")
     elif snapshot.assigned:
-        lines.append(f"    {c('33', '\u25cb')} {len(snapshot.assigned)} task(s) queued, waiting for workers")
+        live_rows.append(f" {c('33', '\u25cb')} {len(snapshot.assigned)} task(s) queued")
     else:
-        lines.append(f"    {c('36', '\u25cb')} All work done. Swarm idle.")
-    lines.append("")
+        live_rows.append(f" {c('36', '\u25cb')} All work done. Swarm idle.")
 
-    # TEAM ROSTER
-    lines.append(thin)
-    lines.append(c("1", "  \u2692 TEAM ROSTER"))
-    lines.append(c("34", f"  {'Agent':<20} {'Role':<10} {'Status':<12} {'Model':<18}  {'Tasks':>5} {'Commits':>7} {'Lines':>8}"))
-    stats_by = {r.get("display_name", ""): r for r in (snapshot.agent_delivery_stats or [])}
-    for a in snapshot.active_agents[:6]:
-        display_name = a.get("display_name", a["agent"])
-        # Append last 4 chars of instance_id for session identification
-        inst = str(a.get("instance_id", "") or "")
-        sess_tag = inst[-4:] if len(inst) >= 4 else inst
-        name_with_sess = f"{display_name} #{sess_tag}" if sess_tag else display_name
-        role = _compact_role_label(str(a.get("role_label", "-")))
-        activity = str(a.get("task_activity", "idle"))
-        hb = str(a.get("heartbeat_state", "?"))
-        model = str(a.get("model", "-"))[:16]
-        ps = a.get("process_state", "down")
-        if activity == "working":
-            badge = c("32;1", "\u25cf WORKING ")
-        elif activity == "queued":
-            badge = c("33", "\u25d4 QUEUED  ")
-        elif ps == "up" and hb == "active":
-            badge = c("36", "\u25cb READY   ")
-        elif hb in ("stale", "offline", "missing"):
-            badge = c("31", "\u25cf OFFLINE ")
-        else:
-            badge = c("34", "\u25cb IDLE    ")
-        st = stats_by.get(display_name, {})
-        lines.append(f"  {name_with_sess:<20} {role:<10} {badge} {model:<18}  {st.get('tasks_done_session',0):>5} {st.get('commits_session',0):>7} {st.get('loc_net_session',0):>8}")
-    lines.append("")
-
-    # WORK QUEUE
-    lines.append(thin)
-    lines.append(c("1", "  \u2630 WORK QUEUE"))
+    queue_rows = []
     queued = snapshot.queued_tasks or []
     blocked = snapshot.blocked_tasks or []
     if not queued and not blocked and not snapshot.in_progress:
-        lines.append(f"    {c('32', '\u2714')} Queue empty \u2014 all work complete")
+        queue_rows.append(f" {c('32', '\u2714')} Empty \u2014 all complete")
     else:
-        for t in queued[:6]:
+        for t in queued[:panel_h - 1]:
             own = _agent_profile(str(t.get("owner", ""))).get("display_name", "?")
             title = _clean_task_title(t.get("title", "-"))
-            lines.append(f"    {c('33', '\u25b7')} {own:<14} {_truncate(title, width - 28)}  [{t.get('id','-')}]")
-        for t in blocked[:3]:
+            queue_rows.append(f" {c('33', '\u25b7')} {own:<12} {_truncate(title, half_w - 22)}")
+        for t in blocked[:2]:
             title = _clean_task_title(t.get("title", "-"))
-            lines.append(c("31", f"    \u2716 BLOCKED  {_truncate(title, width - 18)}  [{t.get('id','-')}]"))
-    lines.append("")
+            queue_rows.append(c("31", f" \u2716 BLOCKED {_truncate(title, half_w - 14)}"))
 
-    # VELOCITY & QUALITY
-    lines.append(thin)
-    lines.append(c("1", "  \u26a1 VELOCITY & QUALITY"))
+    p1 = _box("LIVE STATUS", live_rows, half_w, panel_h, color_enabled)
+    p2 = _box("WORK QUEUE", queue_rows, half_w, panel_h, color_enabled)
+    lines.extend(_merge_boxes(p1, p2))
+
+    # ── ROW 2: TEAM ROSTER + VELOCITY ──
+    stats_by = {r.get("display_name", ""): r for r in (snapshot.agent_delivery_stats or [])}
+    team_rows = []
+    for a in snapshot.active_agents[:panel_h - 1]:
+        dn = a.get("display_name", a["agent"])
+        inst = str(a.get("instance_id", "") or "")
+        tag = inst[-4:] if len(inst) >= 4 else inst
+        label = f"{dn} #{tag}" if tag else dn
+        role = _compact_role_label(str(a.get("role_label", "-")))
+        activity = str(a.get("task_activity", "idle"))
+        hb = str(a.get("heartbeat_state", "?"))
+        ps = a.get("process_state", "down")
+        if activity == "working":
+            badge = c("32;1", "\u25cf WRK")
+        elif activity == "queued":
+            badge = c("33", "\u25d4 QUE")
+        elif ps == "up" and hb == "active":
+            badge = c("36", "\u25cb RDY")
+        elif hb in ("stale", "offline", "missing"):
+            badge = c("31", "\u25cf OFF")
+        else:
+            badge = c("34", "\u25cb IDL")
+        s = stats_by.get(dn, {})
+        td = s.get("tasks_done_session", 0)
+        cm = s.get("commits_session", 0)
+        lo = s.get("loc_net_session", 0)
+        team_rows.append(f" {label:<18} {role:<8} {badge}  t={td} c={cm} L={lo}")
+
     tp = snapshot.throughput_per_hour or 0
     eta = snapshot.eta_minutes
     hrs = (snapshot.session_duration_s or 1) / 3600.0
     net_s = snapshot.loc_added_session - snapshot.loc_deleted_session
     loc_h = int(net_s / hrs) if hrs > 0.1 else 0
     com_h = round(snapshot.commits_session / hrs, 1) if hrs > 0.1 else 0
-    half = width // 2 - 4
-    col1 = [
-        f"Tasks/hour:     {c('1', _fmt_number(tp))}",
-        f"Commits/hour:   {c('1', str(com_h))}",
-        f"Lines/hour:     {c('1', str(loc_h))}",
-        f"Avg lead time:  {c('1', _format_age(snapshot.avg_task_lead_time_s))}",
-        f"ETA remaining:  {c('1', (str(eta) + ' min') if eta is not None else 'done')}",
+    vel_rows = [
+        f" Tasks/hour:    {c('1', _fmt_number(tp))}",
+        f" Commits/hour:  {c('1', str(com_h))}",
+        f" Lines/hour:    {c('1', str(loc_h))}",
+        f" Lead time:     {c('1', _format_age(snapshot.avg_task_lead_time_s))}",
+        f" ETA:           {c('1', (str(eta) + ' min') if eta is not None else 'done')}",
+        f" Failure rate:  {c('32' if (snapshot.task_failure_rate_percent or 0) < 10 else '31', _fmt_number(snapshot.task_failure_rate_percent))}%",
+        f" Stale tasks:   {c('32' if (snapshot.stale_task_percent or 0) == 0 else '33', _fmt_number(snapshot.stale_task_percent))}%",
+        f" Utilization:   {_fmt_number(snapshot.agent_utilization_percent)}%",
     ]
-    col2 = [
-        f"Failure rate:   {c('32' if (snapshot.task_failure_rate_percent or 0) < 10 else '31', _fmt_number(snapshot.task_failure_rate_percent))}%",
-        f"Stale tasks:    {c('32' if (snapshot.stale_task_percent or 0) == 0 else '33', _fmt_number(snapshot.stale_task_percent))}%",
-        f"Utilization:    {_fmt_number(snapshot.agent_utilization_percent)}%",
-        f"Queue depth:    {_fmt_number(snapshot.queue_pressure)}",
-        f"Validation:     {_format_age(snapshot.avg_validation_cycle_time_s)}",
-    ]
-    for l, r in zip(col1, col2):
-        lines.append(f"    {l:<{half}}  {r}")
-    lines.append("")
 
-    # CODE OUTPUT
-    lines.append(thin)
-    lines.append(c("1", "  \u2692 CODE OUTPUT"))
+    p3 = _box("TEAM ROSTER", team_rows, half_w, panel_h, color_enabled)
+    p4 = _box("VELOCITY & QUALITY", vel_rows, half_w, panel_h, color_enabled)
+    lines.extend(_merge_boxes(p3, p4))
+
+    # ── ROW 3: CODE OUTPUT + TIMELINE ──
     net_t = snapshot.loc_added_today - snapshot.loc_deleted_today
-    lines.append(f"    Today:     {c('1', str(snapshot.tasks_done_today))} tasks  {c('1', str(snapshot.commits_today))} commits  {c('32', '+' + str(snapshot.loc_added_today))}/{c('31', '-' + str(snapshot.loc_deleted_today))} ({c('1', str(net_t))} net)")
-    lines.append(f"    Session:   {c('1', str(snapshot.tasks_done_session))} tasks  {c('1', str(snapshot.commits_session))} commits  {c('32', '+' + str(snapshot.loc_added_session))}/{c('31', '-' + str(snapshot.loc_deleted_session))} ({c('1', str(net_s))} net)")
-    lines.append(f"    All time:  {c('1', str(snapshot.done_tasks))} tasks  {c('1', str(snapshot.commits_total))} commits  {c('1', str(snapshot.loc_net_total))} net lines")
-    lines.append("")
-
-    # BUDGET
+    out_rows = [
+        f" {c('1', 'Today')}:    {snapshot.tasks_done_today} tasks  {snapshot.commits_today} commits  {c('32', '+' + str(snapshot.loc_added_today))}/{c('31', '-' + str(snapshot.loc_deleted_today))} ({net_t} net)",
+        f" {c('1', 'Session')}:  {snapshot.tasks_done_session} tasks  {snapshot.commits_session} commits  {c('32', '+' + str(snapshot.loc_added_session))}/{c('31', '-' + str(snapshot.loc_deleted_session))} ({net_s} net)",
+        f" {c('1', 'Total')}:    {snapshot.done_tasks} tasks  {snapshot.commits_total} commits  {snapshot.loc_net_total} net lines",
+    ]
     budget_today = snapshot.budget_calls_today or 0
     blimit = 100
     if budget_today > 0 or snapshot.budget_by_process:
-        lines.append(thin)
-        lines.append(c("1", "  \u23f1 BUDGET & LIMITS"))
         bp = min(100, int(budget_today / blimit * 100)) if blimit > 0 else 0
         left = max(0, blimit - budget_today)
-        lines.append(f"    Daily budget:  [{bar20(bp)}] {bp:>3}%  ({left} calls left)")
-        for k, v in sorted(snapshot.budget_by_process.items())[:4]:
+        out_rows.append("")
+        out_rows.append(f" Budget: [{bar(bp, 15)}] {left} calls left")
+        for k, v in sorted(snapshot.budget_by_process.items())[:3]:
             kp = min(100, int(v / blimit * 100)) if blimit > 0 else 0
-            lines.append(f"      {k:<18} [{bar20(kp)}] {v}/{blimit}")
-        lines.append("")
+            out_rows.append(f"   {k:<16} [{bar(kp, 10)}] {v}/{blimit}")
 
-    # RECENT ACTIVITY
-    lines.append(thin)
-    lines.append(c("1", "  \u23f0 RECENT ACTIVITY"))
-    for ev in snapshot.recent_events[:8]:
-        t = ev.get("time", "")[11:16]
+    time_rows = []
+    for ev in snapshot.recent_events[:panel_h]:
+        t = ev.get("time", "")[11:19]  # HH:MM:SS
         etype = str(ev.get("type", ""))
         src = ev.get("source", "")
         tid = ev.get("task_id") or ""
         sn = _agent_profile(src).get("display_name", src) if src else ""
         if "validation.passed" in etype:
-            ico, desc = c("32", "\u2714"), f"{tid} passed validation"
+            ico, desc = c("32", "\u2714"), f"{tid[:13]} passed"
         elif "validation.failed" in etype:
-            ico, desc = c("31", "\u2716"), f"{tid} failed validation"
+            ico, desc = c("31", "\u2716"), f"{tid[:13]} failed"
         elif "task.reported" in etype:
-            ico, desc = c("33", "\u25b2"), f"{tid} submitted by {sn}"
+            ico, desc = c("33", "\u25b2"), f"{tid[:13]} by {sn}"
         elif "task.claimed" in etype:
-            ico, desc = c("36", "\u25b6"), f"{tid} claimed by {sn}"
+            ico, desc = c("36", "\u25b6"), f"{sn} claimed {tid[:13]}"
         elif "idle_heartbeat" in etype:
             ico, desc = c("34", "\u25cb"), f"{sn} idle"
         elif "heartbeat" in etype:
-            ico, desc = c("34", "\u00b7"), f"{sn} heartbeat"
+            ico, desc = c("34", "\u00b7"), f"{sn}"
         elif "task_contracts" in etype:
-            ico, desc = c("34", "\u25a0"), "Manager published assignments"
+            ico, desc = c("34", "\u25a0"), "assignments published"
         else:
-            ico, desc = c("34", "\u00b7"), etype
-        lines.append(f"    {t}  {ico} {desc}")
-    lines.append("")
+            ico, desc = c("34", "\u00b7"), etype[:20]
+        time_rows.append(f" {c('34', t)} {ico} {desc}")
+
+    p5 = _box("CODE OUTPUT & BUDGET", out_rows, half_w, panel_h, color_enabled)
+    p6 = _box("TIMELINE", time_rows, half_w, panel_h, color_enabled)
+    lines.extend(_merge_boxes(p5, p6))
+
     lines.append(thick)
     lines.append(c("34", f"  Ctrl+C exit | 5s refresh | {snapshot.commits_total} commits | {snapshot.loc_net_total} lines | {snapshot.active_agent_count} agents"))
     return "\n".join(lines)
-
 
 
 def _render(snapshot: DashboardSnapshot, completed: bool, auto_stopped: bool, style: str, color_enabled: bool = True) -> str:
