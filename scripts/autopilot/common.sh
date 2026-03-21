@@ -65,6 +65,7 @@ PY
 
   # If no files were found for this prefix, exit gracefully
   if [[ "${#files[@]}" -eq 0 ]]; then
+    log DEBUG "No files found for prefix '$prefix'. Exiting prune_old_logs."
     return 0
   fi
 
@@ -111,6 +112,8 @@ PY
     fi
   done
 
+  log DEBUG "Files to keep after age-based filtering for prefix '$prefix': ${files_to_keep[*]}"
+
   # Re-sort files_to_keep by modification time (newest first) for pruning by count
   # This step is crucial because the previous loop modified and added files out of order
   local sorted_files_to_keep=()
@@ -133,16 +136,18 @@ for _, path in sorted(items, reverse=True):
     print(path)
 PY
     )
-  fi
+    fi
 
-  # 3. Prune excess files, keeping only MAX_LOG_FILES_PER_WORKER (newest)
-  local total_current="${#sorted_files_to_keep[@]}"
-  if (( total_current > max_files )); then
+    log DEBUG "Sorted files to keep for prefix '$prefix': ${sorted_files_to_keep[*]}"
+    # 3. Prune excess files, keeping only MAX_LOG_FILES_PER_WORKER (newest)
+    local total_current="${#sorted_files_to_keep[@]}"
+    log DEBUG "Total current files for prefix '$prefix': $total_current, Max files to keep: $max_files"
+    if (( total_current > max_files )); then
     for (( i=max_files; i<total_current; i++ )); do
-      log INFO "Pruning excess log file (beyond max_files): ${sorted_files_to_keep[$i]}"
+      log INFO "Pruning excess log file (beyond max_files) for prefix '$prefix': ${sorted_files_to_keep[$i]}"
       rm -f -- "${sorted_files_to_keep[$i]}"
     done
-  fi
+    fi
 }
 
 run_cli_prompt() {
@@ -364,6 +369,149 @@ consume_daily_budget() {
   fi
   echo $(( current + 1 )) > "$file"
   return 0
+}
+
+# ---------------------------------------------------------------------------
+# Token budget tracking
+# ---------------------------------------------------------------------------
+# Tracks cumulative token usage per budget window (daily/hourly).
+# Budget files:
+#   .budget-tokens-daily-{key}-{YYYYMMDD}.count
+#   .budget-tokens-hourly-{key}-{YYYYMMDD}T{HH}.count
+# Returns 0 if budget OK, 1 if either ceiling exceeded.
+
+consume_token_budget() {
+  local daily_ceiling="${1:-0}"
+  local hourly_ceiling="${2:-0}"
+  local tokens="${3:-10000}"
+  local key="${4:-default}"
+  local root="${5:-.}"
+
+  # Both ceilings disabled → always OK.
+  if { [[ ! "$daily_ceiling" =~ ^[0-9]+$ ]] || (( daily_ceiling <= 0 )); } &&
+     { [[ ! "$hourly_ceiling" =~ ^[0-9]+$ ]] || (( hourly_ceiling <= 0 )); }; then
+    return 0
+  fi
+
+  mkdir -p "$root"
+  local safe_key
+  safe_key="$(echo "$key" | tr -cs 'a-zA-Z0-9._-' '_')"
+  local day_stamp hour_stamp
+  day_stamp="$(date '+%Y%m%d')"
+  hour_stamp="$(date '+%Y%m%dT%H')"
+
+  # --- daily check ---
+  if [[ "$daily_ceiling" =~ ^[0-9]+$ ]] && (( daily_ceiling > 0 )); then
+    local daily_file="$root/.budget-tokens-daily-${safe_key}-${day_stamp}.count"
+    local daily_current=0
+    if [[ -f "$daily_file" ]]; then
+      daily_current="$(cat "$daily_file" 2>/dev/null || echo 0)"
+    fi
+    [[ "$daily_current" =~ ^[0-9]+$ ]] || daily_current=0
+    if (( daily_current >= daily_ceiling )); then
+      return 1
+    fi
+    echo $(( daily_current + tokens )) > "$daily_file"
+  fi
+
+  # --- hourly check ---
+  if [[ "$hourly_ceiling" =~ ^[0-9]+$ ]] && (( hourly_ceiling > 0 )); then
+    local hourly_file="$root/.budget-tokens-hourly-${safe_key}-${hour_stamp}.count"
+    local hourly_current=0
+    if [[ -f "$hourly_file" ]]; then
+      hourly_current="$(cat "$hourly_file" 2>/dev/null || echo 0)"
+    fi
+    [[ "$hourly_current" =~ ^[0-9]+$ ]] || hourly_current=0
+    if (( hourly_current >= hourly_ceiling )); then
+      return 1
+    fi
+    echo $(( hourly_current + tokens )) > "$hourly_file"
+  fi
+
+  return 0
+}
+
+# Write a budget-exhaustion marker so the supervisor knows not to restart.
+# Args: pid_dir, process_key, window (daily|hourly)
+write_budget_exhaustion_marker() {
+  local pid_dir="$1"
+  local process_key="$2"
+  local window="${3:-daily}"
+  mkdir -p "$pid_dir"
+  local marker_file="$pid_dir/${process_key}.token_budget_exhausted"
+  local now next_window
+  now="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  if [[ "$window" == "hourly" ]]; then
+    # Next window = top of next hour (approximate: add 3600s)
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+      next_window="$(date -u -v+1H '+%Y-%m-%dT%H:00:00Z')"
+    else
+      next_window="$(date -u -d '+1 hour' '+%Y-%m-%dT%H:00:00Z')"
+    fi
+  else
+    # Next window = midnight tomorrow
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+      next_window="$(date -u -v+1d '+%Y-%m-%dT00:00:00Z')"
+    else
+      next_window="$(date -u -d '+1 day' '+%Y-%m-%dT00:00:00Z')"
+    fi
+  fi
+  cat > "$marker_file" <<MARKER
+{"window":"${window}","exhausted_at":"${now}","next_window_at":"${next_window}"}
+MARKER
+  log WARN "token budget exhausted: wrote marker $marker_file (window=$window next=$next_window)"
+}
+
+# Emit a token budget exhaustion event via the orchestrator event bus.
+# Args: project_root, agent, window (daily|hourly), ceiling, used
+emit_token_budget_alert() {
+  local project_root="$1"
+  local agent="$2"
+  local window="${3:-daily}"
+  local ceiling="${4:-0}"
+  local used="${5:-0}"
+
+  python3 - "$ROOT_DIR" "$project_root" "$agent" "$window" "$ceiling" "$used" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+repo_root = Path(os.environ.get("ORCHESTRATOR_ROOT", sys.argv[1])).resolve()
+project_root = str(Path(sys.argv[2]).resolve())
+agent = sys.argv[3]
+window = sys.argv[4]
+ceiling = int(sys.argv[5])
+used = int(sys.argv[6])
+
+sys.path.insert(0, str(repo_root))
+
+try:
+    from orchestrator.engine import Orchestrator
+    from orchestrator.policy import Policy
+except Exception:
+    raise SystemExit(0)
+
+policy_path = repo_root / "config" / "policy.codex-manager.json"
+if not policy_path.exists():
+    raise SystemExit(0)
+
+try:
+    policy = Policy.load(policy_path)
+    orch = Orchestrator(root=repo_root, policy=policy)
+    orch.bus.emit(
+        event_type="budget.token_exhausted",
+        payload={
+            "agent": agent,
+            "window": window,
+            "ceiling": ceiling,
+            "used": used,
+            "project_root": project_root,
+        },
+        source=agent,
+    )
+except Exception:
+    raise SystemExit(0)
+PY
 }
 
 emit_agent_heartbeat() {

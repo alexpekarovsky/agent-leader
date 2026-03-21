@@ -18,7 +18,8 @@ import threading
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+import gzip
 
 # ── Structured logging setup ──
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -1313,6 +1314,74 @@ def _ok_and_audit(request_id: Any, tool_name: str, args: Dict[str, Any], payload
     return _ok(request_id, payload)
 
 
+def _prune_logs_directory(
+    log_dir: Path,
+    prefix: str,
+    max_files: int,
+    compress_after_days: int,
+    delete_after_days: int,
+) -> None:
+    """Prunes log files in a directory, keeping newest, compressing older, and deleting oldest."""
+    if not log_dir.is_dir():
+        return
+
+    now = datetime.now(timezone.utc)
+    files_to_process: List[Tuple[float, Path]] = []
+
+    for f in log_dir.iterdir():
+        if not f.is_file():
+            continue
+        # Handle both original and compressed files
+        if f.name.startswith(prefix) and (f.suffix == ".log" or f.suffix == ".gz" or f.suffix == ".jsonl"):
+            files_to_process.append((f.stat().st_mtime, f))
+
+    # Sort by modification time, newest first
+    files_to_process.sort(key=lambda x: x[0], reverse=True)
+
+    # Separate files for count-based pruning and age-based processing
+    files_to_prune_by_count = files_to_process[max_files:]
+    files_for_age_processing = files_to_process[:max_files] # only process the ones we're keeping by count for age
+
+    # Perform age-based processing on all files that are not immediately pruned by count
+    for mtime, f in files_for_age_processing + files_to_prune_by_count:
+        file_mtime = datetime.fromtimestamp(mtime, tz=timezone.utc)
+        age_days = (now - file_mtime).days
+
+        if age_days > delete_after_days:
+            try:
+                f.unlink()
+                logger.info("Deleted old log file (age > %d days): %s", delete_after_days, f.name)
+            except Exception as e:
+                logger.warning("Error deleting log file %s: %s", f.name, e)
+        elif age_days > compress_after_days and f.suffix != ".gz":
+            try:
+                with f.open("rb") as f_in:
+                    with gzip.open(str(f) + ".gz", "wb") as f_out:
+                        f_out.writelines(f_in)
+                f.unlink()
+                logger.info("Compressed old log file (age > %d days): %s", compress_after_days, f.name)
+            except Exception as e:
+                logger.warning("Error compressing log file %s: %s", f.name, e)
+    
+    # Finally, delete any files that are still left and exceed max_files (if not already handled by age)
+    # Re-list to get the current state after age-based processing
+    current_files_for_prefix = []
+    for f in log_dir.iterdir():
+        if not f.is_file():
+            continue
+        if f.name.startswith(prefix) and (f.suffix == ".log" or f.suffix == ".gz" or f.suffix == ".jsonl"):
+            current_files_for_prefix.append((f.stat().st_mtime, f))
+    current_files_for_prefix.sort(key=lambda x: x[0], reverse=True)
+
+    if len(current_files_for_prefix) > max_files:
+        for mtime, f in current_files_for_prefix[max_files:]:
+            try:
+                f.unlink()
+                logger.info("Pruning excess log file (beyond max_files): %s", f.name)
+            except Exception as e:
+                logger.warning("Error pruning excess log file %s: %s", f.name, e)
+
+
 def _guide_payload() -> Dict[str, Any]:
     roles = ORCH.get_roles()
     return {
@@ -1631,6 +1700,38 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
             logger.warning("manager_cycle.auto_plan_failed: %s", exc)
 
     ORCH._run_bus_housekeeping() # Run bus housekeeping after all manager actions
+
+    log_dir = ROOT_DIR / ".autopilot-logs"
+    max_logs_per_worker = 50
+    compress_after_days = 2
+    delete_after_days = 7
+
+    # Prune manager logs
+    _prune_logs_directory(
+        log_dir=log_dir,
+        prefix="manager-",
+        max_files=max_logs_per_worker,
+        compress_after_days=compress_after_days,
+        delete_after_days=delete_after_days,
+    )
+
+    # Prune worker logs
+    for agent_name in ["claude", "gemini", "codex", "wingman", "watchdog"]: # Include watchdog logs
+        _prune_logs_directory(
+            log_dir=log_dir,
+            prefix=f"worker-{agent_name}-",
+            max_files=max_logs_per_worker,
+            compress_after_days=compress_after_days,
+            delete_after_days=delete_after_days,
+        )
+        # Also handle generic agent logs like "claude.log"
+        _prune_logs_directory(
+            log_dir=log_dir,
+            prefix=f"{agent_name}", # for generic logs like "claude.log"
+            max_files=max_logs_per_worker,
+            compress_after_days=compress_after_days,
+            delete_after_days=delete_after_days,
+        )
 
     return {
         "processed_reports": processed,
