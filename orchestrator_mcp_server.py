@@ -1513,7 +1513,8 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
     )
     stale_requeues = ORCH.requeue_stale_in_progress_tasks(stale_after_seconds=stale_after_seconds)
 
-    latest_tasks = tasks
+    # Re-read tasks after all mutations for accurate summary.
+    latest_tasks = ORCH.list_tasks()
     open_blockers = ORCH.list_blockers(status="open")
     by_owner: Dict[str, Dict[str, int]] = {}
     pending_statuses = {"assigned", "in_progress", "reported", "bug_open", "blocked"}
