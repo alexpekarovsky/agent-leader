@@ -107,9 +107,9 @@ class SupervisorConfig:
             }.get(self.leader_agent, "codex")
         if self.low_burn:
             # Conservative low-burn defaults: fewer wakeups, bounded idle life.
-            if self.manager_interval <= 20:
+            if self.manager_interval < 20:
                 self.manager_interval = 120
-            if self.worker_interval <= 25:
+            if self.worker_interval < 25:
                 self.worker_interval = 180
             if self.max_idle_cycles <= 0:
                 self.max_idle_cycles = 30

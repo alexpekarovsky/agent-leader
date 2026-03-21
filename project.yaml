@@ -156,6 +156,179 @@ version:
       tags: [ux, tui, status, operator-experience]
 
 roadmap:
+  - version: v1.1.0
+    name: "Headless Velocity"
+    theme: "Headless must be faster than interactive, not slower. Eliminate ~40s/task overhead."
+    items:
+      - id: persistent-worker-sessions
+        title: "Persistent worker sessions — eliminate CLI cold-start per task"
+        effort: L
+        status: backlog
+        details: >
+          Keep a long-running CLI session per worker instead of spawn-per-cycle.
+          Workers receive tasks via stdin/file signal, maintain hot MCP context.
+          Eliminates 5-15s cold-start per task. Single biggest velocity win.
+        tags: [velocity, headless, architecture]
+
+      - id: kill-inter-cycle-sleep
+        title: "Skip inter-cycle sleep when work is available"
+        effort: S
+        status: backlog
+        details: >
+          After successful task completion, if auto_claim_next returned a new task,
+          skip the 25s sleep_with_jitter in worker_loop.sh. Only sleep when idle.
+          Eliminates 25s dead time between consecutive tasks.
+        tags: [velocity, headless]
+
+      - id: fix-low-burn-default
+        title: "BUG: low_burn=True default silently inflates intervals to 120s/180s"
+        effort: XS
+        status: done
+        details: >
+          _supervisor_from_tool_args defaults low_burn=True (line 450). This silently
+          overrides manager_interval=20→120 and worker_interval=25→180. The condition
+          'if self.manager_interval <= 20' means explicit value 20 IS overridden.
+          Fix: default low_burn=False, require explicit opt-in.
+        tags: [bug, velocity, headless]
+
+      - id: remove-redundant-worker-ceremony
+        title: "Remove redundant poll_events + claim_next_task from worker prompt"
+        effort: XS
+        status: backlog
+        details: >
+          connect_to_leader already auto-claims a task. Worker prompt then calls
+          poll_events(1s wait) + claim_next_task again. Wasted LLM turn + 1s.
+          Fix: worker prompt should check auto_claimed_task from connect response.
+        tags: [bug, velocity, headless]
+
+      - id: fix-double-claim-cooldown
+        title: "BUG: claim_cooldown penalizes legitimate fast workers"
+        effort: S
+        status: backlog
+        details: >
+          Auto_claim_next (line 2991) fires after submit_report. If no next task,
+          cooldown records a miss. When worker_loop restarts within 5s, legitimate
+          claim gets throttled. Fix: exempt engine-initiated claims from cooldown.
+        tags: [bug, velocity]
+
+      - id: non-blocking-reconnect
+        title: "Make connect_team_members non-blocking in manager_cycle"
+        effort: S
+        status: backlog
+        details: >
+          Manager_cycle blocks up to 15s on connect_team_members polling (line 1457).
+          Happens every cycle. Fix: emit reconnect event, check on next cycle.
+        tags: [bug, velocity, headless]
+
+      - id: stale-snapshot-bug
+        title: "BUG: manager_cycle uses stale task snapshot for final summary"
+        effort: XS
+        status: backlog
+        details: >
+          list_tasks() called at line 1339, mutations happen throughout cycle,
+          but remaining_by_owner summary uses the stale initial snapshot.
+          Fix: re-read tasks after mutations.
+        tags: [bug, reliability]
+
+      - id: event-bus-busy-wait
+        title: "BUG: Event bus wait_for_event_index uses 100ms busy-wait polling"
+        effort: S
+        status: backlog
+        details: >
+          bus.py line 143-146 does time.sleep(0.1) in tight loop counting file lines.
+          For 1s poll_events that's 10 stat ops. Replace with inotify/kqueue wakeup.
+        tags: [bug, performance]
+
+      - id: auto-resume-on-completion
+        title: "Auto-resume — when backlog has items, workers self-restart"
+        effort: S
+        status: backlog
+        details: >
+          After all current tasks complete, check if backlog/roadmap has more items.
+          If yes, auto-create next batch and resume. If no, sleep until signaled.
+          Agents should never stop while there's planned work.
+        tags: [velocity, autonomy, headless]
+
+      - id: daily-task-planning
+        title: "Daily auto-planning — manager generates today's tasks from roadmap"
+        effort: M
+        status: backlog
+        details: >
+          Every morning (or on daemon start), manager reads project.yaml roadmap,
+          picks next milestone items, breaks them into tasks, assigns workers.
+          No human needed to create individual tasks.
+        tags: [velocity, autonomy, planning]
+
+  - version: v1.2.0
+    name: "Token Budget & Hygiene"
+    theme: "Never burn tokens on keepalives. Auto-cleanup runtime data."
+    items:
+      - id: token-budget-guardrails
+        title: "Hard daily/hourly token budget with automatic shutdown"
+        effort: M
+        status: backlog
+        details: >
+          Track tokens per headless session. Hard ceiling (configurable).
+          When budget exhausted: gracefully stop workers, emit alert, don't restart
+          until next budget window. Prevent the burn incident from repeating.
+        tags: [cost-control, reliability, headless]
+
+      - id: idle-detection-auto-stop
+        title: "Auto-stop workers after N consecutive idle cycles"
+        effort: S
+        status: backlog
+        details: >
+          If worker has no claimable work for X consecutive cycles (default 3),
+          stop the worker process entirely. Don't burn CLI cold-starts on empty polls.
+          Restart only when manager creates new tasks.
+        tags: [cost-control, headless]
+
+      - id: bus-rotation-cleanup
+        title: "Automated bus/ rotation and archive cleanup"
+        effort: S
+        status: backlog
+        details: >
+          bus/ is 1GB (895MB archive, 159MB audit.jsonl). Add automatic rotation:
+          archive files older than 7 days, compress, delete after 30 days.
+          audit.jsonl rotation at 50MB. Run as part of manager_cycle.
+        tags: [hygiene, disk]
+
+      - id: test-consolidation
+        title: "Consolidate 40K lines of tests → ~15K quality tests"
+        effort: L
+        status: backlog
+        details: >
+          139 test files, 40K lines for 7K orchestrator lines (5.7:1 ratio).
+          7 operator_docs_fixtures files, 6 lease_* files — mostly AI-generated
+          fixture packs testing implementation details. Consolidate to behavior tests.
+        tags: [hygiene, tests, quality]
+
+      - id: autopilot-log-rotation
+        title: "Auto-rotate .autopilot-logs/ (1,257 files currently)"
+        effort: XS
+        status: backlog
+        details: >
+          Add log rotation: keep last 50 per worker, compress older, delete after 7 days.
+        tags: [hygiene, disk]
+
+      - id: reduce-fsync-overhead
+        title: "Reduce _write_json double-fsync overhead"
+        effort: S
+        status: backlog
+        details: >
+          Two fsyncs per JSON write (file + directory). Tasks.json written 3+ times
+          per task lifecycle = 6+ fsyncs. Remove directory fsync, batch writes.
+        tags: [performance]
+
+      - id: deepcopy-cache-optimization
+        title: "Replace deepcopy in _read_json cache with lazy copy"
+        effort: S
+        status: backlog
+        details: >
+          Every _read_json cache hit does full copy.deepcopy of entire tasks list.
+          O(n) on every read. Return reference for read-only callers, copy only for mutations.
+        tags: [performance]
+
   - version: v0.3.0
     name: "UX and Operator Experience"
     items:
