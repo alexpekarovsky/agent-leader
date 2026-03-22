@@ -104,6 +104,7 @@ class Orchestrator:
             finally:
                 if fcntl is not None:
                     fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                self._flush_tasks_if_dirty()
 
     def bootstrap(self) -> None:
         if not self.tasks_path.exists():
@@ -2842,6 +2843,11 @@ class Orchestrator:
         connected = bool(verification.get("verified")) and (
             bool(verification.get("same_project")) or self._allow_cross_project_agents()
         )
+
+        # Load architectural decisions into the agent's context
+        decisions_file = self.decisions_dir / "decisions.jsonl"
+        decisions = self._read_jsonl_file(decisions_file)
+        identity["decisions"] = decisions
         if connected and requested_role == "manager" and agent == manager:
             with self._state_lock():
                 current_roles = self.get_roles()
@@ -4110,6 +4116,10 @@ class Orchestrator:
             raise ValueError(f"agent_not_operational_or_wrong_project: {agent}")
 
     def _read_json(self, path: Path, make_copy: bool = True) -> Any:
+        # If tasks_path is dirty, return the in-memory version for consistency within this process.
+        if path == self.tasks_path and self._tasks_dirty and self._current_tasks is not None:
+            return copy.deepcopy(self._current_tasks) if make_copy else self._current_tasks
+        
         key = str(path)
         try:
             mtime_ns = path.stat().st_mtime_ns
@@ -4124,24 +4134,25 @@ class Orchestrator:
         self._json_cache[key] = (mtime_ns, data)
         return copy.deepcopy(data) if make_copy else data
 
-    def _ensure_list_file(self, path: Path) -> List[Dict[str, Any]]:
-        data = self._read_json(path)
-        if isinstance(data, list):
-            return data
-        repaired: List[Dict[str, Any]] = []
-        self._write_json(path, repaired)
-        try:
-            self.bus.append_audit(
-                {
-                    "category": "state_repair",
-                    "path": str(path),
-                    "action": "coerce_to_empty_list",
-                    "previous_type": type(data).__name__,
-                }
-            )
-        except Exception:
-            pass
-        return repaired
+    def _read_jsonl_file(self, path: Path) -> List[Dict[str, Any]]:
+        """Reads a .jsonl file and returns a list of dictionaries."""
+        if not path.is_file():
+            return []
+        data: List[Dict[str, Any]] = []
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                stripped_line = line.strip()
+                if stripped_line:
+                    try:
+                        data.append(json.loads(stripped_line))
+                    except json.JSONDecodeError as e:
+                        logger.warning("Failed to decode JSONL line in %s: %s", path, e)
+        return data
+
+    def _ensure_list_file(self, path: Path) -> None:
+        """Ensures a given path exists and contains a JSON list."""
+        if not path.exists() or not isinstance(self._read_json(path), list):
+            self._write_json(path, [])
 
     def _read_json_list(self, path: Path) -> List[Dict[str, Any]]:
         data = self._read_json(path)
@@ -4156,7 +4167,6 @@ class Orchestrator:
                     "path": str(path),
                     "action": "coerce_to_empty_list",
                     "previous_type": type(data).__name__,
-                    "via": "_read_json_list",
                 }
             )
         except Exception:
@@ -4204,8 +4214,7 @@ class Orchestrator:
                     "set ORCHESTRATOR_ALLOW_TASK_COUNT_SHRINK=1 to override intentionally"
                 )
         self._current_tasks = tasks
-        self._tasks_dirty = False
-        self._write_json(self.tasks_path, tasks)
+        self._tasks_dirty = True
         self._touch_wakeup_signals(tasks)
 
     def _flush_tasks_if_dirty(self) -> None:
@@ -4261,6 +4270,46 @@ class Orchestrator:
         # Invalidate cache so next _read_json re-reads from disk.
         self._json_cache.pop(str(path), None)
 
+    def _append_jsonl(self, path: Path, value: Dict[str, Any]) -> None:
+        """Appends a dictionary as a new line in a .jsonl file."""
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(value) + "\n")
+        self._json_cache.pop(str(path), None)
+
     @staticmethod
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    def orchestrator_record_decision(
+        self,
+        topic: str,
+        choice: str,
+        rationale: str,
+        agent: str,
+        references: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Record an architectural decision to the decisions log.
+        This is an MCP tool.
+        """
+        if not self.decisions_dir.is_dir():
+            raise ValueError(f"decisions directory not found: {self.decisions_dir}")
+        decisions_file = self.decisions_dir / "decisions.jsonl"
+        if not decisions_file.is_file():
+            # If the file doesn't exist, create it.
+            decisions_file.touch()
+
+        decision = {
+            "id": f"DEC-{uuid.uuid4().hex[:8]}",
+            "topic": topic,
+            "choice": choice,
+            "rationale": rationale,
+            "agent": agent,
+            "references": references or [],
+            "created_at": self._now(),
+        }
+        with self._state_lock():
+            self._append_jsonl(decisions_file, decision)
+        self.bus.emit("decision.recorded", decision, source=agent)
+        return decision
+
+

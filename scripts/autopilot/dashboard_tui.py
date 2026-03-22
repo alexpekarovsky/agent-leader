@@ -1779,30 +1779,49 @@ def _render_gemini_v3b(snapshot, completed, auto_stopped, color_enabled=True):
     # ── ROW 2: TEAM ROSTER + VELOCITY ──
     stats_by = {r.get("display_name", ""): r for r in (snapshot.agent_delivery_stats or [])}
     team_rows = []
-    for a in snapshot.active_agents[:panel_h - 1]:
+    for a in snapshot.active_agents[:12]:
         dn = a.get("display_name", a["agent"])
         inst = str(a.get("instance_id", "") or "")
         tag = inst[-4:] if len(inst) >= 4 else inst
-        label = f"{dn} #{tag}" if tag else dn
         role = _compact_role_label(str(a.get("role_label", "-")))
         activity = str(a.get("task_activity", "idle"))
         hb = str(a.get("heartbeat_state", "?"))
         ps = a.get("process_state", "down")
-        if activity == "working":
-            badge = c("32;1", "\u25cf WRK")
-        elif activity == "queued":
-            badge = c("33", "\u25d4 QUE")
-        elif ps == "up" and hb == "active":
-            badge = c("36", "\u25cb RDY")
-        elif hb in ("stale", "offline", "missing"):
-            badge = c("31", "\u25cf OFF")
+        lane_details = a.get("lane_details", [])
+
+        def _badge(act, pstate, hbeat):
+            if act == "working":
+                return c("32;1", "\u25cf WRK")
+            if act == "queued":
+                return c("33", "\u25d4 QUE")
+            if pstate == "up" and hbeat == "active":
+                return c("36", "\u25cb RDY")
+            if hbeat in ("stale", "offline", "missing"):
+                return c("31", "\u25cf OFF")
+            return c("34", "\u25cb IDL")
+
+        # If agent has multiple lanes, show each lane as a separate row
+        if len(lane_details) > 1:
+            s = stats_by.get(dn, {})
+            td = s.get("tasks_done_session", 0)
+            cm = s.get("commits_session", 0)
+            lo = s.get("loc_net_session", 0)
+            for ld in lane_details:
+                lane_name = ld.get("lane_label", "?")
+                lane_inst = str(ld.get("instance_id", "") or "")
+                lane_tag = lane_inst[-4:] if len(lane_inst) >= 4 else lane_inst
+                lane_alive = ld.get("alive", False)
+                lane_badge = c("36", "\u25cb RDY") if lane_alive else c("31", "\u25cf OFF")
+                label = f"{dn} #{lane_tag}"
+                team_rows.append(f" {label:<18} {lane_name:<8} {lane_badge}  t={td} c={cm} L={lo}")
         else:
-            badge = c("34", "\u25cb IDL")
-        s = stats_by.get(dn, {})
-        td = s.get("tasks_done_session", 0)
-        cm = s.get("commits_session", 0)
-        lo = s.get("loc_net_session", 0)
-        team_rows.append(f" {label:<18} {role:<8} {badge}  t={td} c={cm} L={lo}")
+            label = f"{dn} #{tag}" if tag else dn
+            badge = _badge(activity, ps, hb)
+            s = stats_by.get(dn, {})
+            td = s.get("tasks_done_session", 0)
+            cm = s.get("commits_session", 0)
+            lo = s.get("loc_net_session", 0)
+            team_rows.append(f" {label:<18} {role:<8} {badge}  t={td} c={cm} L={lo}")
 
     tp = snapshot.throughput_per_hour or 0
     eta = snapshot.eta_minutes
