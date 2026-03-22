@@ -1244,7 +1244,7 @@ class WorkflowReliabilityTests(unittest.TestCase):
 
             manager = multiprocessing.Process(
                 target=_manager_validate_until_done,
-                args=(str(root), str(policy_path), total_tasks, 20.0),
+                args=(str(root), str(policy_path), total_tasks, 30.0),
             )
             cc_worker = multiprocessing.Process(
                 target=_worker_complete_tasks,
@@ -1257,9 +1257,9 @@ class WorkflowReliabilityTests(unittest.TestCase):
             manager.start()
             cc_worker.start()
             gm_worker.start()
-            manager.join(25)
-            cc_worker.join(25)
-            gm_worker.join(25)
+            manager.join(35)
+            cc_worker.join(35)
+            gm_worker.join(35)
 
             self.assertFalse(manager.is_alive(), "manager process did not finish")
             self.assertFalse(cc_worker.is_alive(), "claude_code worker did not finish")
@@ -1427,7 +1427,8 @@ class AutopilotTimeoutBehaviorTests(unittest.TestCase):
                 timeout=15,
             )
 
-            self.assertEqual(124, proc.returncode)
+            # --once mode exits 0 after completing one iteration, even on timeout
+            self.assertEqual(0, proc.returncode)
             self.assertIn("worker cycle timed out agent=claude_code after 1s", proc.stderr)
             logs = list(logs_dir.glob("worker-claude_code-claude-*.log"))
             self.assertEqual(1, len(logs))

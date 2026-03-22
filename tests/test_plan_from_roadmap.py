@@ -146,8 +146,32 @@ class TestPlanFromRoadmap(unittest.TestCase):
         result2 = self.orch.plan_from_roadmap(source="codex")
         self.assertEqual(len(result2["created"]), 0)
         self.assertEqual(len(result2["skipped"]), 3)
+        valid_reasons = {"duplicate", "roadmap_tag_exists"}
         for skip in result2["skipped"]:
-            self.assertEqual(skip["reason"], "duplicate")
+            self.assertIn(skip["reason"], valid_reasons)
+
+    def test_deduplicates_across_statuses(self):
+        """Tasks in non-open statuses (done, superseded) still block re-planning."""
+        self._write_project_yaml()
+        result1 = self.orch.plan_from_roadmap(source="codex", limit=1)
+        self.assertEqual(len(result1["created"]), 1)
+        task_id = result1["created"][0]["task_id"]
+
+        # Move task to done — title-based dedup would miss this, but roadmap
+        # tag dedup should still catch it.
+        tasks = self.orch._read_json(self.orch.tasks_path, make_copy=True)
+        for t in tasks:
+            if t["id"] == task_id:
+                t["status"] = "done"
+        self.orch._write_tasks_json(tasks)
+
+        result2 = self.orch.plan_from_roadmap(source="codex", limit=1)
+        # The first roadmap item should be skipped (roadmap_tag_exists),
+        # and the second item should be created instead.
+        created_ids = [c["roadmap_id"] for c in result2["created"]]
+        skipped_ids = [s["roadmap_id"] for s in result2["skipped"]]
+        self.assertIn("item-a", skipped_ids)
+        self.assertNotIn("item-a", created_ids)
 
     def test_assigns_team_id(self):
         """team_id is passed through to created tasks."""

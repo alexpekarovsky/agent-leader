@@ -1,7 +1,6 @@
 {
-  "contract_version": "1.0.0",
-  "description": "Frozen MCP tool contract for agent-leader-orchestrator. Any schema change requires a version bump.",
-  "tool_count": 47,
+  "contract_version": "1.1.0",
+  "tool_count": 50,
   "tools": {
     "orchestrator_guide": {
       "description": "Return the orchestration playbook and exact MCP-only workflow for manager and team members.",
@@ -72,8 +71,8 @@
           },
           "low_burn": {
             "type": "boolean",
-            "description": "Enable conservative low-burn mode: longer intervals, bounded idle cycles. Default: true.",
-            "default": true
+            "description": "Enable conservative low-burn mode: longer intervals, bounded idle cycles. Default: false.",
+            "default": false
           },
           "idle_backoff": {
             "type": "string",
@@ -89,6 +88,21 @@
             "type": "integer",
             "description": "Per-process daily LLM call budget. 0 disables. Default: 100.",
             "default": 100
+          },
+          "daily_token_budget": {
+            "type": "integer",
+            "description": "Hard daily token ceiling across all processes. 0 disables. Default: 0.",
+            "default": 0
+          },
+          "hourly_token_budget": {
+            "type": "integer",
+            "description": "Hard hourly token ceiling across all processes. 0 disables. Default: 0.",
+            "default": 0
+          },
+          "tokens_per_call": {
+            "type": "integer",
+            "description": "Estimated tokens consumed per CLI call for budget tracking. Default: 10000.",
+            "default": 10000
           },
           "extra_workers": {
             "type": "array",
@@ -1238,6 +1252,34 @@
         }
       }
     },
+    "orchestrator_plan_from_roadmap": {
+      "description": "Read project.yaml roadmap, find backlog items, and create orchestrator tasks. Use for daily auto-planning.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "Agent initiating the planning (typically the manager)."
+          },
+          "version": {
+            "type": "string",
+            "description": "Optional roadmap version filter (e.g. 'v1.1.0'). If omitted, uses first roadmap entry."
+          },
+          "limit": {
+            "type": "integer",
+            "default": 5,
+            "description": "Max number of backlog items to plan per invocation."
+          },
+          "team_id": {
+            "type": "string",
+            "description": "Optional team_id to assign to created tasks."
+          }
+        },
+        "required": [
+          "source"
+        ]
+      }
+    },
     "orchestrator_reassign_stale_tasks": {
       "description": "Re-advertise and reassign stale-owner tasks to other active team members so execution continues when one team member is degraded.",
       "inputSchema": {
@@ -1325,6 +1367,36 @@
         ]
       }
     },
+    "orchestrator_set_review_gate": {
+      "description": "Wingman sets review gate decision (approve/reject) on a reported task. Used by the wingman/reviewer agent after code review.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Task ID to review."
+          },
+          "status": {
+            "type": "string",
+            "description": "approved|rejected|waived"
+          },
+          "reviewer_agent": {
+            "type": "string",
+            "description": "Reviewing agent id (e.g. ccm)."
+          },
+          "notes": {
+            "type": "string",
+            "description": "Review findings, feedback, or approval notes.",
+            "default": ""
+          }
+        },
+        "required": [
+          "task_id",
+          "status",
+          "reviewer_agent"
+        ]
+      }
+    },
     "orchestrator_respond_consult": {
       "description": "Team member responds to a consult-only review request. No task claim or execution side effects.",
       "inputSchema": {
@@ -1367,6 +1439,21 @@
             "description": "Filter by source or target agent."
           }
         }
+      }
+    },
+    "orchestrator_get_task_spec": {
+      "description": "Read the generated spec file for a task. Workers use this for implementation guidance.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Task ID to read spec for."
+          }
+        },
+        "required": [
+          "task_id"
+        ]
       }
     }
   }

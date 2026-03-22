@@ -86,14 +86,56 @@ class MtimeCacheTests(unittest.TestCase):
         result = self.orch._read_json(missing)
         self.assertEqual(result, [])
 
-    def test_cached_data_is_independent_copy(self) -> None:
-        """Mutating returned data does not corrupt cache."""
+    def test_default_returns_reference_no_copy(self) -> None:
+        """Default make_copy=False returns direct cache reference."""
         task = {"id": "T1", "title": "test", "status": "assigned", "owner": "x"}
         self.orch._write_json(self.orch.tasks_path, [task])
-        first = self.orch._read_json(self.orch.tasks_path)
-        first.append({"id": "T2"})  # mutate returned list
-        second = self.orch._read_json(self.orch.tasks_path)
-        self.assertEqual(len(second), 1, "mutation should not affect cached data")
+        ref1 = self.orch._read_json(self.orch.tasks_path)
+        ref2 = self.orch._read_json(self.orch.tasks_path)
+        self.assertIs(ref1, ref2, "default should return same cached object")
+
+    def test_make_copy_true_returns_independent_copy(self) -> None:
+        """make_copy=True returns a deep copy, not the cached object."""
+        task = {"id": "T1", "title": "test", "status": "assigned", "owner": "x"}
+        self.orch._write_json(self.orch.tasks_path, [task])
+        copy1 = self.orch._read_json(self.orch.tasks_path, make_copy=True)
+        copy2 = self.orch._read_json(self.orch.tasks_path, make_copy=True)
+        self.assertIsNot(copy1, copy2, "each make_copy=True call returns a new object")
+        self.assertEqual(copy1, copy2)
+
+    def test_mutation_of_copy_does_not_corrupt_cache(self) -> None:
+        """Mutating a make_copy=True result must not affect cached data."""
+        task = {"id": "T1", "title": "test", "status": "assigned", "owner": "x"}
+        self.orch._write_json(self.orch.tasks_path, [task])
+        mutable = self.orch._read_json(self.orch.tasks_path, make_copy=True)
+        mutable.append({"id": "T2"})
+        pristine = self.orch._read_json(self.orch.tasks_path)
+        self.assertEqual(len(pristine), 1, "cache must not grow from copy mutation")
+
+    def test_reassign_stale_does_not_corrupt_cache(self) -> None:
+        """reassign_stale_tasks uses make_copy=True so cache stays pristine."""
+        task = {"id": "T-stale", "title": "stale", "status": "in_progress",
+                "owner": "old_agent", "updated_at": self.orch._now()}
+        self.orch._write_json(self.orch.tasks_path, [task])
+        # Register old_agent as stale and new_agent as active
+        now = self.orch._now()
+        agents = {
+            "old_agent": {"status": "active", "last_seen": "2020-01-01T00:00:00+00:00",
+                          "metadata": {"project_root": str(self.root), "cwd": str(self.root),
+                                       "verified": True, "same_project": True}},
+            "new_agent": {"status": "active", "last_seen": now,
+                          "metadata": {"project_root": str(self.root), "cwd": str(self.root),
+                                       "verified": True, "same_project": True}},
+        }
+        self.orch._write_json(self.orch.agents_path, agents)
+        # Warm cache
+        cached_before = self.orch._read_json(self.orch.tasks_path)
+        self.assertEqual(cached_before[0]["status"], "in_progress")
+        # Run reassign — should use a copy, not mutate cached ref
+        self.orch.reassign_stale_tasks_to_active_workers(source="test", stale_after_seconds=1)
+        # The cached reference from before must still show original status
+        self.assertEqual(cached_before[0]["status"], "in_progress",
+                         "cache reference must not be mutated by reassign_stale_tasks")
 
     def test_claim_next_task_under_1ms_warm_cache(self) -> None:
         """Benchmark: claim_next_task < 1ms with warm cache (no claimable tasks)."""

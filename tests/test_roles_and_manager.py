@@ -255,5 +255,16 @@ class SetRoleTests(unittest.TestCase):
             self.assertEqual("claude_code", orch.manager_agent())
 
 
+class PolicyBundlePresetTests(unittest.TestCase):
+    def test_bundle_files_exist_and_load(self) -> None:
+        config = Path(__file__).resolve().parents[1] / "config"
+        for name in ("policy.strict-qa.json", "policy.prototype-fast.json", "policy.balanced.json"):
+            path = config / name
+            self.assertTrue(path.exists(), f"missing bundle: {name}")
+            policy = Policy.load(path)
+            self.assertTrue(policy.name)
+            self.assertIn("default", policy.routing)
+
+
 if __name__ == "__main__":
     unittest.main()

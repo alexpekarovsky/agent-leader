@@ -121,33 +121,34 @@ PY
     while IFS= read -r f; do
       [[ -n "$f" ]] && sorted_files_to_keep+=("$f")
     done < <(
-      printf "%s\n" "${files_to_keep[@]}" | python3 - <<'PY'
+      python3 - "${files_to_keep[@]}" <<'PY'
 import os
 import sys
-file_paths = [line.strip() for line in sys.stdin if line.strip()]
 items = []
-for path in file_paths:
+for path in sys.argv[1:]:
+    path = path.strip()
+    if not path:
+        continue
     try:
         items.append((os.path.getmtime(path), path))
     except FileNotFoundError:
-        # File might have been deleted by another process or during compression step
         pass
 for _, path in sorted(items, reverse=True):
     print(path)
 PY
 
       )
-      fi
-    log DEBUG "Sorted files to keep for prefix '$prefix': ${sorted_files_to_keep[*]}"
+    log DEBUG "Sorted files to keep for prefix '$prefix': ${sorted_files_to_keep[*]:-}"
     # 3. Prune excess files, keeping only MAX_LOG_FILES_PER_WORKER (newest)
     local total_current="${#sorted_files_to_keep[@]}"
     log DEBUG "Total current files for prefix '$prefix': $total_current, Max files to keep: $max_files"
     if (( total_current > max_files )); then
-    for (( i=max_files; i<total_current; i++ )); do
-      log INFO "Pruning excess log file (beyond max_files) for prefix '$prefix': ${sorted_files_to_keep[$i]}"
-      rm -f -- "${sorted_files_to_keep[$i]}"
-    done
+      for (( i=max_files; i<total_current; i++ )); do
+        log INFO "Pruning excess log file (beyond max_files) for prefix '$prefix': ${sorted_files_to_keep[$i]}"
+        rm -f -- "${sorted_files_to_keep[$i]}"
+      done
     fi
+  fi
 }
 
 run_cli_prompt() {
