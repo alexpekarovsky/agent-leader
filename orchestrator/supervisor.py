@@ -190,6 +190,16 @@ def proc_enabled(name: str, leader_agent: str, claude_lanes: int = 3) -> bool:
 # Command building
 # ---------------------------------------------------------------------------
 
+def _get_instance_id(name: str, lane: str = "default") -> str:
+    """Generate a consistent instance ID for a process name and lane."""
+    if name in ("manager", "watchdog"):
+        return f"{name}#headless-{lane}"
+    if name.startswith("claude"):
+        lane_num = name.split("_")[1] if "_" in name else "1"
+        return f"claude_code#headless-{lane}-{lane_num}"
+    return f"{name}#headless-{lane}"
+
+
 def proc_cmd(name: str, cfg: SupervisorConfig,
              extra_names: Sequence[str] = (),
              extra_cmds: Sequence[str] = ()) -> str:
@@ -241,11 +251,13 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             f"{_token_budget_args()}"
         )
     if name == "wingman":
+        instance_id = _get_instance_id(name, "wingman")
         return (
             f"{scripts}/worker_loop.sh"
             f" --cli {cfg.wingman_cli}"
             f" --agent {cfg.wingman_agent}"
             f" --lane wingman{_team_arg(cfg.wingman_team_id)}"
+            f" --instance-id {instance_id}"
             f" --project-root {cfg.wingman_project_root}"
             f" --interval {cfg.worker_interval}"
             f" --cli-timeout {cfg.worker_cli_timeout}"
@@ -259,8 +271,7 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
         )
     if name in ("claude", "claude_2", "claude_3"):
         # Each Claude lane gets a distinct instance-id for claim isolation.
-        lane_num = name.split("_")[1] if "_" in name else "1"
-        instance_id = f"claude_code#headless-default-{lane_num}"
+        instance_id = _get_instance_id(name, "default")
         instance_arg = f" --instance-id {instance_id}"
         return (
             f"{scripts}/worker_loop.sh"
@@ -286,9 +297,12 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
         env_parts.append(f"ORCHESTRATOR_GEMINI_CAPACITY_RETRIES={cfg.gemini_capacity_retries}")
         env_parts.append(f"ORCHESTRATOR_GEMINI_CAPACITY_BACKOFF_SECONDS={cfg.gemini_capacity_backoff}")
         env_prefix = " ".join(env_parts) + " " if env_parts else ""
+        instance_id = _get_instance_id(name, "default")
+        instance_arg = f" --instance-id {instance_id}"
         return (
             f"{env_prefix}{scripts}/worker_loop.sh"
             f" --cli gemini --agent gemini{_team_arg(cfg.gemini_team_id)}"
+            f"{instance_arg}"
             f" --project-root {cfg.gemini_project_root}"
             f" --interval {cfg.worker_interval}"
             f" --cli-timeout {cfg.worker_cli_timeout}"
@@ -301,9 +315,12 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             f"{_persistent_arg()}"
         )
     if name == "codex_worker":
+        instance_id = _get_instance_id(name, "default")
+        instance_arg = f" --instance-id {instance_id}"
         return (
             f"{scripts}/worker_loop.sh"
             f" --cli codex --agent codex{_team_arg(cfg.codex_team_id)}"
+            f"{instance_arg}"
             f" --project-root {cfg.codex_project_root}"
             f" --interval {cfg.worker_interval}"
             f" --cli-timeout {cfg.worker_cli_timeout}"
@@ -396,10 +413,12 @@ class Supervisor:
                 token_args += f" --hourly-token-budget {self.cfg.hourly_token_budget}"
             if self.cfg.tokens_per_call != 10000:
                 token_args += f" --tokens-per-call {self.cfg.tokens_per_call}"
+            instance_id = _get_instance_id(ew.name, ew.lane)
             cmd = (
                 f"{scripts}/worker_loop.sh"
                 f" --cli {ew.cli} --agent {ew.agent}"
                 f" --lane {ew.lane} --team-id {ew.team_id}"
+                f" --instance-id {instance_id}"
                 f" --project-root {ew.project_root}"
                 f" --interval {self.cfg.worker_interval}"
                 f" --cli-timeout {self.cfg.worker_cli_timeout}"
@@ -743,10 +762,40 @@ class Supervisor:
                 "role": display["role"],
                 "model": display["model"],
             }
-            # Include instance_id for all Claude lane workers.
-            if name in ("claude", "claude_2", "claude_3"):
-                lane_num = name.split("_")[1] if "_" in name else "1"
-                entry["instance_id"] = f"claude_code#headless-default-{lane_num}"
+            # Derive the agent name used for orchestrator lookups.
+            agent_name_for_orch = None
+            if name == "manager":
+                agent_name_for_orch = self.cfg.leader_agent
+            elif name in ("claude", "claude_2", "claude_3"):
+                agent_name_for_orch = "claude_code"
+            elif name == "wingman":
+                agent_name_for_orch = self.cfg.wingman_agent
+            elif name == "gemini":
+                agent_name_for_orch = name
+            elif name == "codex_worker":
+                agent_name_for_orch = "codex"
+            else:
+                # Check for extra workers
+                for ew in self.cfg.extra_workers:
+                    if ew.name == name:
+                        agent_name_for_orch = ew.agent
+                        break
+
+            # If an agent name is determined, try to get instance_id from orchestrator.
+            if agent_name_for_orch:
+                agent_info = next(
+                    (a for a in self.orchestrator.list_agents(active_only=False) if a.get("agent") == agent_name_for_orch),
+                    None,
+                )
+                if agent_info and agent_info.get("instance_id"):
+                    entry["instance_id"] = agent_info["instance_id"]
+                else:
+                    # Fallback if orchestrator doesn't have it or for non-agent processes
+                    entry["instance_id"] = _get_instance_id(name)
+            else:
+                # Fallback for processes that are not agents (e.g. watchdog)
+                entry["instance_id"] = _get_instance_id(name)
+
             if ps.capacity_errors > 0:
                 entry["capacity_errors"] = ps.capacity_errors
             if ps.leader_heartbeat_stale:
