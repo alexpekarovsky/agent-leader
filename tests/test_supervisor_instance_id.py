@@ -3,7 +3,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from orchestrator.supervisor import Supervisor, SupervisorConfig
+from orchestrator.supervisor import Supervisor, SupervisorConfig, proc_cmd
 from orchestrator.engine import Orchestrator
 
 
@@ -132,6 +132,51 @@ class SupervisorInstanceIDTests(unittest.TestCase):
         claude_3_status = next((p for p in status if p["name"] == "claude_3"), None)
         self.assertIsNotNone(claude_3_status)
         self.assertEqual(claude_3_status["task_activity"], "idle")
+
+    def test_persistent_flag_in_proc_cmd(self):
+        # Temporarily override cfg to enable persistent workers
+        original_persistent_workers = self.cfg.persistent_workers
+        self.cfg.persistent_workers = True
+        original_max_tasks_per_session = self.cfg.max_tasks_per_session
+        self.cfg.max_tasks_per_session = 10 # Set a custom value for testing
+
+        try:
+            # Test for gemini worker
+            cmd_gemini = proc_cmd("gemini", self.cfg)
+            self.assertIn(" --persistent", cmd_gemini)
+            self.assertIn(" --max-tasks-per-session 10", cmd_gemini)
+
+            # Test for claude worker
+            cmd_claude = proc_cmd("claude", self.cfg)
+            self.assertIn(" --persistent", cmd_claude)
+            self.assertIn(" --max-tasks-per-session 10", cmd_claude)
+
+            # Test for wingman worker
+            cmd_wingman = proc_cmd("wingman", self.cfg)
+            self.assertIn(" --persistent", cmd_wingman)
+            self.assertIn(" --max-tasks-per-session 10", cmd_wingman)
+
+            # Test with default max_tasks_per_session (5)
+            self.cfg.max_tasks_per_session = 5
+            cmd_gemini_default = proc_cmd("gemini", self.cfg)
+            self.assertIn(" --persistent", cmd_gemini_default)
+            self.assertNotIn(" --max-tasks-per-session", cmd_gemini_default) # Should not be present if default
+        finally:
+            # Restore original values
+            self.cfg.persistent_workers = original_persistent_workers
+            self.cfg.max_tasks_per_session = original_max_tasks_per_session
+
+    def test_persistent_flag_not_in_proc_cmd_when_disabled(self):
+        # Ensure persistent workers are disabled
+        original_persistent_workers = self.cfg.persistent_workers
+        self.cfg.persistent_workers = False
+
+        try:
+            cmd_gemini = proc_cmd("gemini", self.cfg)
+            self.assertNotIn(" --persistent", cmd_gemini)
+            self.assertNotIn(" --max-tasks-per-session", cmd_gemini)
+        finally:
+            self.cfg.persistent_workers = original_persistent_workers
 
 
 if __name__ == "__main__":

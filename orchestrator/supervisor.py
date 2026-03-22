@@ -80,7 +80,7 @@ class SupervisorConfig:
     codex_team_id: str = ""
     wingman_team_id: str = ""
     claude_lanes: int = 3  # Number of parallel Claude workers (1-3).
-    persistent_workers: bool = False  # Use persistent worker sessions (no cold-start).
+    persistent_workers: bool = True  # Use persistent worker sessions (no cold-start).
     max_tasks_per_session: int = 5    # Max tasks per persistent CLI session.
     extra_workers: List[ExtraWorker] = field(default_factory=list)
     max_restarts: int = 5
