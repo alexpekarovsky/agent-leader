@@ -96,6 +96,43 @@ class SupervisorInstanceIDTests(unittest.TestCase):
         # Should fallback to _get_instance_id("gemini")
         self.assertEqual(gemini_status["instance_id"], "gemini#headless-default")
 
+    def test_claude_lane_task_activity_propagation(self):
+        # Mock specific agent info for each Claude lane
+        self.mock_orchestrator.list_agents.return_value = [
+            {
+                "agent": "claude_code",
+                "instance_id": "claude_code#headless-default-1",
+                "status": "active",
+                "task_counts": {"in_progress": 1, "assigned": 0}, # claude lane 1 is working
+            },
+            {
+                "agent": "claude_code",
+                "instance_id": "claude_code#headless-default-2",
+                "status": "active",
+                "task_counts": {"in_progress": 0, "assigned": 2}, # claude lane 2 has assigned tasks
+            },
+            {
+                "agent": "claude_code",
+                "instance_id": "claude_code#headless-default-3",
+                "status": "active",
+                "task_counts": {"in_progress": 0, "assigned": 0}, # claude lane 3 is idle
+            },
+        ]
+
+        status = self.supervisor.status_json()
+
+        claude_1_status = next((p for p in status if p["name"] == "claude"), None)
+        self.assertIsNotNone(claude_1_status)
+        self.assertEqual(claude_1_status["task_activity"], "working")
+
+        claude_2_status = next((p for p in status if p["name"] == "claude_2"), None)
+        self.assertIsNotNone(claude_2_status)
+        self.assertEqual(claude_2_status["task_activity"], "assigned")
+
+        claude_3_status = next((p for p in status if p["name"] == "claude_3"), None)
+        self.assertIsNotNone(claude_3_status)
+        self.assertEqual(claude_3_status["task_activity"], "idle")
+
 
 if __name__ == "__main__":
     unittest.main()

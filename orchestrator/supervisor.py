@@ -515,20 +515,25 @@ class Supervisor:
         task_activity = "no_tasks"
 
         # Query orchestrator for heartbeat and task activity if it's an agent process.
-        # Map process name → heartbeat agent name (processes and agents use
-        # different identifiers, e.g. process "claude" heartbeats as "claude_code").
-        _proc_to_agent = {
+        _proc_to_agent_base_name = {
             "manager": self.cfg.leader_agent,
             "claude": "claude_code",
             "claude_2": "claude_code",
             "claude_3": "claude_code",
             "codex_worker": "codex",
             "wingman": self.cfg.wingman_agent,
+            "gemini": "gemini",
         }
-        if name in _proc_to_agent or name == "gemini":
-            agent_name = _proc_to_agent.get(name, name)
+        
+        agent_base_name = _proc_to_agent_base_name.get(name)
+        if agent_base_name: # Only proceed if it's a known agent process
+            # Determine the specific instance_id for this process
+            lane = "wingman" if name == "wingman" else "default"
+            target_instance_id = _get_instance_id(name, lane)
+
             agent_info = next(
-                (a for a in self.orchestrator.list_agents(active_only=False) if a.get("agent") == agent_name),
+                (a for a in self.orchestrator.list_agents(active_only=False)
+                 if a.get("agent") == agent_base_name and a.get("instance_id") == target_instance_id),
                 None,
             )
             if agent_info:
