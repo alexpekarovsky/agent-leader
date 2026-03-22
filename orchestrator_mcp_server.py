@@ -1267,6 +1267,17 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                 },
             },
         },
+        {
+            "name": "orchestrator_get_task_spec",
+            "description": "Read the generated spec file for a task. Workers use this for implementation guidance.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "Task ID to read spec for."},
+                },
+                "required": ["task_id"],
+            },
+        },
     ]
 
     return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": tools}}
@@ -3349,6 +3360,13 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 agent=args.get("agent"),
             )
             return _ok_and_audit(request_id, name, args, consults)
+
+        if name == "orchestrator_get_task_spec":
+            task_id = args.get("task_id", "")
+            spec = ORCH.get_spec(task_id)
+            if spec is None:
+                return _ok_and_audit(request_id, name, args, {"task_id": task_id, "spec": None, "message": "No spec found for this task."})
+            return _ok_and_audit(request_id, name, args, {"task_id": task_id, "spec": spec})
 
         raise ValueError(f"Unknown tool: {name}")
     except Exception as exc:
