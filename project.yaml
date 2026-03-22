@@ -443,6 +443,34 @@ roadmap:
           orchestrator_review_plan(task_id, action=approve|reject|edit),
           configurable auto_approve_policy in policy.json.
         tags: [orchestration, quality, autonomy, open-swe-inspired]
+      - id: model-performance-analytics
+        title: "Model performance analytics — per-model task stats for smart routing"
+        effort: M
+        status: backlog
+        details: >
+          Track per-model performance metrics: tasks completed/hour, lines of code/hour,
+          bug rate (rejections/total submissions), avg completion time by task complexity
+          (XS/S/M/L/XL), test pass rate. Store in state/model_stats.json, updated on
+          each task validation. Expose in TUI and orchestrator_status. Use for smart
+          routing: route complex architectural tasks to Claude (higher quality, slower),
+          simple bug fixes to Gemini (faster, good enough). Policy config:
+          routing_strategy=round_robin|model_aware|manual. Requires workers to report
+          their actual model in heartbeat metadata (currently missing — shows "-").
+        tags: [analytics, routing, team-intelligence, models]
+
+      - id: model-aware-task-routing
+        title: "Model-aware task routing — assign tasks to best-fit model based on history"
+        effort: L
+        status: backlog
+        details: >
+          Use model_performance_analytics data to automatically route tasks.
+          Simple heuristic first: if task.risk=high or effort>=L, prefer Claude.
+          If task.risk=low and effort<=S, prefer Gemini (faster). Fallback to
+          round-robin when no performance data exists. Override via explicit
+          owner assignment. Requires model-performance-analytics to be implemented first.
+        tags: [routing, team-intelligence, models, autonomy]
+        depends_on: [model-performance-analytics]
+
       - id: shared-decisions-log
         title: "decisions.md — persistent shared decision log across agents"
         effort: M
