@@ -1720,6 +1720,21 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
             auto_plan = {"attempted": True, "error": str(exc)}
             logger.warning("manager_cycle.auto_plan_failed: %s", exc)
 
+    # Auto-stop supervisor when all tasks are done and no new work was created
+    auto_stopped = False
+    if stop_policy.get("stop_required"):
+        reason_codes = stop_policy.get("reason_codes", [])
+        if "all_tasks_complete" in reason_codes:
+            new_tasks_created = auto_plan.get("tasks_created", 0) if isinstance(auto_plan, dict) else 0
+            if new_tasks_created == 0:
+                logger.info("manager_cycle: ALL TASKS COMPLETE, no new work from roadmap. Stopping supervisor to save tokens.")
+                try:
+                    supervisor = _supervisor_from_tool_args({})
+                    _run_supervisor_action(supervisor, "stop")
+                    auto_stopped = True
+                except Exception as exc:
+                    logger.warning("manager_cycle: auto-stop failed: %s", exc)
+
     ORCH._run_bus_housekeeping() # Run bus housekeeping after all manager actions
 
     log_dir = ROOT_DIR / ".autopilot-logs"

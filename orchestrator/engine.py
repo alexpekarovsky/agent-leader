@@ -2361,6 +2361,19 @@ class Orchestrator:
         # server-level state (_runtime_source_consistency).  The engine
         # exposes a hook so the MCP layer can inject the result.
 
+        # --- Trigger 6: all tasks complete → graceful stop -------------
+        if triggers_cfg.get("stop_on_all_done", True):
+            active_statuses = {"assigned", "in_progress", "reported", "blocked", "bug_open"}
+            active_tasks = [t for t in tasks if t.get("status") in active_statuses]
+            if len(tasks) > 0 and len(active_tasks) == 0:
+                fired.append({
+                    "code": "all_tasks_complete",
+                    "severity": "info",
+                    "detail": f"All {len(tasks)} tasks are done/superseded. No active work remaining.",
+                    "total_tasks": len(tasks),
+                    "active_tasks": 0,
+                })
+
         stop_required = len(fired) > 0
         reason_codes = [t["code"] for t in fired]
 
