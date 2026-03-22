@@ -800,5 +800,70 @@ class DashboardTuiTests(unittest.TestCase):
         self.assertEqual(h1, h2, "Same snapshot should produce same render hash")
 
 
+    def test_zombie_lanes_filtered_from_roster(self) -> None:
+        """Dead processes from old sessions must not appear in lane_details."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "state").mkdir(parents=True, exist_ok=True)
+            (root / "bus" / "reports").mkdir(parents=True, exist_ok=True)
+            (root / ".autopilot-logs").mkdir(parents=True, exist_ok=True)
+            pid_dir = root / ".autopilot-pids"
+            pid_dir.mkdir(parents=True, exist_ok=True)
+
+            project_root = "/tmp/my-project"
+            tasks = [
+                {"id": "T1", "project_root": project_root, "status": "in_progress",
+                 "owner": "claude_code", "title": "Active task",
+                 "updated_at": "2099-01-01T00:00:00+00:00"},
+            ]
+            (root / "state" / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
+            (root / "state" / "blockers.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "bugs.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "agents.json").write_text(
+                json.dumps({
+                    "claude_code": {
+                        "status": "active",
+                        "last_seen": mod._now_utc().isoformat(),
+                        "metadata": {"instance_id": "claude_code#default"},
+                    },
+                }),
+                encoding="utf-8",
+            )
+            (root / "bus" / "events.jsonl").write_text("", encoding="utf-8")
+
+            # Current alive lane: claude (lane 1) — use current PID so it's alive
+            now_ts = mod._now_utc().timestamp()
+            alive_pid = os.getpid()
+            (pid_dir / "claude.pid").write_text(str(alive_pid), encoding="utf-8")
+            os.utime(pid_dir / "claude.pid", (now_ts, now_ts))
+
+            # Zombie lanes from old session: claude_2, claude_3 — use PID 1 (init, not ours)
+            # Use a PID that doesn't belong to us; 99999999 is almost certainly dead
+            dead_pid = 99999999
+            for name in ("claude_2.pid", "claude_3.pid"):
+                (pid_dir / name).write_text(str(dead_pid), encoding="utf-8")
+                os.utime(pid_dir / name, (now_ts, now_ts))
+
+            # Also write a live manager pid
+            (pid_dir / "manager.pid").write_text(str(alive_pid), encoding="utf-8")
+            os.utime(pid_dir / "manager.pid", (now_ts, now_ts))
+
+            snap = mod.build_snapshot(project_root=project_root, root=root)
+            claude_agent = next(
+                (a for a in snap.active_agents if a["agent"] == "claude_code"), None
+            )
+            self.assertIsNotNone(claude_agent)
+            lane_details = claude_agent["lane_details"]
+
+            # Only the alive lane should appear — zombie lanes must be filtered out
+            lane_names = [ld["process_name"] for ld in lane_details]
+            self.assertIn("claude", lane_names, "Alive lane 1 should be present")
+            self.assertNotIn("claude_2", lane_names, "Zombie lane 2 must be filtered")
+            self.assertNotIn("claude_3", lane_names, "Zombie lane 3 must be filtered")
+            # All remaining lanes must be alive
+            for ld in lane_details:
+                self.assertTrue(ld["alive"], f"Lane {ld['process_name']} should be alive")
+
+
 if __name__ == "__main__":
     unittest.main()

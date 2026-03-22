@@ -19,6 +19,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 OPEN_STATUSES = {"assigned", "in_progress", "reported", "needs_review", "blocked", "bug_open"}
 ACTIVE_STATUSES = {"assigned", "in_progress", "reported", "bug_open"}
+# Valid claude lane process names — anything else (e.g. claude_b, claude_c from
+# old supervisor sessions) is a zombie and must be filtered out of the roster.
+_VALID_CLAUDE_LANES = frozenset(("claude", "claude_2", "claude_3"))
+
 AGENT_ROLE_ORDER = {
     "Leader/Manager": 0,
     "Wingman/Reviewer": 1,
@@ -623,7 +627,7 @@ def _process_names_for_agent(agent: str, processes: List[Dict[str, Any]]) -> Lis
             names.append(name)
         elif agent == "ccm" and name == "wingman":
             names.append(name)
-        elif agent == "claude_code" and (name == "claude" or name.startswith("claude_") or name.startswith("claude-")):
+        elif agent == "claude_code" and name in _VALID_CLAUDE_LANES:
             names.append(name)
         elif agent == "gemini" and name.startswith("gemini"):
             names.append(name)
@@ -741,10 +745,11 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
         process_state = "up" if running_processes else "down"
         task_activity = _task_activity_for_agent(agent, scoped)
         # Build per-lane details for agents with multiple processes (e.g. claude lanes).
+        # Only include alive processes to filter out zombie lanes from old sessions.
         lane_details: List[Dict[str, Any]] = []
         for pname in process_names:
             proc_entry = next((p for p in supervisor_processes if p.get("name") == pname), None)
-            if proc_entry:
+            if proc_entry and proc_entry.get("alive"):
                 lane_label = "lane 1" if pname == "claude" else (pname.replace("claude_", "lane ") if "_" in pname and pname.startswith("claude") else pname)
                 lane_details.append({
                     "process_name": pname,
