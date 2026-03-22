@@ -384,10 +384,65 @@ roadmap:
           Add 'show all' toggle for debugging.
         tags: [tui, ux]
 
+  - version: v1.2.2
+    name: "Swarm Resilience"
+    theme: "Swarm should never silently die. Auto-detect failures, auto-recover, auto-rebalance."
+    items:
+      - id: auto-detect-token-exhaustion
+        title: "Auto-detect agent token exhaustion and remove from team"
+        effort: M
+        status: backlog
+        details: >
+          When an agent (codex, claude, gemini) hits API rate limits or token
+          exhaustion, the supervisor should detect it (from CLI exit codes,
+          capacity_errors counter, or budget exhaustion markers), automatically
+          remove the agent from the active team, reassign its tasks to remaining
+          workers, and log the removal. On next budget window reset, auto-add
+          the agent back. No manual intervention needed.
+        tags: [resilience, cost-control, team-management]
+
+      - id: swarm-death-recovery
+        title: "Auto-restart workers when swarm dies due to idle-gate or stale state"
+        effort: M
+        status: backlog
+        details: >
+          Workers exit on max_idle_cycles but the supervisor doesn't restart them
+          when new tasks appear. The auto-planner creates tasks for a dead swarm.
+          Fix: supervisor watchdog should detect all workers dead + tasks assigned
+          and restart worker processes. Or: manager should signal supervisor to
+          respawn workers when it creates new tasks.
+        tags: [resilience, headless, supervisor]
+
+      - id: auto-planner-dedup-guard
+        title: "Auto-planner must check existing tasks before creating from roadmap"
+        effort: S
+        status: backlog
+        details: >
+          plan_from_roadmap creates duplicate tasks because it doesn't check if
+          tasks for the same roadmap item already exist. Fix: check for existing
+          tasks with matching roadmap:* tag before creating. Prevents the
+          triplication problem seen overnight.
+        tags: [bug, planning, dedup]
+
   - version: v1.3.0
     name: "Team Intelligence"
     theme: "Agents learn from each other and accumulate project-specific knowledge across sessions."
     items:
+      - id: plan-interrupt-workflow
+        title: "Plan-interrupt — workers pause after planning, leader auto-approves by default"
+        effort: S
+        status: backlog
+        details: >
+          Inspired by Open-SWE (LangChain). After worker generates an execution plan,
+          emit plan_ready event and pause. Leader reviews and auto-approves by default.
+          Human escalation ONLY when: (1) leader flags plan as high-risk (security,
+          infra, breaking changes), (2) leader rejects and worker can't resolve,
+          (3) plan conflicts with existing decisions.md entries. Keeps the loop
+          autonomous — human is exception, not default. Implementation: new task
+          state 'plan_review', event 'task.plan_ready', MCP tool
+          orchestrator_review_plan(task_id, action=approve|reject|edit),
+          configurable auto_approve_policy in policy.json.
+        tags: [orchestration, quality, autonomy, open-swe-inspired]
       - id: shared-decisions-log
         title: "decisions.md — persistent shared decision log across agents"
         effort: M
