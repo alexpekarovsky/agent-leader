@@ -3,6 +3,16 @@ description: MCP control plane for leader+worker autonomous software delivery
 icon: "🧭"
 revenue: true
 
+architecture:
+  design_doc: docs/lumen-agent-leader-integration-design.md
+  flow: "User → Lumen (clarify, consult, plan, approve) → project.yaml milestones → agent-leader (leader breaks into tasks, workers execute, wingman reviews) → Lumen monitors + escalates blockers → completion summary"
+  hierarchy: "Version → Milestone → Task"
+  team_template:
+    leader: "any model, headless, manages + validates + plans"
+    wingman: "claude/ccm, pure code reviewer, never implements"
+    workers: "3 claude lanes + gemini + codex (different providers for diversity)"
+  lumen_integration: "Lumen v0.4.8 Agent Swarm — meta-orchestrator drives agent-leader teams via MCP"
+
 version:
   current: v1.0.0
   name: "Production Readiness"
