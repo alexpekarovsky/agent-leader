@@ -3556,6 +3556,38 @@ class Orchestrator:
 
         return normalized
 
+    def set_review_gate(
+        self,
+        task_id: str,
+        status: str,
+        reviewer_agent: str,
+        notes: str = "",
+    ) -> Dict[str, Any]:
+        """Update the review gate on a reported task. Used by wingman to approve/reject."""
+        allowed = {"approved", "rejected", "waived"}
+        if status not in allowed:
+            raise ValueError(f"review_gate status must be one of: {', '.join(sorted(allowed))}")
+        with self._state_lock():
+            tasks = self._read_json(self.tasks_path)
+            task = next((t for t in tasks if t["id"] == task_id), None)
+            if task is None:
+                raise ValueError(f"Task not found: {task_id}")
+            if task.get("status") != "reported":
+                raise ValueError(f"Task {task_id} is not in reported status (current: {task.get('status')})")
+            rg = task.get("review_gate") if isinstance(task.get("review_gate"), dict) else {}
+            rg["status"] = status
+            rg["reviewer_agent"] = reviewer_agent
+            rg["reviewer_notes"] = notes
+            rg["reviewed_at"] = self._now()
+            task["review_gate"] = rg
+            task["review_gate_updated_at"] = self._now()
+            task["updated_at"] = self._now()
+            self._write_tasks_json(tasks)
+        event_type = "review.approved" if status == "approved" else "review.rejected"
+        self.bus.emit(event_type, {"task_id": task_id, "reviewer": reviewer_agent, "notes": notes}, source=reviewer_agent)
+        logger.info("review_gate.updated id=%s status=%s reviewer=%s notes=%s", task_id, status, reviewer_agent, notes[:60])
+        return {"task_id": task_id, "review_gate": rg}
+
     def _task_fingerprint(self, title: str, workstream: str, owner: str) -> str:
         norm_title = re.sub(r"\s+", " ", title.strip().lower())
         return f"{owner.strip().lower()}::{workstream.strip().lower()}::{norm_title}"

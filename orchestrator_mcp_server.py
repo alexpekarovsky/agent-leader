@@ -1229,6 +1229,20 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
             },
         },
         {
+            "name": "orchestrator_set_review_gate",
+            "description": "Wingman sets review gate decision (approve/reject) on a reported task. Used by the wingman/reviewer agent after code review.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "Task ID to review."},
+                    "status": {"type": "string", "description": "approved|rejected|waived"},
+                    "reviewer_agent": {"type": "string", "description": "Reviewing agent id (e.g. ccm)."},
+                    "notes": {"type": "string", "description": "Review findings, feedback, or approval notes.", "default": ""},
+                },
+                "required": ["task_id", "status", "reviewer_agent"],
+            },
+        },
+        {
             "name": "orchestrator_respond_consult",
             "description": "Team member responds to a consult-only review request. No task claim or execution side effects.",
             "inputSchema": {
@@ -3146,8 +3160,14 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                     "submit_error": str(exc),
                 }
             auto_validate = bool(ORCH.policy.triggers.get("auto_validate_reports_on_submit", True))
+            # If review gates are required by policy, still run cycle but it will defer pending reviews
             if auto_validate:
                 cycle = _manager_cycle(strict=True)
+                # Log if tasks were deferred for wingman review
+                deferred = cycle.get("deferred_reports", [])
+                if deferred:
+                    logger.info("submit_report: %d task(s) deferred for wingman review: %s",
+                                len(deferred), [d.get("task_id") for d in deferred])
                 result = {
                     "report": result,
                     "auto_manager_cycle": {
@@ -3269,6 +3289,22 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 rationale=rationale,
             )
             return _ok_and_audit(request_id, name, args, {"decision_path": str(path)})
+
+        if name == "orchestrator_set_review_gate":
+            result = ORCH.set_review_gate(
+                task_id=args["task_id"],
+                status=args["status"],
+                reviewer_agent=args["reviewer_agent"],
+                notes=str(args.get("notes", "")),
+            )
+            # If approved, trigger manager cycle to process the now-reviewable task
+            if args["status"] == "approved":
+                cycle = _manager_cycle(strict=True)
+                result["auto_manager_cycle"] = {
+                    "processed_reports": cycle.get("processed_reports", []),
+                    "deferred_reports": cycle.get("deferred_reports", []),
+                }
+            return _ok_and_audit(request_id, name, args, result)
 
         if name == "orchestrator_create_consult":
             target_agents = args.get("target_agents", [])

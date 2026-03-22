@@ -24,6 +24,8 @@ TOKENS_PER_CALL=10000
 EVENT_DRIVEN=false
 EVENT_POLL_INTERVAL=2
 EVENT_MAX_WAIT=300
+PERSISTENT=false
+MAX_TASKS_PER_SESSION=5
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -46,6 +48,8 @@ while [[ $# -gt 0 ]]; do
     --event-driven) EVENT_DRIVEN=true; shift ;;
     --event-poll-interval) EVENT_POLL_INTERVAL="$2"; shift 2 ;;
     --event-max-wait) EVENT_MAX_WAIT="$2"; shift 2 ;;
+    --persistent) PERSISTENT=true; shift ;;
+    --max-tasks-per-session) MAX_TASKS_PER_SESSION="$2"; shift 2 ;;
     --once) ONCE=true; shift ;;
     *) log ERROR "Unknown arg: $1"; exit 1 ;;
   esac
@@ -84,6 +88,46 @@ case "$CLI" in
     break # Break from the while true loop
     ;;
 esac
+
+# ---------------------------------------------------------------------------
+# Persistent mode: delegate to Python persistent worker.
+# Falls back to legacy spawn-per-cycle if the persistent worker exits non-zero.
+# ---------------------------------------------------------------------------
+if [[ "$PERSISTENT" == true ]]; then
+  log INFO "persistent mode enabled; delegating to orchestrator.persistent_worker"
+  persistent_args=(
+    --cli "$CLI" --agent "$AGENT" --lane "$LANE"
+    --project-root "$PROJECT_ROOT" --repo-root "$ROOT_DIR"
+    --log-dir "$LOG_DIR" --cli-timeout "$CLI_TIMEOUT"
+    --idle-backoff "$IDLE_BACKOFF" --max-idle-cycles "$MAX_IDLE_CYCLES"
+    --daily-call-budget "$DAILY_CALL_BUDGET"
+    --signal-max-wait "$EVENT_MAX_WAIT"
+    --signal-poll-interval "$EVENT_POLL_INTERVAL"
+  )
+  if [[ -n "$TEAM_ID" ]]; then
+    persistent_args+=(--team-id "$TEAM_ID")
+  fi
+  if [[ -n "$INSTANCE_ID_OVERRIDE" ]]; then
+    persistent_args+=(--instance-id "$INSTANCE_ID_OVERRIDE")
+  fi
+  if [[ "$DAILY_TOKEN_BUDGET" -gt 0 ]]; then
+    persistent_args+=(--daily-token-budget "$DAILY_TOKEN_BUDGET")
+  fi
+  if [[ "$HOURLY_TOKEN_BUDGET" -gt 0 ]]; then
+    persistent_args+=(--hourly-token-budget "$HOURLY_TOKEN_BUDGET")
+  fi
+  if [[ "$TOKENS_PER_CALL" -ne 10000 ]]; then
+    persistent_args+=(--tokens-per-call "$TOKENS_PER_CALL")
+  fi
+  if python3 -m orchestrator.persistent_worker "${persistent_args[@]}"; then
+    log INFO "persistent worker exited cleanly"
+    exit 0
+  else
+    pw_rc=$?
+    log WARN "persistent worker exited rc=$pw_rc; falling back to legacy spawn-per-cycle"
+    # Fall through to legacy loop below.
+  fi
+fi
 
 worker_has_claimable_work() {
   python3 - "$PROJECT_ROOT" "$AGENT" "$TEAM_ID" "$LANE" <<'PY'
@@ -209,12 +253,22 @@ while true; do
   team_rules=""
   if [[ "$LANE" == "wingman" ]]; then
     lane_rules="$(cat <<'RULES'
-   - QA lane guard: if task is not QA-scoped, do not execute it.
-     Consider task non-QA when workstream != "qa" and title/description do not clearly mention qa/regression/test.
-   - For non-QA task in this lane:
-     * call orchestrator_update_task_status(task_id=..., status="assigned", note="Wingman QA lane: task is not QA-scoped; returned to queue for reassignment")
-     * call orchestrator_publish_event(source="__AGENT__", type="manager.sync", payload={"task_id":"...","reason":"wingman_non_qa_task_requeued"})
-     * print "rerouted_non_qa" and exit
+   - YOU ARE A PURE CODE REVIEWER. You do NOT implement tasks. You ONLY review.
+   - DO NOT call orchestrator_claim_next_task. You never claim or implement work.
+   - Your cycle:
+     1. Call orchestrator_list_tasks(status="reported") to find tasks awaiting your review.
+     2. For each reported task where review_gate.status="pending":
+        a) Read the task report file (commit SHA, test results, acceptance criteria)
+        b) Use git diff to read the actual code changes for that commit
+        c) Check for: bugs, logic errors, missing edge cases, security issues, test gaps, code quality
+        d) If the code is good:
+           Call orchestrator_set_review_gate(task_id=..., status="approved", reviewer_agent="__AGENT__", notes="Approved: <brief reason>")
+        e) If the code has issues:
+           Call orchestrator_set_review_gate(task_id=..., status="rejected", reviewer_agent="__AGENT__", notes="Rejected: <specific issues found>")
+           Call orchestrator_raise_blocker(task_id=..., question="Code review failed: <issues>", agent="__AGENT__")
+     3. If no tasks need review, print "idle" and exit.
+   - Be thorough. Check actual code, not just test results. Find real bugs.
+   - You are the quality gate. Nothing ships without your approval.
 RULES
 )"
     lane_rules="${lane_rules/__AGENT__/$AGENT}"
@@ -231,7 +285,56 @@ TEAM_RULES
     team_rules="${team_rules//__TEAM_ID__/$TEAM_ID}"
     team_rules="${team_rules//__AGENT__/$AGENT}"
   fi
-  cat >"$prompt_file" <<EOF
+  claim_args="agent=\"${AGENT}\""
+  if [[ -n "$TEAM_ID" ]]; then
+    claim_args="${claim_args}, team_id=\"${TEAM_ID}\""
+  fi
+
+  if [[ "$PERSISTENT" == true ]]; then
+    # Persistent mode: multi-task loop prompt. The CLI stays alive across
+    # consecutive tasks, eliminating cold-start (MCP init, schema negotiation)
+    # for all but the first task in the session.
+    cat >"$prompt_file" <<EOF
+Project: $(basename "$PROJECT_ROOT")
+You are worker agent ${AGENT} running a PERSISTENT session (multi-task).
+Lane: ${LANE}
+Team: ${TEAM_ID:-none}
+Max tasks this session: ${MAX_TASKS_PER_SESSION}
+
+Execute worker cycles continuously until no claimable work remains or you
+have completed ${MAX_TASKS_PER_SESSION} tasks, whichever comes first.
+
+SETUP (once, at session start):
+1. Call orchestrator_connect_to_leader for agent="${AGENT}" with full identity metadata.
+2. Check the connect response for an auto_claimed_task field.
+   - If auto_claimed_task is present and contains a task, use it directly as your first claimed task (skip to TASK LOOP step 6).
+   - If auto_claimed_task is absent or null, proceed to step 3.
+3. Call orchestrator_poll_events(agent="${AGENT}", timeout_ms=1000).
+4. Call orchestrator_claim_next_task(${claim_args}).
+5. If no task is claimable (and none was auto-claimed), print "idle" and exit.
+
+TASK LOOP (repeat for each claimed task):
+6. If a task is claimed:
+${lane_rules}
+${team_rules}
+   - implement only that task in this project
+   - run relevant tests/build checks
+   - call orchestrator_submit_report with commit SHA and test results
+   - if blocked, call orchestrator_raise_blocker instead of stalling
+7. After submitting the report, call orchestrator_claim_next_task(${claim_args}).
+8. If another task is claimed, go to step 6.
+9. If no more tasks are claimable, print "session_complete" and exit.
+
+Rules:
+- Work only inside $PROJECT_ROOT
+- Use MCP tools for orchestration state
+- Never silently stop; submit report or raise blocker
+- Process up to ${MAX_TASKS_PER_SESSION} tasks per session, then exit for refresh
+- Keep the session alive between tasks to avoid cold-start overhead
+EOF
+  else
+    # Legacy one-shot mode: single task per CLI invocation.
+    cat >"$prompt_file" <<EOF
 Project: $(basename "$PROJECT_ROOT")
 You are worker agent ${AGENT} running an autonomous work loop.
 Lane: ${LANE}
@@ -243,8 +346,8 @@ Execute exactly one worker cycle and exit when done:
    - If auto_claimed_task is present and contains a task, use it directly as your claimed task (skip to step 5).
    - If auto_claimed_task is absent or null, proceed to step 3.
 3. Call orchestrator_poll_events(agent="${AGENT}", timeout_ms=1000).
-4. Call orchestrator_claim_next_task(agent="${AGENT}"$(if [[ -n "$TEAM_ID" ]]; then printf ', team_id="%s"' "$TEAM_ID"; fi)).
-5. If no task is claimable (and none was auto-claimed), print \"idle\" and exit.
+4. Call orchestrator_claim_next_task(${claim_args}).
+5. If no task is claimable (and none was auto-claimed), print "idle" and exit.
 6. If a task is claimed (either auto-claimed or via step 4):
 ${lane_rules}
 ${team_rules}
@@ -259,15 +362,27 @@ Rules:
 - Use MCP tools for orchestration state
 - Never silently stop; submit report or raise blocker
 EOF
+  fi
+
+  # Persistent sessions get a proportionally longer timeout.
+  effective_timeout="$CLI_TIMEOUT"
+  if [[ "$PERSISTENT" == true ]]; then
+    effective_timeout=$(( CLI_TIMEOUT * MAX_TASKS_PER_SESSION ))
+  fi
 
   # Keep legacy marker for existing parsers/tests while adding canonical action event.
-  log INFO "worker cycle=$cycle agent=$AGENT cli=$CLI project=$PROJECT_ROOT"
-  log INFO "CANONICAL ACTION: WORKER_PULSE cycle=$cycle agent=$AGENT cli=$CLI project=$PROJECT_ROOT"
+  log INFO "worker cycle=$cycle agent=$AGENT cli=$CLI project=$PROJECT_ROOT persistent=$PERSISTENT"
+  log INFO "CANONICAL ACTION: WORKER_PULSE cycle=$cycle agent=$AGENT cli=$CLI project=$PROJECT_ROOT persistent=$PERSISTENT"
   cycle_sleep="$INTERVAL"
-  if run_cli_prompt "$CLI" "$PROJECT_ROOT" "$prompt_file" "$out_file" "$CLI_TIMEOUT" "$AGENT" "$LANE" "${AGENT}#headless-${LANE}"; then
+  if run_cli_prompt "$CLI" "$PROJECT_ROOT" "$prompt_file" "$out_file" "$effective_timeout" "$AGENT" "$LANE" "${AGENT}#headless-${LANE}"; then
     log INFO "worker cycle complete agent=$AGENT; log=$out_file"
-    # Check if auto_claim_next returned a new task
+    # In persistent mode, the session already processed consecutive tasks
+    # internally, so there is no next task to pick up; check session_complete.
     skip_sleep=false
+    if [[ "$PERSISTENT" == true ]] && grep -q "session_complete" "$out_file"; then
+      log INFO "persistent session completed multiple tasks; skipping inter-cycle sleep."
+      skip_sleep=true
+    fi
     if grep -q "auto_claim_next" "$out_file"; then
       # Extract auto_claim_next object and check for 'id' field
       if python3 -c 'import json, sys; data = json.load(sys.stdin); print(data.get("auto_claim_next", {}).get("id"))' < "$out_file" | grep -q "TASK-"; then
@@ -284,7 +399,7 @@ EOF
     rc=$?
     cycle_rc=$rc
     if [[ $rc -eq 124 ]]; then
-      log ERROR "worker cycle timed out agent=$AGENT after ${CLI_TIMEOUT}s; see $out_file"
+      log ERROR "worker cycle timed out agent=$AGENT after ${effective_timeout}s; see $out_file"
     else
       log ERROR "worker cycle failed agent=$AGENT rc=$rc; see $out_file"
     fi
