@@ -20,7 +20,8 @@
     }
   },
   "triggers": {
-    "heartbeat_timeout_minutes": 10,
+    "heartbeat_timeout_minutes": 30,
+    "blocker_auto_resolve_stale_seconds": 7200,
     "auto_validate_reports_on_submit": true,
     "auto_open_bug_on_validation_failure": true,
     "auto_requeue_on_offline": true,
