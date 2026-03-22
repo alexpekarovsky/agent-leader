@@ -329,6 +329,95 @@ roadmap:
           O(n) on every read. Return reference for read-only callers, copy only for mutations.
         tags: [performance]
 
+  - version: v1.2.1
+    name: "TUI Bugs"
+    theme: "Fix roster display issues so operators can trust what they see."
+    items:
+      - id: tui-duplicate-claude-lanes
+        title: "BUG: Claude shows 5 rows (lane 1/2/3 + lane b/c) — stale zombie lanes from previous sessions"
+        effort: S
+        status: backlog
+        details: >
+          Old supervisor starts leave stale process entries. TUI shows both current
+          lanes (1/2/3) and zombie lanes (b/c) from a prior session. Fix: filter
+          roster to only show lanes from the current supervisor PID set.
+        tags: [bug, tui]
+
+      - id: tui-empty-instance-tags
+        title: "BUG: Instance ID tags show empty '#' — lane instance_id not propagated to TUI"
+        effort: XS
+        status: backlog
+        details: >
+          Team roster shows 'Claude Code #' with no tag. The instance_id field
+          from lane_details is not being extracted correctly. Fix: ensure
+          lane_details[].instance_id is populated by supervisor status.
+        tags: [bug, tui]
+
+      - id: tui-codex-duplicate-roles
+        title: "BUG: Codex shows as both 'codex_worker' and 'manager' — stale instance data"
+        effort: XS
+        status: backlog
+        details: >
+          Codex has old instances with role=manager from previous sessions. TUI
+          expands all instances into roster rows. Fix: only show active instances
+          (heartbeat within timeout) or collapse by agent name with latest role.
+        tags: [bug, tui]
+
+      - id: tui-rdy-vs-wrk-mismatch
+        title: "BUG: Claude lanes show RDY while actively working on tasks"
+        effort: S
+        status: backlog
+        details: >
+          Lane rows use per-process alive/dead state for badge, but task_activity
+          comes from the parent agent. When claude_code has in_progress tasks,
+          individual lane rows still show RDY. Fix: propagate task_activity to
+          lane rows, or show WRK when any task is owned by that agent.
+        tags: [bug, tui]
+
+      - id: tui-stale-instance-cleanup
+        title: "Filter stale/offline instances from team roster"
+        effort: S
+        status: backlog
+        details: >
+          Team roster shows every historical instance — dozens of offline entries.
+          Only show instances with heartbeat within timeout or active processes.
+          Add 'show all' toggle for debugging.
+        tags: [tui, ux]
+
+  - version: v1.3.0
+    name: "Team Intelligence"
+    theme: "Agents learn from each other and accumulate project-specific knowledge across sessions."
+    items:
+      - id: shared-decisions-log
+        title: "decisions.md — persistent shared decision log across agents"
+        effort: M
+        status: backlog
+        details: >
+          Inspired by GitHub Squad. Add a decisions.md file (or decisions.jsonl)
+          where every architectural choice any agent makes gets appended with
+          author, rationale, and references. All agents read this before starting
+          work. Prevents conflicting decisions and duplicate work across sessions.
+          Complements the existing bus/events.jsonl (ephemeral events) with
+          persistent institutional knowledge that survives across runs.
+          New MCP tool: orchestrator_record_decision(topic, choice, rationale, agent).
+          Manager and workers both write to it. Loaded into agent context on connect.
+        tags: [coordination, knowledge, squad-inspired]
+
+      - id: per-agent-history
+        title: "Per-agent history files — workers accumulate project-specific learnings"
+        effort: M
+        status: backlog
+        details: >
+          Inspired by GitHub Squad. Each agent gets a history.md file under
+          state/agents/{name}/history.md that records what they've learned about
+          THIS specific project — patterns, pitfalls, preferred approaches, test
+          quirks, dependency gotchas. Persists across sessions. New agent session
+          reads its history before starting work. New MCP tool:
+          orchestrator_record_learning(agent, learning, context).
+          Workers call this after completing tasks or encountering surprises.
+          Makes workers progressively smarter about the project over time.
+        tags: [coordination, knowledge, squad-inspired]
+
   - version: v0.3.0
     name: "UX and Operator Experience"
     items:
@@ -336,6 +425,7 @@ roadmap:
       - Cleaner live status summaries and next-action guidance
       - Human-readable agent identity and role labels in TUI/status
       - Prompt/template startup polish
+      - "Spec-kit integration — generate spec files from task descriptions for workers (GitHub spec-kit, MIT)"
 
   - version: v0.4.0
     name: "Reliability and Recovery"
