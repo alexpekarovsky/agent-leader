@@ -277,7 +277,7 @@ class Orchestrator:
             team_id=normalized_team_id or None,
         )
         with self._state_lock():
-            tasks = self._read_json(self.tasks_path)
+            tasks = self._read_json(self.tasks_path, make_copy=True)
             if normalized_parent:
                 parent = next((t for t in tasks if t["id"] == normalized_parent), None)
                 if parent is None:
@@ -389,7 +389,7 @@ class Orchestrator:
 
     def dedupe_open_tasks(self, source: str) -> Dict[str, Any]:
         with self._state_lock():
-            tasks = self._read_json(self.tasks_path)
+            tasks = self._read_json(self.tasks_path, make_copy=True)
             open_statuses = {"assigned", "in_progress", "reported", "bug_open", "blocked"}
             groups: Dict[str, List[Dict[str, Any]]] = {}
 
@@ -518,21 +518,19 @@ class Orchestrator:
                 if elapsed < cooldown:
                     # If tasks are buffered in memory (dirty), new work exists
                     # even though the file mtime hasn't changed yet.
-                    if self._tasks_dirty:
-                        pass  # bypass cooldown — unflushed new tasks
-                    else:
+                    if not self._tasks_dirty:
                         try:
                             current_mtime = self.tasks_path.stat().st_mtime
                         except OSError:
                             current_mtime = 0.0
-                    if not self._tasks_dirty and current_mtime == last_mtime:
-                        remaining = cooldown - elapsed
-                        return {
-                            "throttled": True,
-                            "backoff_seconds": round(remaining, 2),
-                            "cooldown_seconds": cooldown,
-                            "message": "claim_cooldown: too many rapid empty claims",
-                        }
+                        if current_mtime == last_mtime:
+                            remaining = cooldown - elapsed
+                            return {
+                                "throttled": True,
+                                "backoff_seconds": round(remaining, 2),
+                                "cooldown_seconds": cooldown,
+                                "message": "claim_cooldown: too many rapid empty claims",
+                            }
 
         # Treat a claim attempt as proof-of-life from the team_member.
         with self._state_lock():
@@ -540,9 +538,9 @@ class Orchestrator:
             explicit_instance_id = str(instance_id or "").strip()
             lease_owner_instance = explicit_instance_id or self._current_agent_instance_id_unlocked(owner)
             owner_scope = self._agent_project_scope_unlocked(owner)
-            # Prefer in-memory buffer (may contain unflushed writes from _write_tasks_json).
-            tasks = self._current_tasks if self._current_tasks is not None else self._read_json(self.tasks_path)
-            overrides = self._read_json(self.claim_overrides_path)
+            # Always re-read from disk under lock for multi-process safety.
+            tasks = self._read_json(self.tasks_path)
+            overrides = self._read_json(self.claim_overrides_path, make_copy=True)
             if not isinstance(overrides, dict):
                 overrides = {}
             override_entry = overrides.get(owner)
@@ -652,14 +650,14 @@ class Orchestrator:
         if source != manager:
             raise ValueError(f"leader_mismatch: source={source}, current_leader={manager}")
         with self._state_lock():
-            tasks = self._current_tasks if self._current_tasks is not None else self._read_json(self.tasks_path)
+            tasks = self._read_json(self.tasks_path)
             task = next((t for t in tasks if t.get("id") == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
             if task.get("owner") != agent:
                 raise ValueError(f"Task owner '{task.get('owner')}' does not match target agent '{agent}'")
 
-            overrides = self._read_json(self.claim_overrides_path)
+            overrides = self._read_json(self.claim_overrides_path, make_copy=True)
             if not isinstance(overrides, dict):
                 overrides = {}
             correlation_id = f"CMD-{uuid.uuid4().hex[:10]}"
@@ -699,7 +697,7 @@ class Orchestrator:
         emitted: List[Dict[str, Any]] = []
         now_dt = datetime.now(timezone.utc)
         with self._state_lock():
-            overrides = self._read_json(self.claim_overrides_path)
+            overrides = self._read_json(self.claim_overrides_path, make_copy=True)
             if not isinstance(overrides, dict):
                 return {"emitted_count": 0, "emitted": [], "timeout_seconds": threshold}
             changed = False
@@ -773,7 +771,7 @@ class Orchestrator:
         if normalized in {"superseded", "archived"} and source != self.manager_agent():
             raise ValueError("superseded/archived transitions require manager authority")
         with self._state_lock():
-            tasks = self._read_json(self.tasks_path)
+            tasks = self._read_json(self.tasks_path, make_copy=True)
             task = next((t for t in tasks if t["id"] == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
@@ -916,7 +914,7 @@ class Orchestrator:
             raise ValueError("lease_id must be a non-empty string")
         with self._state_lock():
             self._refresh_agent_presence_unlocked(agent)
-            tasks = self._read_json(self.tasks_path)
+            tasks = self._read_json(self.tasks_path, make_copy=True)
             task = next((item for item in tasks if item.get("id") == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
@@ -967,7 +965,7 @@ class Orchestrator:
         now = self._now()
         entry: Dict[str, Any]
         with self._state_lock():
-            queue = self._read_json(self.report_retry_queue_path)
+            queue = self._read_json(self.report_retry_queue_path, make_copy=True)
             if not isinstance(queue, list):
                 queue = []
 
@@ -1048,7 +1046,7 @@ class Orchestrator:
             try:
                 result = self.ingest_report(report)
                 with self._state_lock():
-                    queue = self._read_json(self.report_retry_queue_path)
+                    queue = self._read_json(self.report_retry_queue_path, make_copy=True)
                     if not isinstance(queue, list):
                         queue = []
                     for entry in queue:
@@ -1073,7 +1071,7 @@ class Orchestrator:
                 next_retry_iso = datetime.fromtimestamp(next_retry, tz=timezone.utc).isoformat()
                 terminal = attempts >= max(1, int(max_attempts))
                 with self._state_lock():
-                    queue = self._read_json(self.report_retry_queue_path)
+                    queue = self._read_json(self.report_retry_queue_path, make_copy=True)
                     if not isinstance(queue, list):
                         queue = []
                     for entry in queue:
@@ -1110,7 +1108,7 @@ class Orchestrator:
                 )
 
         with self._state_lock():
-            queue = self._read_json(self.report_retry_queue_path, make_copy=False)
+            queue = self._read_json(self.report_retry_queue_path)
             if not isinstance(queue, list):
                 queue = []
         pending = len([item for item in queue if item.get("status") == "pending"])
@@ -1130,8 +1128,8 @@ class Orchestrator:
         self._cleanup_old_reports(max_age_seconds=report_retention_days * 24 * 60 * 60)
 
         with self._state_lock():
-            tasks = self._read_json(self.tasks_path, make_copy=False)
-            agents = self._read_json(self.agents_path, make_copy=False)
+            tasks = self._read_json(self.tasks_path, make_copy=True)
+            agents = self._read_json(self.agents_path)
             if not isinstance(agents, dict):
                 agents = {}
             now = datetime.now(timezone.utc)
@@ -1175,7 +1173,7 @@ class Orchestrator:
     ) -> Dict[str, Any]:
         threshold = stale_after_seconds if stale_after_seconds is not None else self._heartbeat_timeout_seconds()
         with self._state_lock():
-            tasks = self._read_json(self.tasks_path, make_copy=False)
+            tasks = self._read_json(self.tasks_path, make_copy=True)
             active_agents = self.list_agents(active_only=True, stale_after_seconds=threshold)
             active_names = [a.get("agent") for a in active_agents if isinstance(a.get("agent"), str)]
             # Do not reassign reported tasks: manager validation should run first.
@@ -1246,7 +1244,7 @@ class Orchestrator:
     ) -> Dict[str, Any]:
         threshold = stale_after_seconds if stale_after_seconds is not None else self._heartbeat_timeout_seconds()
         with self._state_lock():
-            tasks = self._read_json(self.tasks_path)
+            tasks = self._read_json(self.tasks_path, make_copy=True)
             blockers = self._read_json_list(self.blockers_path)
             active_agents = self.list_agents(active_only=True, stale_after_seconds=threshold)
             active_names = [a.get("agent") for a in active_agents if isinstance(a.get("agent"), str)]
@@ -1428,7 +1426,7 @@ class Orchestrator:
         if source != manager:
             raise ValueError(f"leader_mismatch: source={source}, current_leader={manager}")
         with self._state_lock():
-            tasks = self._read_json(self.tasks_path)
+            tasks = self._read_json(self.tasks_path, make_copy=True)
             task = next((t for t in tasks if t["id"] == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
@@ -1524,7 +1522,7 @@ class Orchestrator:
         severity: str = "medium",
     ) -> Dict[str, Any]:
         with self._state_lock():
-            tasks = self._read_json(self.tasks_path)
+            tasks = self._read_json(self.tasks_path, make_copy=True)
             task = next((item for item in tasks if item["id"] == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
@@ -1597,7 +1595,7 @@ class Orchestrator:
             blocker["resolved_at"] = self._now()
             self._write_json(self.blockers_path, blockers)
 
-            tasks = self._read_json(self.tasks_path)
+            tasks = self._read_json(self.tasks_path, make_copy=True)
             task = next((item for item in tasks if item["id"] == blocker["task_id"]), None)
             if task is not None and task.get("status") == "blocked":
                 owner = str(task.get("owner", ""))
@@ -2388,7 +2386,7 @@ class Orchestrator:
         # exposes a hook so the MCP layer can inject the result.
 
         # --- Trigger 6: all tasks complete → graceful stop -------------
-        if triggers_cfg.get("stop_on_all_done", True):
+        if triggers_cfg.get("stop_on_all_done", False):
             active_statuses = {"assigned", "in_progress", "reported", "blocked", "bug_open"}
             active_tasks = [t for t in tasks if t.get("status") in active_statuses]
             if len(tasks) > 0 and len(active_tasks) == 0:
@@ -2530,6 +2528,29 @@ class Orchestrator:
         skipped: List[Dict[str, Any]] = []
         planned_count = 0
 
+        # Pre-load all tasks to check for existing roadmap tags (any status).
+        # This prevents duplicate task creation when a roadmap item already has
+        # a task in done/superseded/in_progress/etc status that title-based
+        # dedup in create_task() would miss.
+        all_tasks = self._read_json(self.tasks_path)
+        if not isinstance(all_tasks, list):
+            all_tasks = []
+        existing_roadmap_tags: set = set()
+        for t in all_tasks:
+            if not isinstance(t, dict):
+                continue
+            t_status = str(t.get("status", "")).strip().lower()
+            # Skip terminal failure states — tasks that were superseded by a
+            # newer duplicate or explicitly cancelled should not block
+            # re-planning the same roadmap item.
+            if t_status in ("cancelled",):
+                continue
+            for tag in (t.get("tags") or []):
+                if isinstance(tag, str) and tag.startswith("roadmap:"):
+                    existing_roadmap_tags.add(tag.lower())
+
+        roadmap_version = str(target_block.get("version", ""))
+
         for item in backlog_items:
             if planned_count >= limit:
                 break
@@ -2544,6 +2565,15 @@ class Orchestrator:
             if not isinstance(item_tags, list):
                 item_tags = []
             effort = str(item.get("effort", "")).strip()
+
+            # Check if a task already exists for this roadmap item (any status
+            # except cancelled).  This catches duplicates that title-based dedup
+            # misses when the earlier task is done, superseded, or in_progress.
+            if item_id:
+                roadmap_tag = f"roadmap:{item_id}".lower()
+                if roadmap_tag in existing_roadmap_tags:
+                    skipped.append({"roadmap_id": item_id, "title": title, "reason": "roadmap_tag_exists"})
+                    continue
 
             # Derive workstream from tags, defaulting to "backend".
             workstream = "backend"
@@ -2564,7 +2594,6 @@ class Orchestrator:
             task_tags = list(item_tags)
             if item_id:
                 task_tags.append(f"roadmap:{item_id}")
-            roadmap_version = str(target_block.get("version", ""))
             if roadmap_version:
                 task_tags.append(f"version:{roadmap_version}")
 
@@ -2592,6 +2621,10 @@ class Orchestrator:
                 else:
                     created.append({"roadmap_id": item_id, "title": title, "task_id": task.get("id"), "owner": task.get("owner")})
                     planned_count += 1
+                    # Track the newly created tag so subsequent items in this
+                    # batch don't duplicate each other.
+                    if item_id:
+                        existing_roadmap_tags.add(f"roadmap:{item_id}".lower())
             except Exception as exc:
                 skipped.append({"roadmap_id": item_id, "title": title, "reason": str(exc)})
 
@@ -2631,7 +2664,7 @@ class Orchestrator:
         return str(self.get_roles().get("leader", self.policy.manager()))
 
     def get_roles(self) -> Dict[str, Any]:
-        roles = self._read_json(self.roles_path, make_copy=False)
+        roles = self._read_json(self.roles_path)
         if not isinstance(roles, dict):
             roles = {}
         leader = roles.get("leader")
@@ -2672,7 +2705,7 @@ class Orchestrator:
             raise ValueError("role must be one of: leader, team_member")
 
         with self._state_lock():
-            roles = self._read_json(self.roles_path)
+            roles = self._read_json(self.roles_path, make_copy=True)
             if not isinstance(roles, dict):
                 roles = {}
             current = self.get_roles()
@@ -2773,7 +2806,7 @@ class Orchestrator:
 
     def register_agent(self, agent: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         with self._state_lock():
-            agents = self._read_json(self.agents_path)
+            agents = self._read_json(self.agents_path, make_copy=True)
             if not isinstance(agents, dict):
                 agents = {}
             entry = agents.get(agent, {})
@@ -2791,7 +2824,7 @@ class Orchestrator:
 
     def heartbeat(self, agent: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         with self._state_lock():
-            agents = self._read_json(self.agents_path)
+            agents = self._read_json(self.agents_path, make_copy=True)
             if not isinstance(agents, dict):
                 agents = {}
             entry = agents.get(agent, {"agent": agent, "metadata": {}})
@@ -2980,7 +3013,7 @@ class Orchestrator:
         current = self._current_agent_instance_id_unlocked(agent)
         if current and current != f"{agent}#default":
             return current
-        instances = self._read_json(self.agent_instances_path, make_copy=False)
+        instances = self._read_json(self.agent_instances_path)
         if isinstance(instances, dict):
             latest: Optional[Dict[str, Any]] = None
             for entry in instances.values():
@@ -3013,7 +3046,7 @@ class Orchestrator:
         now = datetime.now(timezone.utc)
         results: List[Dict[str, Any]] = []
         tasks = self.list_tasks()
-        stale_notices = self._read_json(self.stale_notices_path)
+        stale_notices = self._read_json(self.stale_notices_path, make_copy=True)
         if not isinstance(stale_notices, dict):
             stale_notices = {}
         stale_changed = False
@@ -3098,7 +3131,7 @@ class Orchestrator:
         stale_after_seconds: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         stale_after = stale_after_seconds if stale_after_seconds is not None else self._heartbeat_timeout_seconds()
-        instances = self._read_json(self.agent_instances_path, make_copy=False)
+        instances = self._read_json(self.agent_instances_path)
         if not isinstance(instances, dict):
             return []
         now = datetime.now(timezone.utc)
@@ -3245,7 +3278,7 @@ class Orchestrator:
     def ack_event(self, agent: str, event_id: str) -> Dict[str, Any]:
         self._refresh_agent_presence(agent)
         with self._state_lock():
-            acks = self._read_json(self.acks_path)
+            acks = self._read_json(self.acks_path, make_copy=True)
             if not isinstance(acks, dict):
                 acks = {}
                 self._write_json(self.acks_path, acks)
@@ -3264,7 +3297,7 @@ class Orchestrator:
 
     def _set_agent_cursor(self, agent: str, cursor: int) -> None:
         with self._state_lock():
-            cursors = self._read_json(self.cursors_path)
+            cursors = self._read_json(self.cursors_path, make_copy=True)
             if not isinstance(cursors, dict):
                 cursors = {}
             cursors[agent] = max(0, int(cursor))
@@ -3287,7 +3320,7 @@ class Orchestrator:
             offset_adj = result.get("offset_adjustment", 0)
 
             if offset_adj > 0:
-                cursors = self._read_json(self.cursors_path)
+                cursors = self._read_json(self.cursors_path, make_copy=True)
                 if isinstance(cursors, dict):
                     for agent in cursors:
                         cursors[agent] = max(0, int(cursors[agent]) - offset_adj)
@@ -3619,7 +3652,7 @@ class Orchestrator:
         if status not in allowed:
             raise ValueError(f"review_gate status must be one of: {', '.join(sorted(allowed))}")
         with self._state_lock():
-            tasks = self._read_json(self.tasks_path)
+            tasks = self._read_json(self.tasks_path, make_copy=True)
             task = next((t for t in tasks if t["id"] == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
@@ -3675,7 +3708,7 @@ class Orchestrator:
         """Update last_seen/status without lock acquisition (caller must hold _state_lock)."""
         if not isinstance(agent, str) or not agent.strip():
             return
-        agents = self._read_json(self.agents_path)
+        agents = self._read_json(self.agents_path, make_copy=True)
         if not isinstance(agents, dict):
             agents = {}
         entry = agents.get(agent, {"agent": agent, "metadata": {}})
@@ -3856,7 +3889,7 @@ class Orchestrator:
         return f"{agent}::{instance_id}"
 
     def _record_agent_instance_locked(self, agent: str, entry: Dict[str, Any]) -> None:
-        instances = self._read_json(self.agent_instances_path)
+        instances = self._read_json(self.agent_instances_path, make_copy=True)
         if not isinstance(instances, dict):
             instances = {}
         metadata = entry.get("metadata", {}) if isinstance(entry.get("metadata"), dict) else {}
@@ -4147,7 +4180,7 @@ class Orchestrator:
         if not self._agent_is_operational(agent):
             raise ValueError(f"agent_not_operational_or_wrong_project: {agent}")
 
-    def _read_json(self, path: Path, make_copy: bool = True) -> Any:
+    def _read_json(self, path: Path, make_copy: bool = False) -> Any:
         key = str(path)
         try:
             mtime_ns = path.stat().st_mtime_ns
@@ -4183,7 +4216,7 @@ class Orchestrator:
             self._write_json(path, [])
 
     def _read_json_list(self, path: Path) -> List[Dict[str, Any]]:
-        data = self._read_json(path, make_copy=False)
+        data = self._read_json(path)
         if isinstance(data, list):
             return data
         repaired: List[Dict[str, Any]] = []
@@ -4209,8 +4242,10 @@ class Orchestrator:
         stale snapshot overwrite or manual corruption. Refuse the write unless an
         explicit escape hatch is set.
         """
-        if self._current_tasks is not None and tasks == self._current_tasks:
-            # No change, no need to mark dirty
+        if self._current_tasks is not None and tasks is not self._current_tasks and tasks == self._current_tasks:
+            # Different object with same content — no real change, skip write.
+            # Note: when tasks IS self._current_tasks (in-place mutation), we must NOT
+            # skip because the object was mutated since the last write.
             return
 
         allow_shrink = os.getenv("ORCHESTRATOR_ALLOW_TASK_COUNT_SHRINK", "").strip().lower() in {
@@ -4220,8 +4255,8 @@ class Orchestrator:
         }
         if not allow_shrink and isinstance(tasks, list):
             try:
-                # Use in-memory _current_tasks if available, else read from disk
-                current = self._current_tasks if self._current_tasks is not None else self._read_json(self.tasks_path)
+                # Always read from disk for multi-process safety
+                current = self._read_json(self.tasks_path)
             except Exception:
                 current = None
             if isinstance(current, list) and len(tasks) < len(current):

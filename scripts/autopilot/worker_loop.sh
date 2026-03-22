@@ -84,8 +84,7 @@ case "$CLI" in
   *)
     log ERROR "Unsupported CLI: $CLI"
     log ERROR "worker cycle failed rc=2"
-    cycle_rc=2
-    break # Break from the while true loop
+    exit 2
     ;;
 esac
 
@@ -149,6 +148,58 @@ except Exception:
 if not isinstance(tasks, list):
     raise SystemExit(1)
 
+# Resolve the project root for scope filtering (must match engine logic).
+try:
+    resolved_root = root.expanduser().resolve()
+except Exception:
+    resolved_root = root
+
+# Load agent scope from agents.json so we apply the same project_root
+# filtering that claim_next_task() uses in the engine.
+agents_path = root / "state" / "agents.json"
+agent_project_root = resolved_root
+agent_project_name = resolved_root.name
+try:
+    agents_data = json.loads(agents_path.read_text(encoding="utf-8"))
+    if isinstance(agents_data, dict):
+        entry = agents_data.get(agent, {})
+        metadata = entry.get("metadata", {}) if isinstance(entry, dict) else {}
+        if isinstance(metadata, dict):
+            pr_raw = str(metadata.get("project_root", "")).strip()
+            cwd_raw = str(metadata.get("cwd", "")).strip()
+            pn_raw = str(metadata.get("project_name", "")).strip()
+            raw = pr_raw or cwd_raw
+            if raw:
+                try:
+                    agent_project_root = Path(raw).expanduser().resolve()
+                except Exception:
+                    pass
+            if pn_raw:
+                agent_project_name = pn_raw
+            elif agent_project_root:
+                agent_project_name = agent_project_root.name
+except Exception:
+    pass  # Use default root/name
+
+
+def task_matches_project_scope(task):
+    """Mirror engine._task_matches_project_scope so idle gate agrees with claim."""
+    pr_raw = str(task.get("project_root", "")).strip()
+    pn_raw = str(task.get("project_name", "")).strip()
+    if not pr_raw and not pn_raw:
+        return True  # Legacy tasks without project tags always match
+    if pr_raw:
+        try:
+            resolved = Path(pr_raw).expanduser().resolve()
+        except Exception:
+            return False
+        if resolved != agent_project_root:
+            return False
+    if pn_raw and agent_project_name and pn_raw != agent_project_name:
+        return False
+    return True
+
+
 def looks_qa(task):
     ws = str(task.get("workstream", "")).strip().lower()
     if ws == "qa":
@@ -168,6 +219,8 @@ for task in tasks:
         if tid and tid != team_id:
             continue
     if lane == "wingman" and not looks_qa(task):
+        continue
+    if not task_matches_project_scope(task):
         continue
     raise SystemExit(0)
 raise SystemExit(1)
