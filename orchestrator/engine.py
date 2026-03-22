@@ -23,6 +23,7 @@ from orchestrator.self_review import SelfReviewConfig
 from orchestrator.github_ci import normalize_github_ci_result, build_github_issue_payload, post_github_issue
 from orchestrator import pr_stack as _pr_stack
 from orchestrator.migration import migrate_state as _migrate_state
+from orchestrator.spec_kit import generate_spec as _generate_spec, read_spec as _read_spec
 
 try:
     import fcntl
@@ -359,7 +360,17 @@ class Orchestrator:
             },
             source=self.manager_agent(),
         )
+
+        try:
+            _generate_spec(task, self.bus.root)
+        except Exception:
+            logger.warning("spec.generate_failed task_id=%s", task_id, exc_info=True)
+
         return task
+
+    def get_spec(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Read the generated spec file for a task. Returns None if not found."""
+        return _read_spec(task_id, self.bus.root)
 
     def orchestrator_create_github_issue(
         self,
