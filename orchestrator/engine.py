@@ -107,7 +107,6 @@ class Orchestrator:
             finally:
                 if fcntl is not None:
                     fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-                self._flush_tasks_if_dirty()
 
     def bootstrap(self) -> None:
         if not self.tasks_path.exists():
@@ -1131,8 +1130,8 @@ class Orchestrator:
         self._cleanup_old_reports(max_age_seconds=report_retention_days * 24 * 60 * 60)
 
         with self._state_lock():
-            tasks = self._read_json(self.tasks_path)
-            agents = self._read_json(self.agents_path)
+            tasks = self._read_json(self.tasks_path, make_copy=False)
+            agents = self._read_json(self.agents_path, make_copy=False)
             if not isinstance(agents, dict):
                 agents = {}
             now = datetime.now(timezone.utc)
@@ -1176,7 +1175,7 @@ class Orchestrator:
     ) -> Dict[str, Any]:
         threshold = stale_after_seconds if stale_after_seconds is not None else self._heartbeat_timeout_seconds()
         with self._state_lock():
-            tasks = self._read_json(self.tasks_path)
+            tasks = self._read_json(self.tasks_path, make_copy=False)
             active_agents = self.list_agents(active_only=True, stale_after_seconds=threshold)
             active_names = [a.get("agent") for a in active_agents if isinstance(a.get("agent"), str)]
             # Do not reassign reported tasks: manager validation should run first.
@@ -1433,6 +1432,19 @@ class Orchestrator:
             task = next((t for t in tasks if t["id"] == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
+
+            # GUARD: refuse to validate if wingman review is pending
+            rg = task.get("review_gate") if isinstance(task.get("review_gate"), dict) else {}
+            if rg.get("required") and str(rg.get("status", "")).strip().lower() == "pending":
+                logger.info("validate_task.blocked id=%s reason=review_gate_pending reviewer=%s", task_id, rg.get("reviewer_agent", "ccm"))
+                return {
+                    "task_id": task_id,
+                    "owner": task.get("owner"),
+                    "blocked": True,
+                    "reason": "review_gate_pending",
+                    "reviewer_agent": rg.get("reviewer_agent", "ccm"),
+                    "notes": "Cannot validate: wingman review required but still pending.",
+                }
 
             if passed:
                 task["status"] = "done"
@@ -4136,10 +4148,6 @@ class Orchestrator:
             raise ValueError(f"agent_not_operational_or_wrong_project: {agent}")
 
     def _read_json(self, path: Path, make_copy: bool = True) -> Any:
-        # If tasks_path is dirty, return the in-memory version for consistency within this process.
-        if path == self.tasks_path and self._tasks_dirty and self._current_tasks is not None:
-            return copy.deepcopy(self._current_tasks) if make_copy else self._current_tasks
-        
         key = str(path)
         try:
             mtime_ns = path.stat().st_mtime_ns
@@ -4175,7 +4183,7 @@ class Orchestrator:
             self._write_json(path, [])
 
     def _read_json_list(self, path: Path) -> List[Dict[str, Any]]:
-        data = self._read_json(path)
+        data = self._read_json(path, make_copy=False)
         if isinstance(data, list):
             return data
         repaired: List[Dict[str, Any]] = []
@@ -4234,7 +4242,8 @@ class Orchestrator:
                     "set ORCHESTRATOR_ALLOW_TASK_COUNT_SHRINK=1 to override intentionally"
                 )
         self._current_tasks = tasks
-        self._tasks_dirty = True
+        self._tasks_dirty = False
+        self._write_json(self.tasks_path, tasks)
         self._touch_wakeup_signals(tasks)
 
     def _flush_tasks_if_dirty(self) -> None:
