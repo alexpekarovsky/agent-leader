@@ -580,10 +580,12 @@ def _read_agent_events(root: Path, agent_name: str, limit: int = 12) -> List[Dic
 
 
 def _read_supervisor_processes(root: Path) -> List[Dict[str, Any]]:
+    """Read PID files and return process entries, filtering out zombie processes from old sessions."""
     pid_dir = root / ".autopilot-pids"
     if not pid_dir.exists():
         return []
-    rows: List[Dict[str, Any]] = []
+    # First pass: collect all entries with their mtimes.
+    entries: List[tuple] = []
     for pid_file in sorted(pid_dir.glob("*.pid")):
         try:
             pid = int(pid_file.read_text(encoding="utf-8").strip())
@@ -595,13 +597,26 @@ def _read_supervisor_processes(root: Path) -> List[Dict[str, Any]]:
             alive = True
         except Exception:
             alive = False
+        mtime = pid_file.stat().st_mtime
+        entries.append((pid_file, pid, alive, mtime))
+    if not entries:
+        return []
+    # Determine current session boundary from the newest PID file.
+    # Dead processes whose PID file is >10 min older than the newest are
+    # zombies left over from a prior supervisor session.
+    newest_mtime = max(e[3] for e in entries)
+    _ZOMBIE_GAP_S = 600  # 10 minutes
+    rows: List[Dict[str, Any]] = []
+    for pid_file, pid, alive, mtime in entries:
+        if not alive and (newest_mtime - mtime) > _ZOMBIE_GAP_S:
+            continue
         rows.append(
             {
                 "name": pid_file.stem,
                 "pid": pid,
                 "alive": alive,
-                "age_s": _age_s(datetime.fromtimestamp(pid_file.stat().st_mtime, tz=timezone.utc).isoformat()),
-                "started_at": datetime.fromtimestamp(pid_file.stat().st_mtime, tz=timezone.utc).isoformat(),
+                "age_s": _age_s(datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()),
+                "started_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
             }
         )
     return rows

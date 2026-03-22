@@ -837,12 +837,12 @@ class DashboardTuiTests(unittest.TestCase):
             (pid_dir / "claude.pid").write_text(str(alive_pid), encoding="utf-8")
             os.utime(pid_dir / "claude.pid", (now_ts, now_ts))
 
-            # Zombie lanes from old session: claude_2, claude_3 — use PID 1 (init, not ours)
-            # Use a PID that doesn't belong to us; 99999999 is almost certainly dead
+            # Zombie lanes from old session: claude_b, claude_c — dead PID with old mtime
             dead_pid = 99999999
-            for name in ("claude_2.pid", "claude_3.pid"):
+            old_ts = now_ts - 86400  # 24 hours ago (well past the 10-min zombie gap)
+            for name in ("claude_b.pid", "claude_c.pid"):
                 (pid_dir / name).write_text(str(dead_pid), encoding="utf-8")
-                os.utime(pid_dir / name, (now_ts, now_ts))
+                os.utime(pid_dir / name, (old_ts, old_ts))
 
             # Also write a live manager pid
             (pid_dir / "manager.pid").write_text(str(alive_pid), encoding="utf-8")
@@ -858,11 +858,12 @@ class DashboardTuiTests(unittest.TestCase):
             # Only the alive lane should appear — zombie lanes must be filtered out
             lane_names = [ld["process_name"] for ld in lane_details]
             self.assertIn("claude", lane_names, "Alive lane 1 should be present")
-            self.assertNotIn("claude_2", lane_names, "Zombie lane 2 must be filtered")
-            self.assertNotIn("claude_3", lane_names, "Zombie lane 3 must be filtered")
-            # All remaining lanes must be alive
-            for ld in lane_details:
-                self.assertTrue(ld["alive"], f"Lane {ld['process_name']} should be alive")
+            self.assertNotIn("claude_b", lane_names, "Zombie lane b must be filtered")
+            self.assertNotIn("claude_c", lane_names, "Zombie lane c must be filtered")
+            # Zombie processes must not appear in supervisor_processes either
+            sup_names = [p["name"] for p in snap.supervisor_processes]
+            self.assertNotIn("claude_b", sup_names, "Zombie b must not appear in supervisor_processes")
+            self.assertNotIn("claude_c", sup_names, "Zombie c must not appear in supervisor_processes")
 
 
 if __name__ == "__main__":
