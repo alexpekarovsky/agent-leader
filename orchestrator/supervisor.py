@@ -58,6 +58,9 @@ class SupervisorConfig:
     idle_backoff: str = "30,60,120,300,900"
     max_idle_cycles: int = 30
     daily_call_budget: int = 100
+    daily_token_budget: int = 0      # Hard daily token ceiling. 0 = disabled.
+    hourly_token_budget: int = 0     # Hard hourly token ceiling. 0 = disabled.
+    tokens_per_call: int = 10000     # Estimated tokens consumed per CLI call.
     event_driven: bool = True
     low_burn: bool = False
     leader_agent: str = "codex"
@@ -77,6 +80,8 @@ class SupervisorConfig:
     codex_team_id: str = ""
     wingman_team_id: str = ""
     claude_lanes: int = 3  # Number of parallel Claude workers (1-3).
+    persistent_workers: bool = False  # Use persistent worker sessions (no cold-start).
+    max_tasks_per_session: int = 5    # Max tasks per persistent CLI session.
     extra_workers: List[ExtraWorker] = field(default_factory=list)
     max_restarts: int = 5
     backoff_base: int = 10
@@ -167,13 +172,13 @@ def proc_enabled(name: str, leader_agent: str, claude_lanes: int = 3) -> bool:
     ``claude_lanes >= 2``, and ``claude_3`` requires ``claude_lanes >= 3``.
     """
     if name in ("claude", "claude_2", "claude_3"):
-        if leader_agent == "claude_code":
-            return False
+        # Claude workers run alongside claude_code leader — leader is manager-only,
+        # workers are separate headless processes with their own instance IDs.
         if name == "claude_2":
             return claude_lanes >= 2
         if name == "claude_3":
             return claude_lanes >= 3
-        return True  # "claude" enabled when leader != claude_code
+        return True
     if name == "gemini":
         return leader_agent != "gemini"
     if name == "codex_worker":
@@ -203,6 +208,24 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
     def _event_driven_arg() -> str:
         return " --event-driven" if cfg.event_driven else ""
 
+    def _persistent_arg() -> str:
+        if not cfg.persistent_workers:
+            return ""
+        parts = " --persistent"
+        if cfg.max_tasks_per_session != 5:
+            parts += f" --max-tasks-per-session {cfg.max_tasks_per_session}"
+        return parts
+
+    def _token_budget_args() -> str:
+        parts = ""
+        if cfg.daily_token_budget > 0:
+            parts += f" --daily-token-budget {cfg.daily_token_budget}"
+        if cfg.hourly_token_budget > 0:
+            parts += f" --hourly-token-budget {cfg.hourly_token_budget}"
+        if cfg.tokens_per_call != 10000:
+            parts += f" --tokens-per-call {cfg.tokens_per_call}"
+        return parts
+
     if name == "manager":
         return (
             f"{scripts}/manager_loop.sh"
@@ -215,6 +238,7 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             f" --idle-backoff {cfg.idle_backoff}"
             f" --max-idle-cycles {cfg.max_idle_cycles}"
             f" --daily-call-budget {cfg.daily_call_budget}"
+            f"{_token_budget_args()}"
         )
     if name == "wingman":
         return (
@@ -229,7 +253,9 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             f" --idle-backoff {cfg.idle_backoff}"
             f" --max-idle-cycles {cfg.max_idle_cycles}"
             f" --daily-call-budget {cfg.daily_call_budget}"
+            f"{_token_budget_args()}"
             f"{_event_driven_arg()}"
+            f"{_persistent_arg()}"
         )
     if name in ("claude", "claude_2", "claude_3"):
         # Each Claude lane gets a distinct instance-id for claim isolation.
@@ -247,7 +273,9 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             f" --idle-backoff {cfg.idle_backoff}"
             f" --max-idle-cycles {cfg.max_idle_cycles}"
             f" --daily-call-budget {cfg.daily_call_budget}"
+            f"{_token_budget_args()}"
             f"{_event_driven_arg()}"
+            f"{_persistent_arg()}"
         )
     if name == "gemini":
         env_parts = []
@@ -268,7 +296,9 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             f" --idle-backoff {cfg.idle_backoff}"
             f" --max-idle-cycles {cfg.max_idle_cycles}"
             f" --daily-call-budget {cfg.daily_call_budget}"
+            f"{_token_budget_args()}"
             f"{_event_driven_arg()}"
+            f"{_persistent_arg()}"
         )
     if name == "codex_worker":
         return (
@@ -281,6 +311,7 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             f" --idle-backoff {cfg.idle_backoff}"
             f" --max-idle-cycles {cfg.max_idle_cycles}"
             f" --daily-call-budget {cfg.daily_call_budget}"
+            f"{_token_budget_args()}"
             f"{_event_driven_arg()}"
         )
     if name == "watchdog":
@@ -299,6 +330,29 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
 
 def _capacity_error_file(pid_dir: str, name: str) -> Path:
     return Path(pid_dir) / f"{name}.capacity_errors"
+
+
+def _budget_exhaustion_file(pid_dir: str, name: str) -> Path:
+    return Path(pid_dir) / f"{name}.token_budget_exhausted"
+
+
+def _is_budget_window_active(pid_dir: str, name: str) -> bool:
+    """Return True if a budget-exhaustion marker exists and has not expired."""
+    marker = _budget_exhaustion_file(pid_dir, name)
+    if not marker.exists():
+        return False
+    try:
+        import json
+        from datetime import datetime, timezone
+        data = json.loads(marker.read_text().strip())
+        next_window = data.get("next_window_at", "")
+        if not next_window:
+            return False
+        # Parse ISO timestamp and compare to now.
+        nw = datetime.fromisoformat(next_window.replace("Z", "+00:00"))
+        return datetime.now(timezone.utc) < nw
+    except Exception:
+        return False
 
 
 @dataclass
@@ -335,6 +389,13 @@ class Supervisor:
                 raise ValueError(f"duplicate process name: {ew.name}")
             if ew.lane not in ("default", "wingman"):
                 raise ValueError(f"invalid lane '{ew.lane}' for extra worker '{ew.name}'")
+            token_args = ""
+            if self.cfg.daily_token_budget > 0:
+                token_args += f" --daily-token-budget {self.cfg.daily_token_budget}"
+            if self.cfg.hourly_token_budget > 0:
+                token_args += f" --hourly-token-budget {self.cfg.hourly_token_budget}"
+            if self.cfg.tokens_per_call != 10000:
+                token_args += f" --tokens-per-call {self.cfg.tokens_per_call}"
             cmd = (
                 f"{scripts}/worker_loop.sh"
                 f" --cli {ew.cli} --agent {ew.agent}"
@@ -346,6 +407,7 @@ class Supervisor:
                 f" --idle-backoff {self.cfg.idle_backoff}"
                 f" --max-idle-cycles {self.cfg.max_idle_cycles}"
                 f" --daily-call-budget {self.cfg.daily_call_budget}"
+                f"{token_args}"
             )
             self._extra_names.append(ew.name)
             self._extra_cmds.append(cmd)
@@ -633,6 +695,15 @@ class Supervisor:
                     
                     ps = self._status_proc(name)
                     if ps.state == "dead":
+                        # Skip restart if token budget is exhausted and window is still active.
+                        if _is_budget_window_active(self.cfg.pid_dir, name):
+                            _log("INFO", f"Skipping restart of {name}: token budget exhausted, waiting for next window")
+                            continue
+                        # Clear any expired budget marker before restarting.
+                        bef = _budget_exhaustion_file(self.cfg.pid_dir, name)
+                        if bef.exists():
+                            bef.unlink(missing_ok=True)
+                            _log("INFO", f"Budget window expired for {name}, cleared marker — allowing restart")
                         _log("WARN", f"Detected dead process: {name} (pid={ps.pid})")
                         if ps.restarts < self.cfg.max_restarts:
                             # Calculate backoff: base * (2 ^ restarts)
@@ -744,6 +815,12 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> Tuple[str, Supe
     parser.add_argument("--codex-team-id", default="")
     parser.add_argument("--wingman-team-id", default="")
     parser.add_argument("--extra-worker", action="append", default=[], type=_parse_extra_worker)
+    parser.add_argument("--daily-token-budget", type=int, default=0,
+                        help="Hard daily token ceiling. 0 disables.")
+    parser.add_argument("--hourly-token-budget", type=int, default=0,
+                        help="Hard hourly token ceiling. 0 disables.")
+    parser.add_argument("--tokens-per-call", type=int, default=10000,
+                        help="Estimated tokens per CLI call (default: 10000).")
     parser.add_argument("--max-restarts", type=int, default=5)
     parser.add_argument("--backoff-base", type=int, default=10)
     parser.add_argument("--backoff-max", type=int, default=120)
@@ -761,6 +838,9 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> Tuple[str, Supe
         idle_backoff=args.idle_backoff,
         max_idle_cycles=args.max_idle_cycles,
         daily_call_budget=args.daily_call_budget,
+        daily_token_budget=args.daily_token_budget,
+        hourly_token_budget=args.hourly_token_budget,
+        tokens_per_call=args.tokens_per_call,
         event_driven=args.event_driven,
         low_burn=args.low_burn,
         leader_agent=args.leader_agent,
