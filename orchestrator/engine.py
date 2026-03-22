@@ -62,6 +62,8 @@ class Orchestrator:
         self._current_tasks: Optional[list] = None
         self.state_dir = self.root / "state"
         self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.agents_dir = self.state_dir / "agents"
+        self.agents_dir.mkdir(parents=True, exist_ok=True)
         self.tasks_path = self.state_dir / "tasks.json"
         self.bugs_path = self.state_dir / "bugs.json"
         self.blockers_path = self.state_dir / "blockers.json"
@@ -2848,6 +2850,13 @@ class Orchestrator:
         decisions_file = self.decisions_dir / "decisions.jsonl"
         decisions = self._read_jsonl_file(decisions_file)
         identity["decisions"] = decisions
+
+        # Ensure agent's history file exists and load its content
+        agent_history_dir = self.agents_dir / agent
+        agent_history_dir.mkdir(parents=True, exist_ok=True)
+        agent_history_path = agent_history_dir / "history.md"
+        agent_history_path.touch(exist_ok=True)
+        identity["history"] = agent_history_path.read_text(encoding="utf-8")
         if connected and requested_role == "manager" and agent == manager:
             with self._state_lock():
                 current_roles = self.get_roles()
@@ -4311,5 +4320,33 @@ class Orchestrator:
             self._append_jsonl(decisions_file, decision)
         self.bus.emit("decision.recorded", decision, source=agent)
         return decision
+
+    def orchestrator_record_learning(
+        self,
+        agent: str,
+        learning: str,
+        context: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Record a learning entry for a specific agent.
+        This is an MCP tool.
+        """
+        self._assert_agent_operational(agent)
+        agent_history_dir = self.agents_dir / agent
+        agent_history_dir.mkdir(parents=True, exist_ok=True)  # Ensure directory exists
+        history_path = agent_history_dir / "history.md"
+        history_path.touch(exist_ok=True)  # Ensure file exists
+
+        timestamp = self._now()
+        entry = f"### Learning by {agent} at {timestamp}\n\n"
+        entry += f"**Learning:** {learning}\n\n"
+        if context:
+            entry += f"**Context:** {context}\n\n"
+        entry += "---\n\n"
+
+        with self._state_lock():
+            with history_path.open("a", encoding="utf-8") as fh:
+                fh.write(entry)
+        self.bus.emit("agent.learned", {"agent": agent, "learning": learning, "context": context}, source=agent)
+        return {"status": "ok", "agent": agent, "learning": learning}
 
 
