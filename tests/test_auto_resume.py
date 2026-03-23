@@ -197,5 +197,186 @@ class TestWorkerLoopAutoResumeIntegration(unittest.TestCase):
         self.assertIn("no backlog remaining; exiting", content)
 
 
+class TestPersistentWorkerAutoResume(unittest.TestCase):
+    """Persistent worker _auto_resume_from_roadmap method."""
+
+    def setUp(self) -> None:
+        from orchestrator.persistent_worker import PersistentWorker, PersistentWorkerConfig
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / "config").mkdir(parents=True, exist_ok=True)
+        (self.root / "state").mkdir(parents=True, exist_ok=True)
+        (self.root / ".autopilot-logs").mkdir(parents=True, exist_ok=True)
+        self.orch = _make_orch(self.root)
+
+        cfg = PersistentWorkerConfig(
+            cli="codex",
+            agent="codex",
+            lane="default",
+            project_root=str(self.root),
+            repo_root=str(self.root),
+            log_dir=str(self.root / ".autopilot-logs"),
+            max_idle_cycles=2,
+            signal_max_wait=1,
+            signal_poll_interval=1,
+        )
+        cfg.finalise()
+        self.worker = PersistentWorker(cfg)
+        self.worker._orch = self.orch
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_creates_tasks_from_backlog(self) -> None:
+        (self.root / "project.yaml").write_text(
+            SAMPLE_PROJECT_YAML_WITH_BACKLOG, encoding="utf-8"
+        )
+        created = self.worker._auto_resume_from_roadmap()
+        self.assertGreater(created, 0)
+        tasks = self.orch.list_tasks()
+        self.assertGreaterEqual(len(tasks), created)
+
+    def test_touches_wakeup_signal(self) -> None:
+        from orchestrator.persistent_worker import _signal_file
+
+        (self.root / "project.yaml").write_text(
+            SAMPLE_PROJECT_YAML_WITH_BACKLOG, encoding="utf-8"
+        )
+        self.worker._auto_resume_from_roadmap()
+        sig = _signal_file(str(self.root), "codex")
+        self.assertTrue(sig.exists())
+        self.assertGreater(int(sig.read_text(encoding="utf-8")), 0)
+
+    def test_publishes_event(self) -> None:
+        (self.root / "project.yaml").write_text(
+            SAMPLE_PROJECT_YAML_WITH_BACKLOG, encoding="utf-8"
+        )
+        self.worker._auto_resume_from_roadmap()
+        events_path = self.root / "bus" / "events.jsonl"
+        self.assertTrue(events_path.exists())
+        lines = events_path.read_text(encoding="utf-8").strip().splitlines()
+        resume_events = [
+            json.loads(line) for line in lines
+            if json.loads(line).get("type") == "worker.auto_resume"
+        ]
+        self.assertGreaterEqual(len(resume_events), 1)
+        self.assertEqual(resume_events[0]["payload"]["agent"], "codex")
+        self.assertGreater(resume_events[0]["payload"]["tasks_created"], 0)
+
+    def test_returns_zero_when_no_backlog(self) -> None:
+        (self.root / "project.yaml").write_text(
+            SAMPLE_PROJECT_YAML_NO_BACKLOG, encoding="utf-8"
+        )
+        created = self.worker._auto_resume_from_roadmap()
+        self.assertEqual(created, 0)
+
+    def test_no_signal_when_nothing_created(self) -> None:
+        from orchestrator.persistent_worker import _signal_file
+
+        (self.root / "project.yaml").write_text(
+            SAMPLE_PROJECT_YAML_NO_BACKLOG, encoding="utf-8"
+        )
+        self.worker._auto_resume_from_roadmap()
+        sig = _signal_file(str(self.root), "codex")
+        self.assertFalse(sig.exists())
+
+    def test_deduplicates_across_calls(self) -> None:
+        (self.root / "project.yaml").write_text(
+            SAMPLE_PROJECT_YAML_WITH_BACKLOG, encoding="utf-8"
+        )
+        first = self.worker._auto_resume_from_roadmap()
+        self.assertGreater(first, 0)
+        second = self.worker._auto_resume_from_roadmap()
+        self.assertEqual(second, 0)
+
+    def test_run_loop_resumes_instead_of_exiting(self) -> None:
+        """run() auto-resumes at max idle instead of exiting when backlog exists."""
+        (self.root / "project.yaml").write_text(
+            SAMPLE_PROJECT_YAML_WITH_BACKLOG, encoding="utf-8"
+        )
+        self.worker.cfg.max_idle_cycles = 1
+
+        cli_calls = []
+        self.worker._run_cli = lambda prompt: (cli_calls.append(prompt), 0)[1]
+        self.worker._wait_for_signal = lambda: False
+
+        call_count = [0]
+        def patched_has_work():
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return False  # Triggers auto-resume.
+            if call_count[0] == 2:
+                return True  # Claims the new task.
+            return False  # Back to idle → exit (backlog now deduped).
+
+        claim_count = [0]
+        def patched_claim():
+            claim_count[0] += 1
+            if claim_count[0] == 1:
+                return {"id": "TASK-fake", "title": "Fake task", "description": "test"}
+            return None
+
+        self.worker._has_claimable_work = patched_has_work
+        self.worker._claim_next_task = patched_claim
+        rc = self.worker.run()
+
+        self.assertEqual(rc, 0)
+        self.assertGreaterEqual(len(cli_calls), 1)
+
+    def test_run_loop_exits_cleanly_no_backlog(self) -> None:
+        """run() exits when max idle reached and no backlog."""
+        (self.root / "project.yaml").write_text(
+            SAMPLE_PROJECT_YAML_NO_BACKLOG, encoding="utf-8"
+        )
+        self.worker.cfg.max_idle_cycles = 1
+        self.worker._wait_for_signal = lambda: False
+
+        rc = self.worker.run()
+
+        self.assertEqual(rc, 0)
+        tasks = self.orch.list_tasks()
+        self.assertEqual(len(tasks), 0)
+
+
+class TestManagerCycleTouchesWakeupSignals(unittest.TestCase):
+    """Manager cycle touches wakeup signals when auto-plan creates tasks."""
+
+    def test_signals_written_for_task_owners(self) -> None:
+        """_touch_wakeup_signals writes files for each unique owner."""
+        import orchestrator_mcp_server as mcp
+        orig_root = mcp.ROOT_DIR
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "state").mkdir()
+            try:
+                mcp.ROOT_DIR = root
+                created = [
+                    {"owner": "codex", "task_id": "TASK-1"},
+                    {"owner": "gemini", "task_id": "TASK-2"},
+                    {"owner": "codex", "task_id": "TASK-3"},
+                ]
+                mcp._touch_wakeup_signals(created)
+                self.assertTrue((root / "state" / ".wakeup-codex").exists())
+                self.assertTrue((root / "state" / ".wakeup-gemini").exists())
+            finally:
+                mcp.ROOT_DIR = orig_root
+
+    def test_no_signals_for_empty_list(self) -> None:
+        import orchestrator_mcp_server as mcp
+        orig_root = mcp.ROOT_DIR
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "state").mkdir()
+            try:
+                mcp.ROOT_DIR = root
+                mcp._touch_wakeup_signals([])
+                self.assertEqual(list((root / "state").glob(".wakeup-*")), [])
+            finally:
+                mcp.ROOT_DIR = orig_root
+
+
 if __name__ == "__main__":
     unittest.main()

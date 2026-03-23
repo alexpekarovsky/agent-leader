@@ -11,6 +11,7 @@ Falls back to legacy spawn-per-cycle on repeated failures.
 """
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import signal as signal_mod
@@ -226,36 +227,55 @@ class PersistentWorker:
     def _has_claimable_work(self) -> bool:
         """Check tasks.json for claimable work without claiming."""
         tasks_path = Path(self.cfg.project_root) / "state" / "tasks.json"
+        _log("DEBUG", f"_has_claimable_work: checking for claimable work in {tasks_path}")
         if not tasks_path.exists():
+            _log("DEBUG", f"_has_claimable_work: {tasks_path} does not exist.")
             return False
         try:
-            tasks = json.loads(tasks_path.read_text(encoding="utf-8"))
-        except Exception:
+            raw_tasks_content = tasks_path.read_text(encoding="utf-8")
+            _log("DEBUG", f"_has_claimable_work: tasks.json content: {raw_tasks_content}")
+            tasks = json.loads(raw_tasks_content)
+        except Exception as e:
+            _log("DEBUG", f"_has_claimable_work: failed to read or parse tasks.json: {e}")
             return False
         if not isinstance(tasks, list):
+            _log("DEBUG", f"_has_claimable_work: tasks.json content is not a list.")
             return False
 
         for task in tasks:
+            _log("DEBUG", f"_has_claimable_work: evaluating task {task.get('id')}")
+            _log("DEBUG", f"  Task owner: {task.get('owner')}, self.cfg.agent: {self.cfg.agent}")
             if str(task.get("owner", "")).strip() != self.cfg.agent:
+                _log("DEBUG", "  Owner mismatch. Skipping.")
                 continue
+            _log("DEBUG", f"  Task status: {task.get('status')}")
             if str(task.get("status", "")).strip().lower() not in {"assigned", "bug_open"}:
+                _log("DEBUG", "  Status not assigned or bug_open. Skipping.")
                 continue
             if self.cfg.team_id:
                 tid = str(task.get("team_id", "")).strip().lower()
+                _log("DEBUG", f"  Task team_id: {tid}, self.cfg.team_id: {self.cfg.team_id.lower()}")
                 if tid and tid != self.cfg.team_id.lower():
+                    _log("DEBUG", "  Team ID mismatch. Skipping.")
                     continue
             if self.cfg.lane == "wingman":
                 ws = str(task.get("workstream", "")).strip().lower()
+                _log("DEBUG", f"  Task workstream: {ws}, self.cfg.lane: {self.cfg.lane}")
                 if ws != "qa":
                     title = str(task.get("title", "")).strip().lower()
                     desc = str(task.get("description", "")).strip().lower()
+                    _log("DEBUG", f"  Task title: {title}, description: {desc}")
                     if not any(k in f"{title} {desc}" for k in ("qa", "regression", "test")):
+                        _log("DEBUG", "  Not QA-scoped for wingman lane. Skipping.")
                         continue
+            _log("DEBUG", f"_has_claimable_work: found claimable task {task.get('id')}. Returning True.")
             return True
+        _log("DEBUG", "_has_claimable_work: no claimable tasks found. Returning False.")
         return False
 
     def _claim_next_task(self) -> Optional[Dict[str, Any]]:
         """Claim next available task directly via orchestrator engine."""
+        _log("DEBUG", "attempting to claim next task...")
         try:
             orch = self._get_orchestrator()
             result = orch.claim_next_task(
@@ -263,10 +283,15 @@ class PersistentWorker:
                 instance_id=self.cfg.instance_id,
                 team_id=self.cfg.team_id or None,
             )
-            if result and result.get("id") and not result.get("throttled"):
-                return result
+            if result and result.get("id"):
+                _log("DEBUG", f"claimed task: {result.get('id')}, throttled: {result.get('throttled')}")
+                if not result.get("throttled"):
+                    return result
+            elif result and result.get("throttled"):
+                _log("DEBUG", f"claim throttled: {result.get('message')}")
         except Exception as e:
             _log("WARN", f"claim_next_task failed: {e}")
+        _log("DEBUG", "no task claimed.")
         return None
 
     # -- prompt building ----------------------------------------------------
@@ -565,6 +590,42 @@ class PersistentWorker:
         except OSError as e:
             _log("ERROR", f"failed to create {budget_type} budget exhaustion marker {marker_path}: {e}")
 
+    # -- auto-resume from roadmap -------------------------------------------
+
+    def _auto_resume_from_roadmap(self) -> int:
+        """Check roadmap for backlog items and create tasks if available.
+
+        Returns the number of tasks created (0 if none).
+        """
+        try:
+            orch = self._get_orchestrator()
+            result = orch.plan_from_roadmap(
+                source=self.cfg.agent,
+                team_id=self.cfg.team_id or None,
+                limit=5,
+            )
+            created = len(result.get("created", []))
+            if created > 0:
+                # Touch the wakeup signal so other idle workers notice.
+                sig = _signal_file(self.cfg.project_root, self.cfg.agent)
+                sig.parent.mkdir(parents=True, exist_ok=True)
+                sig.write_text(str(created), encoding="utf-8")
+                # Publish event for observability.
+                orch.publish_event(
+                    event_type="worker.auto_resume",
+                    source=self.cfg.agent,
+                    payload={
+                        "agent": self.cfg.agent,
+                        "tasks_created": created,
+                        "backlog_remaining": result.get("backlog_remaining", 0),
+                        "instance_id": self.cfg.instance_id,
+                    },
+                )
+            return created
+        except Exception as e:
+            _log("WARN", f"auto-resume from roadmap failed: {e}")
+            return 0
+
     # -- main loop ----------------------------------------------------------
 
     def run(self) -> int:
@@ -604,7 +665,13 @@ class PersistentWorker:
                 _log("INFO", f"no claimable work (idle_streak={self._idle_streak})")
 
                 if self._idle_streak >= self.cfg.max_idle_cycles > 0:
-                    _log("INFO", f"max idle cycles reached ({self.cfg.max_idle_cycles}); exiting")
+                    # Auto-resume: check roadmap for backlog before exiting.
+                    created = self._auto_resume_from_roadmap()
+                    if created > 0:
+                        _log("INFO", f"auto-resume: created {created} tasks from roadmap; resetting idle streak")
+                        self._idle_streak = 0
+                        continue
+                    _log("INFO", f"max idle cycles reached ({self.cfg.max_idle_cycles}); no backlog remaining; exiting")
                     return 0
 
                 # Wait for signal file.

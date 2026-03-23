@@ -1463,6 +1463,20 @@ def _guide_payload() -> Dict[str, Any]:
     }
 
 
+def _touch_wakeup_signals(created_tasks: list) -> None:
+    """Touch wakeup signal files for owners of newly created tasks."""
+    owners = {str(t.get("owner", "")).strip() for t in created_tasks if isinstance(t, dict)}
+    owners.discard("")
+    state_dir = ROOT_DIR / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    for owner in owners:
+        sig = state_dir / f".wakeup-{owner}"
+        try:
+            sig.write_text(str(len(created_tasks)), encoding="utf-8")
+        except OSError:
+            pass
+
+
 def _manager_cycle(strict: bool) -> Dict[str, Any]:
     logger.info("manager_cycle.start strict=%s", strict)
     stale_after_seconds = ORCH._heartbeat_timeout_seconds()
@@ -1739,6 +1753,8 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
                 )
                 auto_plan["attempted"] = True
                 ORCH.last_auto_plan_timestamp = now_utc
+                # Touch wakeup signals so idle workers notice new tasks.
+                _touch_wakeup_signals(auto_plan.get("created", []))
             except Exception as exc:
                 auto_plan = {"attempted": True, "error": str(exc)}
                 logger.warning("manager_cycle.auto_plan_failed: %s", exc)
@@ -1749,7 +1765,7 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
     if stop_policy.get("stop_required"):
         reason_codes = stop_policy.get("reason_codes", [])
         if "all_tasks_complete" in reason_codes:
-            new_tasks_created = auto_plan.get("tasks_created", 0) if isinstance(auto_plan, dict) else 0
+            new_tasks_created = len(auto_plan.get("created", [])) if isinstance(auto_plan, dict) else 0
             if new_tasks_created == 0:
                 logger.info("manager_cycle: ALL TASKS COMPLETE, no new work from roadmap. Stopping supervisor to save tokens.")
                 try:
