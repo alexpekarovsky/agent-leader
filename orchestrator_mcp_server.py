@@ -642,17 +642,17 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
     tools = [
         {
             "name": "orchestrator_guide",
-            "description": "Return the orchestration playbook and exact MCP-only workflow for manager and team members.",
+            "description": "[OPERATOR][SAFE] Return the orchestration playbook and exact MCP-only workflow for manager and team members.",
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
             "name": "orchestrator_status",
-            "description": "Show redacted status plus ready-to-paste live status report. When user asks for status updates, return live_status_text verbatim. Set ORCHESTRATOR_STATUS_VERBOSE_PATHS=1 for full paths.",
+            "description": "[OPERATOR][SAFE] Show redacted status plus ready-to-paste live status report. When user asks for status updates, return live_status_text verbatim. Set ORCHESTRATOR_STATUS_VERBOSE_PATHS=1 for full paths.",
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
             "name": "orchestrator_headless_start",
-            "description": "Start headless supervisor lanes (manager/workers/watchdog) for this project without shell wrappers.",
+            "description": "[INFRA][DESTRUCTIVE] Start headless supervisor lanes (manager/workers/watchdog) for this project without shell wrappers.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -698,7 +698,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_headless_stop",
-            "description": "Stop headless supervisor lanes for this project.",
+            "description": "[INFRA][DESTRUCTIVE] Stop headless supervisor lanes for this project.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -719,7 +719,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_headless_status",
-            "description": "Return machine-readable headless supervisor process status for this project.",
+            "description": "[INFRA][SAFE] Return machine-readable headless supervisor process status for this project.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -740,7 +740,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_headless_restart",
-            "description": "Restart headless supervisor lanes for this project.",
+            "description": "[INFRA][DESTRUCTIVE] Restart headless supervisor lanes for this project.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -761,7 +761,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_headless_clean",
-            "description": "Clean stale pid/log artifacts for headless supervisor lanes in this project.",
+            "description": "[INFRA][DESTRUCTIVE] Clean stale pid/log artifacts for headless supervisor lanes in this project.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -782,7 +782,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_doctor",
-            "description": "Run actionable diagnostics for root/policy/auth/connectivity checks, including binding and identity verification hints.",
+            "description": "[OPERATOR][SAFE] Run actionable diagnostics for root/policy/auth/connectivity checks, including binding and identity verification hints.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -792,12 +792,12 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_parity_smoke",
-            "description": "Run an operational parity smoke test checking lifecycle, status, and task flow, returning a diagnostic report.",
+            "description": "[OPERATOR][SAFE] Run an operational parity smoke test checking lifecycle, status, and task flow, returning a diagnostic report.",
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
             "name": "orchestrator_normalize_github_ci",
-            "description": "Normalize a GitHub CI/check payload into an orchestration-friendly summary.",
+            "description": "[INTEGRATION][SAFE] Normalize a GitHub CI/check payload into an orchestration-friendly summary.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -808,7 +808,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_create_github_issue",
-            "description": "Creates a new GitHub issue from an orchestrator bug record and links it to a task.",
+            "description": "[INTEGRATION][MUTATING] Creates a new GitHub issue from an orchestrator bug record and links it to a task.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -820,7 +820,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_process_github_webhook",
-            "description": "Process a GitHub webhook payload, normalize CI results, and update orchestrator tasks.",
+            "description": "[INTEGRATION][MUTATING] Process a GitHub webhook payload, normalize CI results, and update orchestrator tasks.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -832,12 +832,12 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_get_roles",
-            "description": "Get current orchestrator role assignments (leader, team_members). Default leader is codex via policy unless changed.",
+            "description": "[SHARED][SAFE] Get current orchestrator role assignments (leader, team_members). Default leader is codex via policy unless changed.",
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
             "name": "orchestrator_set_role",
-            "description": "Set runtime role for an agent. role=leader or role=team_member. This allows non-codex leaders when desired.",
+            "description": "[SHARED][MUTATING] Set runtime role for an agent. role=leader or role=team_member. This allows non-codex leaders when desired.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -852,7 +852,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_list_audit_logs",
-            "description": "List append-only MCP audit records (tool calls, status, args, results/errors).",
+            "description": "[OPERATOR][SAFE] List append-only MCP audit records (tool calls, status, args, results/errors).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -864,7 +864,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_live_status_report",
-            "description": "Generate the manager's live status update in the standard percentage + pipeline format. Call every 10 minutes (600s).",
+            "description": "[MANAGER][MUTATING] Generate the manager's live status update in the standard percentage + pipeline format. Call every 10 minutes (600s).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -883,7 +883,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_register_agent",
-            "description": "Register agent/tenant in the collaboration pool.",
+            "description": "[SHARED][MUTATING] Register agent/tenant in the collaboration pool.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -899,7 +899,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_heartbeat",
-            "description": "Update last-seen heartbeat for agent/tenant.",
+            "description": "[SHARED][MUTATING] Update last-seen heartbeat for agent/tenant.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -915,7 +915,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_connect_team_members",
-            "description": "Manager one-shot team member activation handshake. Returns connected only for verified, same-project team members.",
+            "description": "[MANAGER][MUTATING] Manager one-shot team member activation handshake. Returns connected only for verified, same-project team members.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -930,7 +930,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_connect_to_leader",
-            "description": "Team member one-shot attach flow with identity verification. Connection is considered valid only when identity is verified for this project.",
+            "description": "[WORKER][MUTATING] Team member one-shot attach flow with identity verification. Connection is considered valid only when identity is verified for this project.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -949,7 +949,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_list_agents",
-            "description": "List discovered tenants in pool with active/offline status plus identity and verification details.",
+            "description": "[SHARED][SAFE] List discovered tenants in pool with active/offline status plus identity and verification details.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -960,7 +960,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_discover_agents",
-            "description": "Deep discovery view: registered agents plus inferred tenants, including identity and verification details.",
+            "description": "[SHARED][SAFE] Deep discovery view: registered agents plus inferred tenants, including identity and verification details.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -971,12 +971,12 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_bootstrap",
-            "description": "Initialize orchestrator runtime state for a new project session. Call once before creating tasks.",
+            "description": "[MANAGER][MUTATING] Initialize orchestrator runtime state for a new project session. Call once before creating tasks.",
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
             "name": "orchestrator_create_task",
-            "description": "Create a task and assign owner via policy routing unless owner override is provided. Use for every delegated unit of work.",
+            "description": "[MANAGER][MUTATING] Create a task and assign owner via policy routing unless owner override is provided. Use for every delegated unit of work.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1011,7 +1011,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_dedupe_tasks",
-            "description": "Close duplicate open tasks (same normalized title/workstream/owner), keeping oldest canonical task.",
+            "description": "[MANAGER][MUTATING] Close duplicate open tasks (same normalized title/workstream/owner), keeping oldest canonical task.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1021,7 +1021,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_list_tasks",
-            "description": "List tasks, optionally filtered by status, owner, or lane. Use for planning dashboards and polling.",
+            "description": "[SHARED][SAFE] List tasks, optionally filtered by status, owner, or lane. Use for planning dashboards and polling.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1037,7 +1037,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_get_tasks_for_agent",
-            "description": "Get tasks for a specific agent. Team members should use this when they need full queue visibility.",
+            "description": "[WORKER][SAFE] Get tasks for a specific agent. Team members should use this when they need full queue visibility.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1049,7 +1049,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_claim_next_task",
-            "description": "Claim next task for an agent and move it to in_progress. Team members should call this before coding.",
+            "description": "[WORKER][MUTATING] Claim next task for an agent and move it to in_progress. Team members should call this before coding.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1062,7 +1062,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_renew_task_lease",
-            "description": "Renew an active task lease for the task owner and current worker instance.",
+            "description": "[WORKER][MUTATING] Renew an active task lease for the task owner and current worker instance.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1076,7 +1076,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_set_claim_override",
-            "description": "Manager-enforced claim target: force next claim by agent to pick specific task_id first.",
+            "description": "[MANAGER][MUTATING] Manager-enforced claim target: force next claim by agent to pick specific task_id first.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1089,7 +1089,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_update_task_status",
-            "description": "Update task lifecycle status (in_progress, blocked, etc.) with note metadata. Do not use for completion: use orchestrator_submit_report.",
+            "description": "[SHARED][MUTATING] Update task lifecycle status (in_progress, blocked, etc.) with note metadata. Do not use for completion: use orchestrator_submit_report.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1103,7 +1103,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_submit_report",
-            "description": "Submit team_member delivery report. Mandatory before claiming task completion. Rejects wrong owner/task mismatches.",
+            "description": "[WORKER][MUTATING] Submit team_member delivery report. Mandatory before claiming task completion. Rejects wrong owner/task mismatches.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1168,7 +1168,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_validate_task",
-            "description": "Manager validation step. passed=true closes task (and closes related bugs); passed=false opens/keeps bug loop.",
+            "description": "[MANAGER][MUTATING] Manager validation step. passed=true closes task (and closes related bugs); passed=false opens/keeps bug loop.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1182,7 +1182,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_list_bugs",
-            "description": "List validation-generated bugs, optionally filtered by status/owner.",
+            "description": "[SHARED][SAFE] List validation-generated bugs, optionally filtered by status/owner.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1193,7 +1193,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_raise_blocker",
-            "description": "Team member raises structured blocker requiring manager/user input. Marks task as blocked.",
+            "description": "[WORKER][MUTATING] Team member raises structured blocker requiring manager/user input. Marks task as blocked.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1208,7 +1208,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_list_blockers",
-            "description": "List blockers raised by team members. Manager polls this to ask user for missing input.",
+            "description": "[SHARED][SAFE] List blockers raised by team members. Manager polls this to ask user for missing input.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1219,7 +1219,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_resolve_blocker",
-            "description": "Resolve blocker with manager/user decision and resume blocked task to in_progress.",
+            "description": "[MANAGER][MUTATING] Resolve blocker with manager/user decision and resume blocked task to in_progress.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1232,7 +1232,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_publish_event",
-            "description": "Publish an event to the collaboration bus. Use for async notifications and coordination messages.",
+            "description": "[SHARED][MUTATING] Publish an event to the collaboration bus. Use for async notifications and coordination messages.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1246,7 +1246,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_poll_events",
-            "description": "Poll collaboration events for an agent with cursor-based replay. Supports optional long-poll timeout.",
+            "description": "[SHARED][SAFE] Poll collaboration events for an agent with cursor-based replay. Supports optional long-poll timeout.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1261,7 +1261,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_ack_event",
-            "description": "Acknowledge a specific event id for an agent.",
+            "description": "[SHARED][MUTATING] Acknowledge a specific event id for an agent.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1273,7 +1273,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_get_agent_cursor",
-            "description": "Get current event cursor offset for an agent.",
+            "description": "[SHARED][SAFE] Get current event cursor offset for an agent.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1284,7 +1284,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_manager_cycle",
-            "description": "Run one manager cycle automatically: validate reported tasks first, auto-connect stale team members with active tasks, then summarize remaining work by owner.",
+            "description": "[MANAGER][MUTATING] Run one manager cycle automatically: validate reported tasks first, auto-connect stale team members with active tasks, then summarize remaining work by owner.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1298,7 +1298,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_plan_from_roadmap",
-            "description": "Read project.yaml roadmap, find backlog items, and create orchestrator tasks. Use for daily auto-planning.",
+            "description": "[MANAGER][MUTATING] Read project.yaml roadmap, find backlog items, and create orchestrator tasks. Use for daily auto-planning.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1325,7 +1325,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_reassign_stale_tasks",
-            "description": "Re-advertise and reassign stale-owner tasks to other active team members so execution continues when one team member is degraded.",
+            "description": "[MANAGER][MUTATING] Re-advertise and reassign stale-owner tasks to other active team members so execution continues when one team member is degraded.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1337,7 +1337,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_decide_architecture",
-            "description": "Record equal-rights architecture decision and create ADR artifact under decisions/.",
+            "description": "[MANAGER][MUTATING] Record equal-rights architecture decision and create ADR artifact under decisions/.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1351,7 +1351,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_create_consult",
-            "description": "Create a consult-only review request. Manager asks team for design/bug/architecture feedback without creating tasks or triggering execution.",
+            "description": "[MANAGER][MUTATING] Create a consult-only review request. Manager asks team for design/bug/architecture feedback without creating tasks or triggering execution.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1370,7 +1370,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_set_review_gate",
-            "description": "Wingman sets review gate decision (approve/reject) on a reported task. Used by the wingman/reviewer agent after code review.",
+            "description": "[WORKER][MUTATING] Wingman sets review gate decision (approve/reject) on a reported task. Used by the wingman/reviewer agent after code review.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1384,7 +1384,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_respond_consult",
-            "description": "Team member responds to a consult-only review request. No task claim or execution side effects.",
+            "description": "[WORKER][MUTATING] Team member responds to a consult-only review request. No task claim or execution side effects.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1397,7 +1397,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_list_consults",
-            "description": "List consult-only review requests. Filter by status, type, or agent involvement.",
+            "description": "[SHARED][SAFE] List consult-only review requests. Filter by status, type, or agent involvement.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1409,7 +1409,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         },
         {
             "name": "orchestrator_get_task_spec",
-            "description": "Read the generated spec file for a task. Workers use this for implementation guidance.",
+            "description": "[WORKER][SAFE] Read the generated spec file for a task. Workers use this for implementation guidance.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
