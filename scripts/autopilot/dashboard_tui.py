@@ -1855,14 +1855,19 @@ def _render_gemini_v3b(snapshot, completed, auto_stopped, color_enabled=True):
             td = s.get("tasks_done_session", 0)
             cm = s.get("commits_session", 0)
             lo = s.get("loc_net_session", 0)
+            # Use parent agent's task_activity for badge — lanes share the agent's work status
+            lane_badge_val = _badge(activity, ps, hb)
             for ld in lane_details:
                 lane_name = ld.get("lane_label", "?")
                 lane_inst = str(ld.get("instance_id", "") or "")
                 lane_tag = lane_inst[-4:] if len(lane_inst) >= 4 else lane_inst
                 lane_alive = ld.get("alive", False)
-                lane_badge = c("36", "\u25cb RDY") if lane_alive else c("31", "\u25cf OFF")
+                if not lane_alive:
+                    this_badge = c("31", "\u25cf OFF")
+                else:
+                    this_badge = lane_badge_val
                 label = f"{dn} #{lane_tag}"
-                team_rows.append(f" {label:<18} {lane_name:<8} {lane_badge}  t={td} c={cm} L={lo}")
+                team_rows.append(f" {label:<18} {lane_name:<8} {this_badge}  t={td} c={cm} L={lo}")
         else:
             label = f"{dn} #{tag}" if tag else dn
             badge = _badge(activity, ps, hb)
