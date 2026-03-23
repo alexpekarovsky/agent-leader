@@ -50,6 +50,7 @@ class PersistentWorkerConfig:
     heartbeat_interval: int = 60
     idle_backoff: str = "30,60,120,300,900"
     max_idle_cycles: int = 30
+    max_tasks_per_session: int = 0  # 0 = unlimited; restart after N tasks to bound memory.
     daily_call_budget: int = 100
     daily_token_budget: int = 0
     hourly_token_budget: int = 0
@@ -162,6 +163,8 @@ class PersistentWorker:
         self._shutdown = False
         self._orch: Any = None
         self._call_count = 0
+        self._tasks_completed = 0
+        self._session_start: float = time.time()
 
         # Ensure dirs exist.
         os.makedirs(cfg.log_dir, exist_ok=True)
@@ -626,6 +629,33 @@ class PersistentWorker:
             _log("WARN", f"auto-resume from roadmap failed: {e}")
             return 0
 
+    # -- session metrics ----------------------------------------------------
+
+    def _emit_session_metrics(self, exit_reason: str) -> None:
+        """Publish session summary event for observability."""
+        uptime = time.time() - self._session_start
+        _log("INFO",
+             f"session metrics: tasks={self._tasks_completed} cycles={self._cycle}"
+             f" uptime={uptime:.0f}s reason={exit_reason}")
+        try:
+            orch = self._get_orchestrator()
+            orch.publish_event(
+                event_type="worker.session_end",
+                source=self.cfg.agent,
+                payload={
+                    "agent": self.cfg.agent,
+                    "instance_id": self.cfg.instance_id,
+                    "lane": self.cfg.lane,
+                    "tasks_completed": self._tasks_completed,
+                    "cycles": self._cycle,
+                    "uptime_seconds": round(uptime),
+                    "exit_reason": exit_reason,
+                    "cli": self.cfg.cli,
+                },
+            )
+        except Exception:
+            pass  # Best-effort — don't block shutdown.
+
     # -- main loop ----------------------------------------------------------
 
     def run(self) -> int:
@@ -656,6 +686,7 @@ class PersistentWorker:
             # Budget check.
             if not self._consume_budget(self.cfg.tokens_per_call):
                 _log("WARN", "budget exhausted; exiting persistent worker")
+                self._emit_session_metrics("budget_exhausted")
                 return 0
 
             # Check for claimable work.
@@ -672,6 +703,7 @@ class PersistentWorker:
                         self._idle_streak = 0
                         continue
                     _log("INFO", f"max idle cycles reached ({self.cfg.max_idle_cycles}); no backlog remaining; exiting")
+                    self._emit_session_metrics("max_idle")
                     return 0
 
                 # Wait for signal file.
@@ -700,6 +732,7 @@ class PersistentWorker:
             if rc == 0:
                 _log("INFO", f"task={task_id} completed rc=0")
                 self._consecutive_failures = 0
+                self._tasks_completed += 1
             else:
                 _log("ERROR", f"task={task_id} failed rc={rc}")
                 self._consecutive_failures += 1
@@ -707,10 +740,20 @@ class PersistentWorker:
                     _log("ERROR",
                          f"consecutive failures ({self._consecutive_failures}) reached max"
                          f" ({self.cfg.max_consecutive_failures}); exiting for fallback")
+                    self._emit_session_metrics("max_failures")
                     return 1
+
+            # Session task limit: restart worker to bound memory growth.
+            if self.cfg.max_tasks_per_session > 0 and self._tasks_completed >= self.cfg.max_tasks_per_session:
+                _log("INFO",
+                     f"session task limit reached ({self._tasks_completed}/{self.cfg.max_tasks_per_session}); "
+                     f"exiting for fresh session")
+                self._emit_session_metrics("session_limit")
+                return 0
 
             # No inter-cycle sleep — immediately check for next task.
 
+        self._emit_session_metrics("shutdown")
         _log("INFO", "persistent worker shutdown complete")
         return 0
 
@@ -739,6 +782,7 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> PersistentWorke
     parser.add_argument("--heartbeat-interval", type=int, default=60)
     parser.add_argument("--idle-backoff", default="30,60,120,300,900")
     parser.add_argument("--max-idle-cycles", type=int, default=30)
+    parser.add_argument("--max-tasks-per-session", type=int, default=0)
     parser.add_argument("--daily-call-budget", type=int, default=100)
     parser.add_argument("--daily-token-budget", type=int, default=0)
     parser.add_argument("--hourly-token-budget", type=int, default=0)
@@ -761,6 +805,7 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> PersistentWorke
         heartbeat_interval=args.heartbeat_interval,
         idle_backoff=args.idle_backoff,
         max_idle_cycles=args.max_idle_cycles,
+        max_tasks_per_session=args.max_tasks_per_session,
         daily_call_budget=args.daily_call_budget,
         daily_token_budget=args.daily_token_budget,
         hourly_token_budget=args.hourly_token_budget,

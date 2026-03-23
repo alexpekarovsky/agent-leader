@@ -88,6 +88,7 @@ class SupervisorConfig:
     backoff_max: int = 120
     # Resolved at finalise time.
     repo_root: str = ""
+    scripts: Path = field(init=False)
 
     # ------------------------------------------------------------------
     def finalise(self) -> None:
@@ -100,6 +101,7 @@ class SupervisorConfig:
             self.log_dir = os.path.join(self.project_root, ".autopilot-logs")
         if not self.pid_dir:
             self.pid_dir = os.path.join(self.project_root, ".autopilot-pids")
+        self.scripts = Path(self.repo_root) / "scripts" / "autopilot"
         for attr in ("claude_project_root", "gemini_project_root",
                       "codex_project_root", "wingman_project_root"):
             if not getattr(self, attr):
@@ -118,6 +120,54 @@ class SupervisorConfig:
                 self.worker_interval = 180
             if self.max_idle_cycles <= 0:
                 self.max_idle_cycles = 30
+
+    def _token_budget_args(self) -> str:
+        parts = ""
+        if self.daily_token_budget > 0:
+            parts += f" --daily-token-budget {self.daily_token_budget}"
+        if self.hourly_token_budget > 0:
+            parts += f" --hourly-token-budget {self.hourly_token_budget}"
+        if self.tokens_per_call != 10000:
+            parts += f" --tokens-per-call {self.tokens_per_call}"
+        return parts
+
+    def _persistent_worker_args(self, name: str, lane: str, cli: str, agent: str, team_id: str, project_root: str) -> str:
+        instance_id = _get_instance_id(name, lane)
+        session_arg = f" --max-tasks-per-session {self.max_tasks_per_session}" if self.max_tasks_per_session > 0 else ""
+        return (
+            f" --cli {cli}"
+            f" --agent {agent}"
+            f" --lane {lane}{_team_arg(team_id)}"
+            f" --instance-id {instance_id}"
+            f" --project-root {project_root}"
+            f" --repo-root {self.repo_root}"
+            f" --log-dir {self.log_dir}"
+            f" --cli-timeout {self.worker_cli_timeout}"
+            f" --heartbeat-interval {self.worker_interval}"
+            f" --idle-backoff {self.idle_backoff}"
+            f" --max-idle-cycles {self.max_idle_cycles}"
+            f" --daily-call-budget {self.daily_call_budget}"
+            f"{session_arg}"
+            f"{self._token_budget_args()}"
+        )
+
+    def _worker_loop_args(self, name: str, lane: str, cli: str, agent: str, team_id: str, project_root: str) -> str:
+        instance_id = _get_instance_id(name, lane)
+        return (
+            f" --cli {cli}"
+            f" --agent {agent}"
+            f" --lane {lane}{_team_arg(team_id)}"
+            f" --instance-id {instance_id}"
+            f" --project-root {project_root}"
+            f" --interval {self.worker_interval}"
+            f" --cli-timeout {self.worker_cli_timeout}"
+            f" --log-dir {self.log_dir}"
+            f" --idle-backoff {self.idle_backoff}"
+            f" --max-idle-cycles {self.max_idle_cycles}"
+            f" --daily-call-budget {self.daily_call_budget}"
+            f"{self._token_budget_args()}"
+            f"{_event_driven_arg(self)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +249,11 @@ def _get_instance_id(name: str, lane: str = "default") -> str:
         return f"claude_code#headless-{lane}-{lane_num}"
     return f"{name}#headless-{lane}"
 
+def _team_arg(tid: str) -> str:
+    return f" --team-id {tid}" if tid else ""
+
+def _event_driven_arg(cfg: SupervisorConfig) -> str:
+    return " --event-driven" if cfg.event_driven else ""
 
 def proc_cmd(name: str, cfg: SupervisorConfig,
              extra_names: Sequence[str] = (),
@@ -209,36 +264,11 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
         if ename == name:
             return extra_cmds[i]
 
-    root = cfg.repo_root
-    scripts = f"{root}/scripts/autopilot"
-
-    def _team_arg(tid: str) -> str:
-        return f" --team-id {tid}" if tid else ""
-
-    def _event_driven_arg() -> str:
-        return " --event-driven" if cfg.event_driven else ""
-
-    def _persistent_arg() -> str:
-        if not cfg.persistent_workers:
-            return ""
-        parts = " --persistent"
-        if cfg.max_tasks_per_session != 5:
-            parts += f" --max-tasks-per-session {cfg.max_tasks_per_session}"
-        return parts
-
-    def _token_budget_args() -> str:
-        parts = ""
-        if cfg.daily_token_budget > 0:
-            parts += f" --daily-token-budget {cfg.daily_token_budget}"
-        if cfg.hourly_token_budget > 0:
-            parts += f" --hourly-token-budget {cfg.hourly_token_budget}"
-        if cfg.tokens_per_call != 10000:
-            parts += f" --tokens-per-call {cfg.tokens_per_call}"
-        return parts
+    # ------------------------------------------------------------------
 
     if name == "manager":
         return (
-            f"{scripts}/manager_loop.sh"
+            f"{cfg.scripts}/manager_loop.sh"
             f" --cli {cfg.leader_cli}"
             f" --leader-agent {cfg.leader_agent}"
             f" --project-root {cfg.project_root}"
@@ -248,46 +278,30 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             f" --idle-backoff {cfg.idle_backoff}"
             f" --max-idle-cycles {cfg.max_idle_cycles}"
             f" --daily-call-budget {cfg.daily_call_budget}"
-            f"{_token_budget_args()}"
+            f"{cfg._token_budget_args()}"
         )
     if name == "wingman":
-        instance_id = _get_instance_id(name, "wingman")
-        return (
-            f"{scripts}/worker_loop.sh"
-            f" --cli {cfg.wingman_cli}"
-            f" --agent {cfg.wingman_agent}"
-            f" --lane wingman{_team_arg(cfg.wingman_team_id)}"
-            f" --instance-id {instance_id}"
-            f" --project-root {cfg.wingman_project_root}"
-            f" --interval {cfg.worker_interval}"
-            f" --cli-timeout {cfg.worker_cli_timeout}"
-            f" --log-dir {cfg.log_dir}"
-            f" --idle-backoff {cfg.idle_backoff}"
-            f" --max-idle-cycles {cfg.max_idle_cycles}"
-            f" --daily-call-budget {cfg.daily_call_budget}"
-            f"{_token_budget_args()}"
-            f"{_event_driven_arg()}"
-            f"{_persistent_arg()}"
-        )
+        if cfg.persistent_workers:
+            return (
+                f"python3 -m orchestrator.persistent_worker"
+                f"{cfg._persistent_worker_args(name, 'wingman', cfg.wingman_cli, cfg.wingman_agent, cfg.wingman_team_id, cfg.wingman_project_root)}"
+            )
+        else:
+            return (
+                f"{cfg.scripts}/worker_loop.sh"
+                f"{cfg._worker_loop_args(name, 'wingman', cfg.wingman_cli, cfg.wingman_agent, cfg.wingman_team_id, cfg.wingman_project_root)}"
+            )
     if name in ("claude", "claude_2", "claude_3"):
-        # Each Claude lane gets a distinct instance-id for claim isolation.
-        instance_id = _get_instance_id(name, "default")
-        instance_arg = f" --instance-id {instance_id}"
-        return (
-            f"{scripts}/worker_loop.sh"
-            f" --cli claude --agent claude_code{_team_arg(cfg.claude_team_id)}"
-            f"{instance_arg}"
-            f" --project-root {cfg.claude_project_root}"
-            f" --interval {cfg.worker_interval}"
-            f" --cli-timeout {cfg.worker_cli_timeout}"
-            f" --log-dir {cfg.log_dir}"
-            f" --idle-backoff {cfg.idle_backoff}"
-            f" --max-idle-cycles {cfg.max_idle_cycles}"
-            f" --daily-call-budget {cfg.daily_call_budget}"
-            f"{_token_budget_args()}"
-            f"{_event_driven_arg()}"
-            f"{_persistent_arg()}"
-        )
+        if cfg.persistent_workers:
+            return (
+                f"python3 -m orchestrator.persistent_worker"
+                f"{cfg._persistent_worker_args(name, 'default', 'claude', 'claude_code', cfg.claude_team_id, cfg.claude_project_root)}"
+            )
+        else:
+            return (
+                f"{cfg.scripts}/worker_loop.sh"
+                f"{cfg._worker_loop_args(name, 'default', 'claude', 'claude_code', cfg.claude_team_id, cfg.claude_project_root)}"
+            )
     if name == "gemini":
         env_parts = []
         if cfg.gemini_model:
@@ -297,43 +311,30 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
         env_parts.append(f"ORCHESTRATOR_GEMINI_CAPACITY_RETRIES={cfg.gemini_capacity_retries}")
         env_parts.append(f"ORCHESTRATOR_GEMINI_CAPACITY_BACKOFF_SECONDS={cfg.gemini_capacity_backoff}")
         env_prefix = " ".join(env_parts) + " " if env_parts else ""
-        instance_id = _get_instance_id(name, "default")
-        instance_arg = f" --instance-id {instance_id}"
-        return (
-            f"{env_prefix}{scripts}/worker_loop.sh"
-            f" --cli gemini --agent gemini{_team_arg(cfg.gemini_team_id)}"
-            f"{instance_arg}"
-            f" --project-root {cfg.gemini_project_root}"
-            f" --interval {cfg.worker_interval}"
-            f" --cli-timeout {cfg.worker_cli_timeout}"
-            f" --log-dir {cfg.log_dir}"
-            f" --idle-backoff {cfg.idle_backoff}"
-            f" --max-idle-cycles {cfg.max_idle_cycles}"
-            f" --daily-call-budget {cfg.daily_call_budget}"
-            f"{_token_budget_args()}"
-            f"{_event_driven_arg()}"
-            f"{_persistent_arg()}"
-        )
+        if cfg.persistent_workers:
+            return (
+                f"{env_prefix}python3 -m orchestrator.persistent_worker"
+                f"{cfg._persistent_worker_args(name, 'default', 'gemini', 'gemini', cfg.gemini_team_id, cfg.gemini_project_root)}"
+            )
+        else:
+            return (
+                f"{env_prefix}{cfg.scripts}/worker_loop.sh"
+                f"{cfg._worker_loop_args(name, 'default', 'gemini', 'gemini', cfg.gemini_team_id, cfg.gemini_project_root)}"
+            )
     if name == "codex_worker":
-        instance_id = _get_instance_id(name, "default")
-        instance_arg = f" --instance-id {instance_id}"
-        return (
-            f"{scripts}/worker_loop.sh"
-            f" --cli codex --agent codex{_team_arg(cfg.codex_team_id)}"
-            f"{instance_arg}"
-            f" --project-root {cfg.codex_project_root}"
-            f" --interval {cfg.worker_interval}"
-            f" --cli-timeout {cfg.worker_cli_timeout}"
-            f" --log-dir {cfg.log_dir}"
-            f" --idle-backoff {cfg.idle_backoff}"
-            f" --max-idle-cycles {cfg.max_idle_cycles}"
-            f" --daily-call-budget {cfg.daily_call_budget}"
-            f"{_token_budget_args()}"
-            f"{_event_driven_arg()}"
-        )
+        if cfg.persistent_workers:
+            return (
+                f"python3 -m orchestrator.persistent_worker"
+                f"{cfg._persistent_worker_args(name, 'default', 'codex', 'codex', cfg.codex_team_id, cfg.codex_project_root)}"
+            )
+        else:
+            return (
+                f"{cfg.scripts}/worker_loop.sh"
+                f"{cfg._worker_loop_args(name, 'default', 'codex', 'codex', cfg.codex_team_id, cfg.codex_project_root)}"
+            )
     if name == "watchdog":
         return (
-            f"{scripts}/watchdog_loop.sh"
+            f"{cfg.scripts}/watchdog_loop.sh"
             f" --project-root {cfg.project_root}"
             f" --interval 15"
             f" --log-dir {cfg.log_dir}"
@@ -400,34 +401,21 @@ class Supervisor:
     # -- extra worker registration ------------------------------------------
 
     def _register_extras(self) -> None:
-        scripts = f"{self.cfg.repo_root}/scripts/autopilot"
         for ew in self.cfg.extra_workers:
             if ew.name in self._extra_names or ew.name in _BASE_PROCS:
                 raise ValueError(f"duplicate process name: {ew.name}")
             if ew.lane not in ("default", "wingman"):
                 raise ValueError(f"invalid lane '{ew.lane}' for extra worker '{ew.name}'")
-            token_args = ""
-            if self.cfg.daily_token_budget > 0:
-                token_args += f" --daily-token-budget {self.cfg.daily_token_budget}"
-            if self.cfg.hourly_token_budget > 0:
-                token_args += f" --hourly-token-budget {self.cfg.hourly_token_budget}"
-            if self.cfg.tokens_per_call != 10000:
-                token_args += f" --tokens-per-call {self.cfg.tokens_per_call}"
-            instance_id = _get_instance_id(ew.name, ew.lane)
-            cmd = (
-                f"{scripts}/worker_loop.sh"
-                f" --cli {ew.cli} --agent {ew.agent}"
-                f" --lane {ew.lane} --team-id {ew.team_id}"
-                f" --instance-id {instance_id}"
-                f" --project-root {ew.project_root}"
-                f" --interval {self.cfg.worker_interval}"
-                f" --cli-timeout {self.cfg.worker_cli_timeout}"
-                f" --log-dir {self.cfg.log_dir}"
-                f" --idle-backoff {self.cfg.idle_backoff}"
-                f" --max-idle-cycles {self.cfg.max_idle_cycles}"
-                f" --daily-call-budget {self.cfg.daily_call_budget}"
-                f"{token_args}"
-            )
+            if self.cfg.persistent_workers:
+                cmd = (
+                    f"python3 -m orchestrator.persistent_worker"
+                    f"{self.cfg._persistent_worker_args(ew.name, ew.lane, ew.cli, ew.agent, ew.team_id, ew.project_root)}"
+                )
+            else:
+                cmd = (
+                    f"{self.cfg.scripts}/worker_loop.sh"
+                    f"{self.cfg._worker_loop_args(ew.name, ew.lane, ew.cli, ew.agent, ew.team_id, ew.project_root)}"
+                )
             self._extra_names.append(ew.name)
             self._extra_cmds.append(cmd)
             self._procs.append(ew.name)
@@ -539,14 +527,11 @@ class Supervisor:
             if agent_info:
                 heartbeat_status = "active" if agent_info.get("status") == "active" else "stale"
                 task_counts = agent_info.get("task_counts", {})
-                if task_counts.get("in_progress", 0) > 0:
+                if (task_counts.get("in_progress", 0) > 0 or
+                    task_counts.get("assigned", 0) > 0 or
+                    task_counts.get("blocked", 0) > 0 or
+                    task_counts.get("reported", 0) > 0):
                     task_activity = "working"
-                elif task_counts.get("assigned", 0) > 0:
-                    task_activity = "assigned"
-                elif task_counts.get("blocked", 0) > 0:
-                    task_activity = "blocked"
-                elif task_counts.get("reported", 0) > 0:
-                    task_activity = "reporting"
                 else:
                     task_activity = "idle"
         elif name == "watchdog":
