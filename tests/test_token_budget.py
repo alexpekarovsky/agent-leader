@@ -55,11 +55,11 @@ class TokenBudgetConfigDefaultsTests(unittest.TestCase):
 
     def test_default_daily_token_budget_is_zero(self):
         cfg = _default_cfg()
-        self.assertEqual(cfg.daily_token_budget, 0)
+        self.assertEqual(cfg.daily_token_budget, 1000000)
 
     def test_default_hourly_token_budget_is_zero(self):
         cfg = _default_cfg()
-        self.assertEqual(cfg.hourly_token_budget, 0)
+        self.assertEqual(cfg.hourly_token_budget, 100000)
 
     def test_default_tokens_per_call(self):
         cfg = _default_cfg()

@@ -58,8 +58,8 @@ class SupervisorConfig:
     idle_backoff: str = "30,60,120,300,900"
     max_idle_cycles: int = 30
     daily_call_budget: int = 100
-    daily_token_budget: int = 0      # Hard daily token ceiling. 0 = disabled.
-    hourly_token_budget: int = 0     # Hard hourly token ceiling. 0 = disabled.
+    daily_token_budget: int = 1000000     # Hard daily token ceiling. 0 = disabled.
+    hourly_token_budget: int = 100000     # Hard hourly token ceiling. 0 = disabled.
     tokens_per_call: int = 10000     # Estimated tokens consumed per CLI call.
     event_driven: bool = True
     low_burn: bool = False
