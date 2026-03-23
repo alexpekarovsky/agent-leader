@@ -27,6 +27,12 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Add project root to sys.path to allow importing orchestrator modules
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from orchestrator.supervisor import Supervisor, SupervisorConfig
+from orchestrator.engine import Orchestrator
+from orchestrator.policy import Policy
+
 project_root = Path(sys.argv[1])
 as_json = sys.argv[2].lower() == "true"
 state_dir = project_root / "state"
@@ -58,22 +64,23 @@ def age_seconds(dt: datetime | None):
     except Exception:
         return None
 
+# --- Supervisor and Orchestrator Setup ---
+# Use default config values as this script is for read-only status.
+cfg = SupervisorConfig(project_root=str(project_root))
+cfg.finalise()
 
-def proc_status(name: str):
-    pf = pid_dir / f"{name}.pid"
-    if not pf.exists():
-        return {"status": "stopped", "pid": None}
-    try:
-        pid = int(pf.read_text(encoding="utf-8").strip())
-    except Exception:
-        return {"status": "dead", "pid": None}
-    alive = False
-    try:
-        os.kill(pid, 0)
-        alive = True
-    except Exception:
-        alive = False
-    return {"status": "running" if alive else "dead", "pid": pid}
+policy_path = project_root / "config" / "policy.balanced.json"
+policy = Policy.load(path=policy_path)
+orchestrator = Orchestrator(root=project_root, policy=policy)
+sup = Supervisor(cfg, orchestrator)
+
+all_process_status = sup.status_json()
+# Convert list of dicts to a dict keyed by process name for easier lookup
+all_process_status_map = {p["name"]: p for p in all_process_status}
+# Re-populate proc for backward compatibility with some existing blocks
+# In the future, these blocks should be refactored to use all_process_status_map directly
+proc = {p["name"]: {"status": p["state"], "pid": p["pid"]} for p in all_process_status}
+# --- End Supervisor and Orchestrator Setup ---
 
 
 def heartbeat_state(age):
@@ -84,20 +91,6 @@ def heartbeat_state(age):
     if age <= 1800:
         return "stale"
     return "offline"
-
-
-def process_names_for_agent(agent_name: str, proc_map):
-    names = []
-    for name in proc_map.keys():
-        if agent_name == "codex" and (name == "manager" or name.startswith("codex")):
-            names.append(name)
-        elif agent_name == "ccm" and name == "wingman":
-            names.append(name)
-        elif agent_name == "claude_code" and (name == "claude" or name.startswith("claude_") or name.startswith("claude-")):
-            names.append(name)
-        elif agent_name == "gemini" and name.startswith("gemini"):
-            names.append(name)
-    return names
 
 
 def task_activity_for_agent(agent_name: str, task_rows):
@@ -150,6 +143,80 @@ wingman_pending = [t for t in tasks if isinstance(t.get("review_gate"), dict) an
 wingman_rejected = [t for t in tasks if isinstance(t.get("review_gate"), dict) and t["review_gate"].get("status") == "rejected"]
 wingman_count = len(wingman_pending) + len(wingman_rejected)
 
+# Create a temporary dictionary to build operator_agents
+temp_operator_agents = {}
+
+for p_status in all_process_status:
+    agent_name = p_status.get("agent") # Use 'agent' instead of 'type'
+    process_name = p_status["name"] # This is the specific process, e.g., 'claude', 'claude_2', 'manager'
+
+    if not agent_name:
+        continue # Skip if no agent_name
+
+    if agent_name not in temp_operator_agents:
+        temp_operator_agents[agent_name] = {
+            "agent": agent_name,
+            "heartbeat_state": "offline",
+            "heartbeat_age_seconds": None,
+            "process_state": "down",
+            "process_count": 0,
+            "task_activity": "idle",
+            "instance_id": None, # Will try to get this from roles or a lane
+            "lane_details": [],
+        }
+
+    # Derive lane_label
+    lane_label = process_name
+    if process_name == "manager":
+        lane_label = "leader"
+    elif process_name == "wingman":
+        lane_label = "wingman"
+    elif process_name == "claude":
+        lane_label = "lane 1"
+    elif process_name.startswith("claude_") and "_" in process_name:
+        lane_label = process_name.replace("claude_", "lane ")
+    # For gemini, codex_worker, watchdog, the process_name is often the best label.
+    # 'role' from p_status will be better for individual lane_details.
+
+    # Add this process as a lane detail
+    temp_operator_agents[agent_name]["lane_details"].append({
+        "process_name": process_name,
+        "lane_label": lane_label,
+        "status": p_status["state"],
+        "pid": p_status["pid"],
+        "instance_id": p_status.get("instance_id", "-"),
+        "role": p_status.get("role", "N/A"), # Use the role from the process status
+    })
+
+    # Update overall agent status from its lanes
+    if p_status["state"] == "running":
+        temp_operator_agents[agent_name]["process_state"] = "up"
+        temp_operator_agents[agent_name]["process_count"] += 1
+    
+    if p_status["heartbeat_status"] == "active":
+        temp_operator_agents[agent_name]["heartbeat_state"] = "active"
+        if p_status.get("heartbeat_age_seconds") is not None:
+             temp_operator_agents[agent_name]["heartbeat_age_seconds"] = p_status["heartbeat_age_seconds"]
+    
+    # Aggregate task activity: if any lane is working/blocked/assigned, the agent is.
+    current_activity = temp_operator_agents[agent_name]["task_activity"]
+    if p_status["task_activity"] == "working":
+        temp_operator_agents[agent_name]["task_activity"] = "working"
+    elif p_status["task_activity"] == "blocked" and current_activity != "working":
+        temp_operator_agents[agent_name]["task_activity"] = "blocked"
+    elif p_status["task_activity"] == "assigned" and current_activity not in ("working", "blocked"):
+        temp_operator_agents[agent_name]["task_activity"] = "queued"
+
+    # Set the main instance_id for the agent. Prefer leader_instance_id from roles if it's the leader agent.
+    # Otherwise, use the first instance_id from a running lane.
+    if agent_name == roles.get("leader"):
+        temp_operator_agents[agent_name]["instance_id"] = roles.get("leader_instance_id")
+    elif p_status.get("instance_id") and temp_operator_agents[agent_name]["instance_id"] is None:
+        temp_operator_agents[agent_name]["instance_id"] = p_status["instance_id"]
+
+# Finalize operator_agents list
+operator_agents = sorted(temp_operator_agents.values(), key=lambda x: x["agent"])
+
 # Suggested Recovery Actions
 recovery_actions = []
 now = datetime.now(timezone.utc)
@@ -172,81 +239,26 @@ for blk in blockers:
             "blocker_id": blk["id"],
             "message": f"Blocker {blk['id']} on {blk.get('task_id')}",
             "action": f"orchestrator_resolve_blocker(blocker_id='{blk['id']}', ...)"
-        })
+                })
 
 active_agents = []
-for name, entry in agents.items():
-    last_seen = parse_iso(str(entry.get("last_seen", "")))
-    age = age_seconds(last_seen)
-    state = "active" if age is not None and age <= 600 else "offline"
-    md = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
+for op_agent in operator_agents:
+    state = "active" if op_agent["heartbeat_state"] == "active" else "offline"
+    # Derive age from heartbeat_age_seconds if available, otherwise use a default or calculate from task history
+    agent_age = op_agent["heartbeat_age_seconds"] if op_agent["heartbeat_age_seconds"] is not None else (
+        age_seconds(parse_iso(str(agents.get(op_agent["agent"], {}).get("last_seen", ""))))
+    )
     active_agents.append(
         {
-            "agent": name,
+            "agent": op_agent["agent"],
             "state": state,
-            "age_seconds": age,
-            "instance_id": md.get("instance_id"),
-            "role": md.get("role"),
+            "age_seconds": agent_age,
+            "instance_id": op_agent["instance_id"],
+            "role": op_agent["lane_details"][0].get("role", "N/A") if op_agent["lane_details"] else "N/A", # Assuming first lane detail can represent the agent's role.
         }
     )
 active_agents.sort(key=lambda x: x["agent"])
 
-proc = {
-    "manager": proc_status("manager"),
-    "wingman": proc_status("wingman"),
-    "claude": proc_status("claude"),
-    "claude_2": proc_status("claude_2"),
-    "claude_3": proc_status("claude_3"),
-    "gemini": proc_status("gemini"),
-    "codex_worker": proc_status("codex_worker"),
-    "watchdog": proc_status("watchdog"),
-}
-known = set(proc.keys())
-if pid_dir.exists():
-    for pf in pid_dir.glob("*.pid"):
-        name = pf.stem
-        if name not in known:
-            proc[name] = proc_status(name)
-            known.add(name)
-
-operator_agents = []
-operator_names = {"codex", "ccm", "claude_code", "gemini"} | set(agents.keys())
-for agent_name in sorted(operator_names):
-    if not agent_name:
-        continue
-    entry = agents.get(agent_name, {}) if isinstance(agents, dict) else {}
-    last_seen = parse_iso(str(entry.get("last_seen", "")))
-    age = age_seconds(last_seen)
-    hb_state = heartbeat_state(age)
-    pnames = process_names_for_agent(agent_name, proc)
-    running = [name for name in pnames if proc.get(name, {}).get("status") == "running"]
-    # Build per-lane details for agents with multiple processes (e.g. claude lanes).
-    lane_details = []
-    for pn in pnames:
-        ps = proc.get(pn, {})
-        if pn == "claude":
-            ll = "lane 1"
-        elif pn.startswith("claude_") and "_" in pn:
-            ll = pn.replace("claude_", "lane ")
-        else:
-            ll = pn
-        lane_details.append({
-            "process_name": pn,
-            "lane_label": ll,
-            "status": ps.get("status", "stopped"),
-            "pid": ps.get("pid"),
-            "instance_id": f"claude_code#headless-default-{pn.split('_')[1]}" if pn.startswith("claude_") and "_" in pn else ("claude_code#headless-default-1" if pn == "claude" else None),
-        })
-    operator_agents.append({
-        "agent": agent_name,
-        "heartbeat_state": hb_state,
-        "heartbeat_age_seconds": age,
-        "process_state": "up" if running else "down",
-        "process_count": len(running),
-        "task_activity": task_activity_for_agent(agent_name, tasks),
-        "instance_id": (entry.get("metadata") or {}).get("instance_id") if isinstance(entry.get("metadata"), dict) else None,
-        "lane_details": lane_details,
-    })
 
 def _collect_budget_metrics(budgets_dir: Path):
     """Read .budget-*-YYYYMMDD.count files and report daily consumption."""

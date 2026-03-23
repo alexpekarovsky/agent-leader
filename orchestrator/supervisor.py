@@ -805,6 +805,8 @@ class Supervisor:
                 entry["capacity_errors"] = ps.capacity_errors
             if ps.leader_heartbeat_stale:
                 entry["leader_heartbeat_stale"] = True
+            if agent_name_for_orch: # Add this line
+                entry["agent"] = agent_name_for_orch # Add this line
             results.append(entry)
         return results
 
