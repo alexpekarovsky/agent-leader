@@ -23,6 +23,18 @@ ACTIVE_STATUSES = {"assigned", "in_progress", "reported", "bug_open"}
 # old supervisor sessions) is a zombie and must be filtered out of the roster.
 _VALID_CLAUDE_LANES = frozenset(("claude", "claude_2", "claude_3"))
 
+# Map process/alias names that may appear in agents.json to canonical agent names.
+# Stale sessions sometimes register under the supervisor process name rather than
+# the canonical agent name, causing duplicate roster rows.
+_AGENT_NAME_ALIASES: Dict[str, str] = {
+    "manager": "codex",
+    "codex_worker": "codex",
+    "wingman": "ccm",
+    "claude": "claude_code",
+    "claude_2": "claude_code",
+    "claude_3": "claude_code",
+}
+
 AGENT_ROLE_ORDER = {
     "Leader/Manager": 0,
     "Wingman/Reviewer": 1,
@@ -744,8 +756,20 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
     supervisor_processes = _read_supervisor_processes(root)
     active_agents: List[Dict[str, Any]] = []
     operator_agent_names = set(AGENT_OPERATOR_PROFILES.keys())
+    # Normalize agents_map keys: collapse process-name aliases (e.g. "codex_worker",
+    # "manager") into the canonical agent name, keeping the freshest entry per agent.
     if isinstance(agents_map, dict):
-        operator_agent_names.update(str(agent).strip() for agent in agents_map.keys())
+        _canonical_entries: Dict[str, Dict[str, Any]] = {}
+        for raw_name, raw_entry in agents_map.items():
+            canonical = _AGENT_NAME_ALIASES.get(str(raw_name).strip(), str(raw_name).strip())
+            if not canonical:
+                continue
+            existing = _canonical_entries.get(canonical)
+            if existing is None or str(raw_entry.get("last_seen", "")) > str(existing.get("last_seen", "")):
+                _canonical_entries[canonical] = raw_entry if isinstance(raw_entry, dict) else {}
+            operator_agent_names.add(canonical)
+        # Replace agents_map with the deduplicated canonical map for lookups below.
+        agents_map = _canonical_entries
     for agent in sorted(a for a in operator_agent_names if a):
         entry = agents_map.get(agent, {}) if isinstance(agents_map, dict) else {}
         metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
@@ -780,6 +804,11 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
             effective_role = "Leader/Manager"
         elif live_leader and agent != live_leader and effective_role == "Leader/Manager":
             effective_role = "Worker"
+
+        # Skip agents that are offline AND have no running processes — these are
+        # stale entries left over from previous sessions (fixes duplicate roster rows).
+        if heartbeat_state == "offline" and process_state == "down":
+            continue
 
         active_agents.append(
             {

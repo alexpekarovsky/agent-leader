@@ -866,5 +866,92 @@ class DashboardTuiTests(unittest.TestCase):
             self.assertNotIn("claude_c", sup_names, "Zombie c must not appear in supervisor_processes")
 
 
+    def test_stale_codex_instances_collapsed_to_single_row(self) -> None:
+        """Codex must appear as a single roster row even when agents.json has stale
+        entries keyed by process names like 'codex_worker' and 'manager'."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "state").mkdir(parents=True, exist_ok=True)
+            (root / "bus" / "reports").mkdir(parents=True, exist_ok=True)
+            (root / ".autopilot-logs").mkdir(parents=True, exist_ok=True)
+            pid_dir = root / ".autopilot-pids"
+            pid_dir.mkdir(parents=True, exist_ok=True)
+
+            project_root = "/tmp/my-project"
+            now = mod._now_utc().isoformat()
+            stale = "2024-01-01T00:00:00+00:00"  # very old
+
+            # Simulate the bug: agents.json has entries under process names
+            # "codex_worker" (current) and "manager" (stale from old session)
+            # plus the canonical "codex" entry.
+            agents = {
+                "codex": {
+                    "status": "active",
+                    "last_seen": now,
+                    "metadata": {"instance_id": "codex#default", "role": "leader"},
+                },
+                "codex_worker": {
+                    "status": "active",
+                    "last_seen": stale,
+                    "metadata": {"instance_id": "codex_worker#old", "role": "team_member"},
+                },
+                "manager": {
+                    "status": "active",
+                    "last_seen": stale,
+                    "metadata": {"instance_id": "manager#old", "role": "manager"},
+                },
+            }
+            (root / "state" / "tasks.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "blockers.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "bugs.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "agents.json").write_text(json.dumps(agents), encoding="utf-8")
+            (root / "bus" / "events.jsonl").write_text("", encoding="utf-8")
+
+            # Live manager process
+            alive_pid = os.getpid()
+            now_ts = mod._now_utc().timestamp()
+            (pid_dir / "manager.pid").write_text(str(alive_pid), encoding="utf-8")
+            os.utime(pid_dir / "manager.pid", (now_ts, now_ts))
+
+            snap = mod.build_snapshot(project_root=project_root, root=root)
+            codex_rows = [a for a in snap.active_agents if a["agent"] == "codex"]
+            # Must be exactly one row for codex
+            self.assertEqual(len(codex_rows), 1, f"Expected 1 codex row, got {len(codex_rows)}: {[r['agent'] for r in snap.active_agents]}")
+            # No rows for process-name aliases
+            alias_rows = [a for a in snap.active_agents if a["agent"] in ("codex_worker", "manager")]
+            self.assertEqual(len(alias_rows), 0, "Process-name aliases must not appear as separate roster rows")
+            # The codex row should use the freshest entry (the canonical one with recent heartbeat)
+            self.assertEqual(codex_rows[0]["heartbeat_state"], "active")
+
+    def test_offline_agents_without_processes_hidden(self) -> None:
+        """Agents that are offline AND have no running processes should be hidden."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "state").mkdir(parents=True, exist_ok=True)
+            (root / "bus" / "reports").mkdir(parents=True, exist_ok=True)
+            (root / ".autopilot-logs").mkdir(parents=True, exist_ok=True)
+            (root / ".autopilot-pids").mkdir(parents=True, exist_ok=True)
+
+            project_root = "/tmp/my-project"
+            stale = "2024-01-01T00:00:00+00:00"
+
+            agents = {
+                "gemini": {
+                    "status": "active",
+                    "last_seen": stale,
+                    "metadata": {"instance_id": "gemini#default"},
+                },
+            }
+            (root / "state" / "tasks.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "blockers.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "bugs.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "agents.json").write_text(json.dumps(agents), encoding="utf-8")
+            (root / "bus" / "events.jsonl").write_text("", encoding="utf-8")
+
+            snap = mod.build_snapshot(project_root=project_root, root=root)
+            gemini_rows = [a for a in snap.active_agents if a["agent"] == "gemini"]
+            self.assertEqual(len(gemini_rows), 0, "Offline agent with no running processes should be hidden")
+
+
 if __name__ == "__main__":
     unittest.main()
