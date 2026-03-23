@@ -453,6 +453,20 @@ roadmap:
           orchestrator_review_plan(task_id, action=approve|reject|edit),
           configurable auto_approve_policy in policy.json.
         tags: [orchestration, quality, autonomy, open-swe-inspired]
+      - id: stats-persistence-and-tui
+        title: "Daily/Weekly/Monthly statistics — persistent storage and TUI display"
+        effort: M
+        status: backlog
+        details: >
+          Store task/commit/LOC/budget stats in state/stats_history.jsonl with daily
+          snapshots. Each entry: {date, tasks_done, commits, loc_added, loc_deleted,
+          loc_net, budget_used, budget_by_process, agent_breakdown, bugs_found,
+          bugs_fixed, avg_task_time, throughput_per_hour}. TUI shows daily/weekly/monthly
+          rollups in Code Output panel. Expose via orchestrator_status as
+          stats_daily/stats_weekly/stats_monthly fields. Lumen can read this for
+          dashboard display and Telegram /sprint summary reports.
+        tags: [analytics, tui, persistence, statistics]
+
       - id: model-performance-analytics
         title: "Model performance analytics — per-model task stats for smart routing"
         effort: M
