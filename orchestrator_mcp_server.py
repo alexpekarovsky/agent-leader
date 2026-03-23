@@ -69,7 +69,7 @@ STATUS_VERBOSE_PATHS = os.getenv("ORCHESTRATOR_STATUS_VERBOSE_PATHS", "").strip(
 RUN_ID = os.getenv("ORCHESTRATOR_RUN_ID", "").strip()
 PROMPT_PROFILE_VERSION = os.getenv("ORCHESTRATOR_PROMPT_PROFILE_VERSION", "").strip()
 ALLOW_SHARED_MCP_JSON_PATH = os.getenv("ORCHESTRATOR_ALLOW_SHARED_MCP_JSON_PATH", "").strip().lower() in {"1", "true", "yes"}
-
+_ORCHESTRATOR_INSTANCE_ID = os.getenv("ORCHESTRATOR_INSTANCE_ID", "").strip()
 
 def _looks_like_project_root(path: Path) -> bool:
     return (
@@ -2975,6 +2975,8 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             metadata = args.get("metadata", {})
             if isinstance(metadata, str):
                 metadata = _parse_json_argument(metadata, "object")
+            if _ORCHESTRATOR_INSTANCE_ID:
+                metadata["instance_id"] = _ORCHESTRATOR_INSTANCE_ID
             entry = ORCH.register_agent(agent=args["agent"], metadata=metadata)
             return _ok_and_audit(request_id, name, args, entry)
 
@@ -2982,6 +2984,8 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             metadata = args.get("metadata", {})
             if isinstance(metadata, str):
                 metadata = _parse_json_argument(metadata, "object")
+            if _ORCHESTRATOR_INSTANCE_ID:
+                metadata["instance_id"] = _ORCHESTRATOR_INSTANCE_ID
             entry = ORCH.heartbeat(agent=args["agent"], metadata=metadata)
             return _ok_and_audit(request_id, name, args, entry)
 

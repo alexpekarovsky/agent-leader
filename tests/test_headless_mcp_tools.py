@@ -140,6 +140,57 @@ class HeadlessMcpToolsTests(unittest.TestCase):
             )
             self.assertEqual(script_dir.resolve(), root)
 
+    @patch("orchestrator_mcp_server.ORCH")
+    def test_instance_id_propagated_to_register_agent(self, mock_orch) -> None:
+        from orchestrator_mcp_server import handle_tool_call
+
+        with patch("orchestrator_mcp_server._ORCHESTRATOR_INSTANCE_ID", "test_agent#headless-default-register"):
+            tool_call = {
+                "name": "orchestrator_register_agent",
+                "arguments": {
+                    "agent": "test_agent",
+                    "metadata": {"client": "test_client"},
+                },
+            }
+
+            mock_orch.register_agent.return_value = {}
+
+            handle_tool_call("req-1", tool_call)
+
+            mock_orch.register_agent.assert_called_once()
+            args, kwargs = mock_orch.register_agent.call_args
+            self.assertIn("metadata", kwargs)
+            metadata = kwargs["metadata"]
+            self.assertIn("instance_id", metadata)
+            self.assertEqual(metadata["instance_id"], "test_agent#headless-default-register")
+            self.assertNotEqual(metadata["instance_id"], "")
+
+    @patch("orchestrator_mcp_server.ORCH")
+    def test_instance_id_propagated_to_heartbeat(self, mock_orch) -> None:
+        from orchestrator_mcp_server import handle_tool_call
+
+        with patch("orchestrator_mcp_server._ORCHESTRATOR_INSTANCE_ID", "test_agent#headless-default-heartbeat"):
+            tool_call = {
+                "name": "orchestrator_heartbeat",
+                "arguments": {
+                    "agent": "test_agent",
+                    "metadata": {"client": "test_client"},
+                },
+            }
+
+            mock_orch.heartbeat.return_value = {}
+
+            handle_tool_call("req-1", tool_call)
+
+            mock_orch.heartbeat.assert_called_once()
+            args, kwargs = mock_orch.heartbeat.call_args
+            self.assertIn("metadata", kwargs)
+            metadata = kwargs["metadata"]
+            self.assertIn("instance_id", metadata)
+            self.assertEqual(metadata["instance_id"], "test_agent#headless-default-heartbeat")
+            self.assertNotEqual(metadata["instance_id"], "")
+
+
 
 if __name__ == "__main__":
     unittest.main()
