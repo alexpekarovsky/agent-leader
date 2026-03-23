@@ -6,12 +6,14 @@ Expose configurable multi-agent orchestration tools via MCP JSON-RPC.
 
 from __future__ import annotations
 
+import atexit
 import logging
 import re
 import hashlib
 import io
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -20,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import gzip
+import time
 
 # Define auto-plan interval
 AUTO_PLAN_INTERVAL_SECONDS = 86400  # 24 hours
@@ -190,6 +193,42 @@ _AUTO_LOOP_STOP = threading.Event()
 _AUTO_LOOP_THREAD: Optional[threading.Thread] = None
 STATUS_SNAPSHOTS_PATH = ROOT_DIR / "state" / "status_snapshots.jsonl"
 STATUS_SNAPSHOTS_LOCK = ROOT_DIR / "state" / ".status_snapshots.lock"
+
+# ── Graceful shutdown ───────────────────────────────────────────────
+_SHUTDOWN_ONCE = threading.Event()
+
+
+def _graceful_shutdown(signum: Optional[int] = None, frame: Any = None) -> None:
+    """Stop the auto-manager loop, flush state, and log shutdown event."""
+    if _SHUTDOWN_ONCE.is_set():
+        return
+    _SHUTDOWN_ONCE.set()
+    logger.info("mcp_server.shutdown signal=%s", signum)
+    _AUTO_LOOP_STOP.set()
+    # Flush pending state to disk via the orchestrator.
+    if ORCH is not None:
+        try:
+            ORCH.publish_event(
+                event_type="mcp_server.shutdown",
+                source="mcp_server",
+                payload={"signal": signum},
+            )
+        except Exception:
+            pass
+        try:
+            ORCH._run_bus_housekeeping()
+        except Exception:
+            pass
+    logger.info("mcp_server.shutdown complete")
+
+
+# Register atexit and signal handlers.
+atexit.register(_graceful_shutdown, signum=None)
+for _sig in (signal.SIGTERM, signal.SIGINT):
+    try:
+        signal.signal(_sig, _graceful_shutdown)
+    except (OSError, ValueError):
+        pass  # Ignore if running in a thread or restricted environment.
 
 # ── Runtime / source consistency ────────────────────────────────────
 _SOURCE_FILES = [
@@ -458,6 +497,7 @@ def _supervisor_from_tool_args(args: Dict[str, Any]) -> Supervisor:
         daily_token_budget=int(args.get("daily_token_budget", SupervisorConfig.daily_token_budget)),
         hourly_token_budget=int(args.get("hourly_token_budget", SupervisorConfig.hourly_token_budget)),
         tokens_per_call=int(args.get("tokens_per_call", SupervisorConfig.tokens_per_call)),
+        mcp_auto_manager_active=True,  # MCP auto_manager_loop handles manager duties in-process.
         extra_workers=extra_workers,
     )
     return Supervisor(cfg, ORCH)
@@ -484,6 +524,103 @@ def _run_supervisor_action(supervisor: Supervisor, action: str) -> Dict[str, Any
         "leader_agent": supervisor.cfg.leader_agent,
         "processes": supervisor.status_json(),
     }
+
+
+def _start_supervisor_monitor(supervisor: Supervisor) -> Optional[int]:
+    """Spawn supervisor.monitor() as a detached background process.
+
+    The monitor loop continuously checks for dead processes and restarts them
+    with exponential backoff.  It runs in its own session (start_new_session)
+    so it survives MCP server restarts.  Its PID is recorded in
+    .autopilot-pids/monitor.pid so headless_stop can terminate it.
+    """
+    import subprocess as _sp
+
+    pid_dir = supervisor.cfg.pid_dir
+    os.makedirs(pid_dir, exist_ok=True)
+    monitor_pid_file = Path(pid_dir) / "monitor.pid"
+
+    # If a monitor is already running, skip.
+    if monitor_pid_file.exists():
+        try:
+            existing = int(monitor_pid_file.read_text().strip())
+            if existing and _is_process_alive(existing):
+                logger.info("supervisor monitor already running pid=%d", existing)
+                return existing
+        except (ValueError, OSError):
+            pass
+
+    log_dir = supervisor.cfg.log_dir
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = Path(log_dir) / "supervisor-monitor.log"
+
+    # Build a command that imports and runs the monitor directly.
+    repo_root = supervisor.cfg.repo_root
+    cmd = (
+        f"import sys; sys.path.insert(0, {repo_root!r}); "
+        f"from orchestrator.supervisor import Supervisor, SupervisorConfig; "
+        f"from orchestrator.engine import Orchestrator; "
+        f"from orchestrator.policy import Policy; "
+        f"from pathlib import Path; "
+        f"p = Policy.load(Path({repo_root!r}) / 'config' / 'policy.codex-manager.json'); "
+        f"o = Orchestrator(root=Path({supervisor.cfg.project_root!r}), policy=p); "
+        f"cfg = SupervisorConfig(project_root={supervisor.cfg.project_root!r},"
+        f" leader_agent={supervisor.cfg.leader_agent!r},"
+        f" claude_lanes={supervisor.cfg.claude_lanes!r}); "
+        f"cfg.finalise(); "
+        f"s = Supervisor(cfg, o); "
+        f"s.monitor()"
+    )
+
+    with open(log_file, "a") as lf:
+        proc = _sp.Popen(
+            [sys.executable, "-c", cmd],
+            stdout=lf,
+            stderr=lf,
+            start_new_session=True,
+        )
+
+    monitor_pid_file.write_text(str(proc.pid))
+    return proc.pid
+
+
+def _stop_supervisor_monitor(pid_dir: str) -> None:
+    """Stop the detached supervisor monitor process if running."""
+    monitor_pid_file = Path(pid_dir) / "monitor.pid"
+    if not monitor_pid_file.exists():
+        return
+    try:
+        pid = int(monitor_pid_file.read_text().strip())
+    except (ValueError, OSError):
+        monitor_pid_file.unlink(missing_ok=True)
+        return
+
+    if _is_process_alive(pid):
+        logger.info("stopping supervisor monitor pid=%d", pid)
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+        # Brief wait for graceful shutdown.
+        for _ in range(5):
+            if not _is_process_alive(pid):
+                break
+            time.sleep(1)
+        if _is_process_alive(pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+    monitor_pid_file.unlink(missing_ok=True)
+
+
+def _is_process_alive(pid: int) -> bool:
+    """Check if a process with the given PID is alive."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 
 def handle_initialize(request_id: Any) -> Dict[str, Any]:
@@ -1841,6 +1978,32 @@ def _auto_manager_loop() -> None:
     _budget_stamp = ""
     _budget_count = 0
 
+    # Change-based gating: track mtimes of state files to skip no-op cycles.
+    _FULL_CYCLE_INTERVAL = 300  # Safety net: always run a full cycle every 300s.
+    _state_files = (
+        ORCH.state_dir / "tasks.json",
+        ORCH.state_dir / "blockers.json",
+        ORCH.state_dir / "agents.json",
+    )
+    _last_mtimes: Dict[str, float] = {}
+    _last_full_cycle: float = 0.0
+
+    def _state_files_changed() -> bool:
+        """Check if any state files have changed since last cycle."""
+        nonlocal _last_mtimes
+        changed = False
+        current_mtimes: Dict[str, float] = {}
+        for sf in _state_files:
+            try:
+                mt = sf.stat().st_mtime
+            except OSError:
+                mt = 0.0
+            current_mtimes[str(sf)] = mt
+            if mt != _last_mtimes.get(str(sf), -1.0):
+                changed = True
+        _last_mtimes = current_mtimes
+        return changed
+
     def _budget_ok() -> bool:
         nonlocal _budget_stamp, _budget_count
         if daily_call_budget <= 0:
@@ -1887,6 +2050,16 @@ def _auto_manager_loop() -> None:
                     _AUTO_LOOP_STOP.wait(interval_seconds)
                     continue
 
+                # Change-based gating: skip cycle if state files unchanged
+                # and safety-net interval has not elapsed.
+                now = time.time()
+                files_changed = _state_files_changed()
+                time_since_full = now - _last_full_cycle
+                if not files_changed and time_since_full < _FULL_CYCLE_INTERVAL:
+                    logger.info("manager_cycle.skipped_no_changes")
+                    _AUTO_LOOP_STOP.wait(interval_seconds)
+                    continue
+
                 # Bug 6: Skip cycle when nothing actionable exists
                 if not _has_actionable_work():
                     logger.info("manager_cycle.skipped: no actionable work")
@@ -1895,6 +2068,7 @@ def _auto_manager_loop() -> None:
 
                 # Process manager cycle logic
                 _manager_cycle(strict=True)
+                _last_full_cycle = time.time()
 
                 # Poll and process github.handoff_required events
                 if ORCH:
@@ -2711,11 +2885,19 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             payload = _run_supervisor_action(supervisor, "start")
             running = [p for p in payload.get("processes", []) if p.get("state") == "running"]
             logger.info("headless.started processes=%d pids=%s", len(running), [p.get("pid") for p in running])
+            # Spawn the supervisor monitor as a detached background process so it
+            # survives MCP server restarts and continuously restarts dead workers.
+            monitor_pid = _start_supervisor_monitor(supervisor)
+            if monitor_pid:
+                payload["monitor_pid"] = monitor_pid
+                logger.info("headless.monitor started pid=%d", monitor_pid)
             return _ok_and_audit(request_id, name, args, payload)
 
         if name == "orchestrator_headless_stop":
             logger.info("headless.stop project=%s", str(args.get("project_root", "")))
             supervisor = _supervisor_from_tool_args(args if isinstance(args, dict) else {})
+            # Stop the monitor process before stopping supervised processes.
+            _stop_supervisor_monitor(supervisor.cfg.pid_dir)
             payload = _run_supervisor_action(supervisor, "stop")
             logger.info("headless.stopped")
             return _ok_and_audit(request_id, name, args, payload)
@@ -3467,6 +3649,21 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
 
 def main() -> None:
     if ORCH is not None:
+        # Recovery sweep: clean up stale tasks from any previous session before
+        # starting the interval loop.  This reassigns stuck tasks and sends
+        # wakeup signals so workers notice immediately.
+        try:
+            sweep = _manager_cycle(strict=True)
+            requeued = len(sweep.get("stale_requeues", []))  + len(sweep.get("stale_reassignments", []))
+            logger.info("mcp_server.recovery_sweep requeued=%d", requeued)
+            if ORCH is not None:
+                ORCH.publish_event(
+                    event_type="mcp_server.recovery_sweep",
+                    source="mcp_server",
+                    payload={"requeued": requeued},
+                )
+        except Exception as exc:
+            logger.warning("mcp_server.recovery_sweep failed: %s", exc)
         _start_auto_manager_loop()
     while True:
         try:

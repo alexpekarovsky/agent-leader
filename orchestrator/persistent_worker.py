@@ -43,13 +43,15 @@ class PersistentWorkerConfig:
     project_root: str = ""
     repo_root: str = ""
     log_dir: str = ""
+    pid_dir: str = ""
+    process_name: str = ""
     cli_timeout: int = 600
     max_consecutive_failures: int = 3
     signal_poll_interval: int = 2
     signal_max_wait: int = 300
     heartbeat_interval: int = 60
     idle_backoff: str = "30,60,120,300,900"
-    max_idle_cycles: int = 30
+    max_idle_cycles: int = 200
     max_tasks_per_session: int = 0  # 0 = unlimited; restart after N tasks to bound memory.
     daily_call_budget: int = 100
     daily_token_budget: int = 0
@@ -64,6 +66,10 @@ class PersistentWorkerConfig:
             self.project_root = self.repo_root
         if not self.log_dir:
             self.log_dir = os.path.join(self.project_root, ".autopilot-logs")
+        if not self.pid_dir:
+            self.pid_dir = os.path.join(self.project_root, ".autopilot-pids")
+        if not self.process_name:
+            self.process_name = self.agent
         if not self.instance_id:
             self.instance_id = f"{self.agent}#headless-{self.lane}"
 
@@ -168,6 +174,7 @@ class PersistentWorker:
 
         # Ensure dirs exist.
         os.makedirs(cfg.log_dir, exist_ok=True)
+        os.makedirs(cfg.pid_dir, exist_ok=True)
         Path(cfg.project_root, "state").mkdir(parents=True, exist_ok=True)
 
     # -- orchestrator access ------------------------------------------------
@@ -252,8 +259,8 @@ class PersistentWorker:
                 _log("DEBUG", "  Owner mismatch. Skipping.")
                 continue
             _log("DEBUG", f"  Task status: {task.get('status')}")
-            if str(task.get("status", "")).strip().lower() not in {"assigned", "bug_open"}:
-                _log("DEBUG", "  Status not assigned or bug_open. Skipping.")
+            if str(task.get("status", "")).strip().lower() not in {"assigned", "bug_open", "in_progress"}:
+                _log("DEBUG", "  Status not assigned, bug_open, or in_progress. Skipping.")
                 continue
             if self.cfg.team_id:
                 tid = str(task.get("team_id", "")).strip().lower()
@@ -381,10 +388,101 @@ class PersistentWorker:
             f"- Never silently stop; submit report or raise blocker\n"
         )
 
+    # -- Gemini capacity detection -----------------------------------------
+
+    # Markers that indicate a model capacity / rate-limit error.
+    _CAPACITY_ERROR_MARKERS = (
+        "MODEL_CAPACITY_EXHAUSTED",
+        "No capacity available for model",
+        "RESOURCE_EXHAUSTED",
+        "rateLimitExceeded",
+        "429",
+        "Too Many Requests",
+        "quota exceeded",
+    )
+
+    def _detect_capacity_error(self, output_file: str) -> bool:
+        """Scan CLI output for capacity / rate-limit error markers.
+
+        Equivalent of shell ``detect_gemini_capacity_error`` in common.sh.
+        Returns True if a capacity error was detected.
+        """
+        try:
+            with open(output_file, "r", errors="replace") as f:
+                text = f.read()
+        except (OSError, FileNotFoundError):
+            return False
+        lower = text.lower()
+        for marker in self._CAPACITY_ERROR_MARKERS:
+            if marker.lower() in lower:
+                return True
+        return False
+
+    def _handle_capacity_error(self) -> None:
+        """Record capacity error and apply capacity-specific backoff.
+
+        Writes a capacity_errors counter file (like the shell version) and
+        uses a longer backoff without incrementing ``_consecutive_failures``.
+        """
+        process_key = self.cfg.process_name
+        pid_dir = self.cfg.pid_dir
+        os.makedirs(pid_dir, exist_ok=True)
+        capacity_file = os.path.join(pid_dir, f"{process_key}.capacity_errors")
+
+        # Read and increment the streak counter.
+        streak = 0
+        try:
+            with open(capacity_file, "r") as f:
+                streak = int(f.read().strip())
+        except (OSError, ValueError):
+            pass
+        streak += 1
+        try:
+            with open(capacity_file, "w") as f:
+                f.write(str(streak))
+        except OSError:
+            pass
+
+        # Use capacity-specific backoff: longer sleep, exponential from 30s base.
+        backoff = min(30 * (2 ** (streak - 1)), 900)
+        _log("WARN",
+             f"capacity error detected (streak={streak}); "
+             f"backoff {backoff}s (not incrementing consecutive_failures)")
+
+        # Update heartbeat metadata so the engine knows we're capacity-degraded.
+        try:
+            orch = self._get_orchestrator()
+            orch.heartbeat(
+                agent=self.cfg.agent,
+                metadata={
+                    "instance_id": self.cfg.instance_id,
+                    "lane": self.cfg.lane,
+                    "session_type": "persistent",
+                    "task_activity": "capacity_degraded",
+                    "process_state": "running",
+                    "capacity_errors": streak,
+                    "status": "capacity_degraded",
+                },
+            )
+        except Exception:
+            pass
+
+        time.sleep(backoff)
+
+    def _clear_capacity_errors(self) -> None:
+        """Clear the capacity error streak counter on success."""
+        process_key = self.cfg.process_name
+        capacity_file = os.path.join(self.cfg.pid_dir, f"{process_key}.capacity_errors")
+        try:
+            if os.path.exists(capacity_file):
+                os.unlink(capacity_file)
+        except OSError:
+            pass
+
     # -- CLI execution ------------------------------------------------------
 
-    def _run_cli(self, prompt: str) -> int:
-        """Execute CLI with the given prompt. Returns exit code."""
+    def _run_cli(self, prompt: str) -> tuple:
+        """Execute CLI with the given prompt. Returns (exit_code, output_file)."""
         ts = time.strftime("%Y%m%d-%H%M%S")
         out_file = os.path.join(
             self.cfg.log_dir,
@@ -400,7 +498,7 @@ class PersistentWorker:
         if self.cfg.cli in _VALID_AGENTS:
             if self.cfg.agent not in _VALID_AGENTS[self.cfg.cli]:
                 _log("ERROR", f"agent identity mismatch: CLI '{self.cfg.cli}' cannot act as '{self.cfg.agent}'")
-                return 1
+                return 1, out_file
 
         cmd = _build_cli_cmd(self.cfg.cli, self.cfg.project_root, env)
         _log("INFO", f"running CLI {self.cfg.cli} → {out_file}")
@@ -425,7 +523,7 @@ class PersistentWorker:
                         env=env,
                         check=False,
                     )
-                    return result.returncode
+                    return result.returncode, out_file
                 except subprocess.TimeoutExpired:
                     with open(out_file, "ab") as f:
                         f.write(
@@ -433,7 +531,7 @@ class PersistentWorker:
                             f" for {self.cfg.cli}\n".encode("utf-8")
                         )
                     _log("ERROR", f"CLI timeout after {self.cfg.cli_timeout}s")
-                    return 124
+                    return 124, out_file
         finally:
             if prompt_fd is not None:
                 try:
@@ -509,6 +607,8 @@ class PersistentWorker:
 
     def _consume_budget(self, tokens_consumed: int) -> bool:
         """Check daily call and token budgets. Returns False if exhausted."""
+        from orchestrator.budget import consume_call
+
         budget_root = Path(self.cfg.log_dir)
         key = f"worker-{self.cfg.cli}-{self.cfg.agent}"
         safe_key = key.replace("/", "_")
@@ -517,15 +617,9 @@ class PersistentWorker:
         day = time.strftime("%Y%m%d", time.localtime(now))
         hour = time.strftime("%Y%m%d%H", time.localtime(now))
 
-        # --- Daily Call Budget ---
-        daily_call_budget_file = str(budget_root / f".budget-{safe_key}-{day}.call_count.json")
-        daily_call_state = _get_budget_state(daily_call_budget_file)
-
-        if daily_call_state.get("last_reset_day") != day:
-            daily_call_state = {"call_count": 0, "token_count": 0, "last_reset_day": day}
-
+        # --- Daily Call Budget (unified module with file locking) ---
         if self.cfg.daily_call_budget > 0:
-            if daily_call_state["call_count"] >= self.cfg.daily_call_budget:
+            if not consume_call(key, self.cfg.daily_call_budget, str(budget_root)):
                 _log("WARN", f"daily call budget exhausted ({self.cfg.daily_call_budget})")
                 return False
 
@@ -559,10 +653,8 @@ class PersistentWorker:
                      f"current={hourly_token_state['token_count']} consumed={tokens_consumed}")
                 return False
 
-        # If all budgets are fine, increment and save.
-        daily_call_state["call_count"] += 1
-        _set_budget_state(daily_call_budget_file, daily_call_state)
-
+        # If all budgets are fine, increment and save (token budgets only;
+        # daily call budget was already incremented by consume_call above).
         daily_token_state["token_count"] += tokens_consumed
         _set_budget_state(daily_token_budget_file, daily_token_state)
 
@@ -573,16 +665,37 @@ class PersistentWorker:
         return True
 
     def _mark_budget_exhausted(self, budget_type: str) -> None:
-        """Creates a marker file to indicate budget exhaustion."""
-        marker_path = _get_token_exhaustion_marker_path(str(self.cfg.log_dir), self.cfg.agent)
+        """Creates a marker file to indicate budget exhaustion.
+
+        Writes to pid_dir (not log_dir) so the supervisor monitor can detect it
+        via ``_is_budget_window_active``.  Uses the same JSON format as the shell
+        ``write_budget_exhaustion_marker`` in common.sh.
+        """
+        from datetime import datetime as _dt, timedelta, timezone as _tz
+        process_key = self.cfg.process_name
+        pid_dir = self.cfg.pid_dir
+        os.makedirs(pid_dir, exist_ok=True)
+        marker_path = os.path.join(pid_dir, f"{process_key}.token_budget_exhausted")
+        now_utc = _dt.now(_tz.utc)
+        if budget_type == "hourly":
+            next_window = (now_utc + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+        else:
+            next_window = (now_utc + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        marker_data = {
+            "process_key": process_key,
+            "window": budget_type,
+            "exhausted_at": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "next_window_at": next_window.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
         try:
-            Path(marker_path).touch()
+            with open(marker_path, "w") as f:
+                json.dump(marker_data, f)
             _log("INFO", f"created {budget_type} budget exhaustion marker: {marker_path}")
             # Emit an orchestrator event for budget exhaustion.
             orch = self._get_orchestrator()
             orch.publish_event(
+                event_type="agent.budget_exhausted",
                 source=self.cfg.agent,
-                type="agent.budget_exhausted",
                 payload={
                     "agent": self.cfg.agent,
                     "budget_type": budget_type,
@@ -629,10 +742,43 @@ class PersistentWorker:
             _log("WARN", f"auto-resume from roadmap failed: {e}")
             return 0
 
+    # -- task release on exit -----------------------------------------------
+
+    def _release_tasks(self) -> int:
+        """Reset owned in_progress tasks to 'assigned' with cleared lease.
+
+        Called on worker exit so tasks don't stay stuck for 30 min until
+        stale-requeue kicks in.  Returns number of tasks released.
+        """
+        released = 0
+        try:
+            tasks_path = Path(self.cfg.project_root) / "state" / "tasks.json"
+            if not tasks_path.exists():
+                return 0
+            raw = tasks_path.read_text(encoding="utf-8")
+            tasks = json.loads(raw)
+            if not isinstance(tasks, list):
+                return 0
+            changed = False
+            for task in tasks:
+                if (str(task.get("owner", "")).strip() == self.cfg.agent
+                        and str(task.get("status", "")).strip().lower() == "in_progress"):
+                    task["status"] = "assigned"
+                    task["lease"] = None
+                    changed = True
+                    released += 1
+                    _log("INFO", f"released task {task.get('id')} back to assigned")
+            if changed:
+                tasks_path.write_text(json.dumps(tasks, indent=2), encoding="utf-8")
+        except Exception as e:
+            _log("WARN", f"_release_tasks failed: {e}")
+        return released
+
     # -- session metrics ----------------------------------------------------
 
     def _emit_session_metrics(self, exit_reason: str) -> None:
         """Publish session summary event for observability."""
+        self._release_tasks()
         uptime = time.time() - self._session_start
         _log("INFO",
              f"session metrics: tasks={self._tasks_completed} cycles={self._cycle}"
@@ -664,10 +810,11 @@ class PersistentWorker:
              f"persistent worker starting agent={self.cfg.agent} cli={self.cfg.cli}"
              f" lane={self.cfg.lane} team={self.cfg.team_id or 'none'}")
 
-        # Graceful shutdown on SIGTERM/SIGINT.
+        # Graceful shutdown on SIGTERM/SIGINT — release tasks before exit.
         def _handle_signal(signum: int, frame: Any) -> None:
             _log("INFO", f"received signal {signum}, shutting down")
             self._shutdown = True
+            self._release_tasks()
 
         signal_mod.signal(signal_mod.SIGTERM, _handle_signal)
         signal_mod.signal(signal_mod.SIGINT, _handle_signal)
@@ -727,12 +874,20 @@ class PersistentWorker:
 
             # Build stripped-down prompt and execute.
             prompt = self._build_task_prompt(task)
-            rc = self._run_cli(prompt)
+            rc, out_file = self._run_cli(prompt)
+
+            # Check for capacity/rate-limit errors before treating as generic failure.
+            if rc != 0 and self._detect_capacity_error(out_file):
+                _log("WARN", f"task={task_id} hit capacity error (rc={rc})")
+                self._handle_capacity_error()
+                # Don't increment consecutive_failures for capacity errors.
+                continue
 
             if rc == 0:
                 _log("INFO", f"task={task_id} completed rc=0")
                 self._consecutive_failures = 0
                 self._tasks_completed += 1
+                self._clear_capacity_errors()
             else:
                 _log("ERROR", f"task={task_id} failed rc={rc}")
                 self._consecutive_failures += 1
@@ -775,6 +930,8 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> PersistentWorke
     parser.add_argument("--project-root", default="")
     parser.add_argument("--repo-root", default="")
     parser.add_argument("--log-dir", default="")
+    parser.add_argument("--pid-dir", default="")
+    parser.add_argument("--process-name", default="")
     parser.add_argument("--cli-timeout", type=int, default=600)
     parser.add_argument("--max-consecutive-failures", type=int, default=3)
     parser.add_argument("--signal-poll-interval", type=int, default=2)
@@ -798,6 +955,8 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> PersistentWorke
         project_root=args.project_root,
         repo_root=args.repo_root,
         log_dir=args.log_dir,
+        pid_dir=args.pid_dir,
+        process_name=args.process_name,
         cli_timeout=args.cli_timeout,
         max_consecutive_failures=args.max_consecutive_failures,
         signal_poll_interval=args.signal_poll_interval,

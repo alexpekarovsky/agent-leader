@@ -353,6 +353,28 @@ consume_daily_budget() {
     return 0
   fi
   mkdir -p "$root"
+  # Use unified budget module (orchestrator/budget.py) via inline Python call.
+  # Falls back to legacy shell logic if the module is not importable.
+  local repo_root="${ROOT_DIR:-${ORCHESTRATOR_ROOT:-}}"
+  if [[ -n "$repo_root" ]]; then
+    # Exit code: 0 = within budget, 1 = exhausted, 2 = import failed (use fallback).
+    python3 - "$repo_root" "$key" "$budget" "$root" <<'PYBUDGET' 2>/dev/null
+import sys
+repo_root, key, limit_s, budget_dir = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+sys.path.insert(0, repo_root)
+try:
+    from orchestrator.budget import consume_call
+    ok = consume_call(key, int(limit_s), budget_dir)
+    sys.exit(0 if ok else 1)
+except ImportError:
+    sys.exit(2)
+PYBUDGET
+    local pyrc=$?
+    if (( pyrc == 0 )); then return 0; fi
+    if (( pyrc == 1 )); then return 1; fi
+    # pyrc == 2: import failed, fall through to legacy shell logic.
+  fi
+  # Legacy fallback: plain shell budget tracking.
   local stamp
   stamp="$(date '+%Y%m%d')"
   local safe_key
@@ -361,8 +383,7 @@ consume_daily_budget() {
   local lock_file="${file}.lock"
   local rc=0
   (
-    # Bug 3: flock around read-check-write to prevent budget race condition
-    flock -x 9 2>/dev/null || true  # Graceful fallback if flock unavailable
+    flock -x 9 2>/dev/null || true
     local current=0
     if [[ -f "$file" ]]; then
       current="$(cat "$file" 2>/dev/null || echo 0)"

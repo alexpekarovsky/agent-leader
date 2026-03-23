@@ -56,7 +56,7 @@ class SupervisorConfig:
     manager_interval: int = 20
     worker_interval: int = 25
     idle_backoff: str = "30,60,120,300,900"
-    max_idle_cycles: int = 30
+    max_idle_cycles: int = 200
     daily_call_budget: int = 100
     daily_token_budget: int = 1000000     # Hard daily token ceiling. 0 = disabled.
     hourly_token_budget: int = 100000     # Hard hourly token ceiling. 0 = disabled.
@@ -83,6 +83,7 @@ class SupervisorConfig:
     persistent_workers: bool = True  # Use persistent worker sessions (no cold-start).
     max_tasks_per_session: int = 5    # Max tasks per persistent CLI session.
     extra_workers: List[ExtraWorker] = field(default_factory=list)
+    mcp_auto_manager_active: bool = False  # When True, suppress shell manager_loop (MCP handles it).
     max_restarts: int = 5
     backoff_base: int = 10
     backoff_max: int = 120
@@ -142,6 +143,8 @@ class SupervisorConfig:
             f" --project-root {project_root}"
             f" --repo-root {self.repo_root}"
             f" --log-dir {self.log_dir}"
+            f" --pid-dir {self.pid_dir}"
+            f" --process-name {name}"
             f" --cli-timeout {self.worker_cli_timeout}"
             f" --heartbeat-interval {self.worker_interval}"
             f" --idle-backoff {self.idle_backoff}"
@@ -214,13 +217,20 @@ def _is_alive(pid: int) -> bool:
 # Topology
 # ---------------------------------------------------------------------------
 
-def proc_enabled(name: str, leader_agent: str, claude_lanes: int = 3) -> bool:
+def proc_enabled(name: str, leader_agent: str, claude_lanes: int = 3,
+                  mcp_auto_manager_active: bool = False) -> bool:
     """Return whether *name* should run given *leader_agent*.
 
     *claude_lanes* controls how many parallel Claude workers are active (1-3).
     ``claude`` is always enabled (when leader permits), ``claude_2`` requires
     ``claude_lanes >= 2``, and ``claude_3`` requires ``claude_lanes >= 3``.
+
+    When *mcp_auto_manager_active* is True the MCP in-process auto_manager_loop
+    handles all manager duties, so the shell ``manager_loop.sh`` is disabled to
+    avoid redundant (10K+ token) CLI spawns.
     """
+    if name == "manager" and mcp_auto_manager_active:
+        return False
     if name in ("claude", "claude_2", "claude_3"):
         # Claude workers run alongside claude_code leader — leader is manager-only,
         # workers are separate headless processes with their own instance IDs.
@@ -429,7 +439,7 @@ class Supervisor:
         return _is_alive(pid)
 
     def _start_proc(self, name: str) -> None:
-        if not proc_enabled(name, self.cfg.leader_agent, self.cfg.claude_lanes):
+        if not proc_enabled(name, self.cfg.leader_agent, self.cfg.claude_lanes, self.cfg.mcp_auto_manager_active):
             _log("INFO", f"skipping disabled process {name} (leader_agent={self.cfg.leader_agent})")
             return
         if self._is_running(name):
@@ -494,7 +504,7 @@ class Supervisor:
             except (ValueError, OSError):
                 pass
 
-        if not proc_enabled(name, self.cfg.leader_agent, self.cfg.claude_lanes):
+        if not proc_enabled(name, self.cfg.leader_agent, self.cfg.claude_lanes, self.cfg.mcp_auto_manager_active):
             return ProcessStatus(name, "disabled", None, restarts, "unknown", "no_tasks")
 
         pid = _read_pid(self.cfg.pid_dir, name)
@@ -612,7 +622,7 @@ class Supervisor:
         os.makedirs(self.cfg.pid_dir, exist_ok=True)
         _log("INFO", f"starting all processes (project={self.cfg.project_root})")
         for name in self._procs:
-            if proc_enabled(name, self.cfg.leader_agent, self.cfg.claude_lanes):
+            if proc_enabled(name, self.cfg.leader_agent, self.cfg.claude_lanes, self.cfg.mcp_auto_manager_active):
                 self._start_proc(name)
             else:
                 self._stop_proc(name)
@@ -694,14 +704,44 @@ class Supervisor:
             print(f"Cleaned {cleaned} file(s).")
 
     def monitor(self, interval: int = 30) -> None:
-        """Continuously check for dead processes and restart them."""
+        """Continuously check for dead processes and restart them.
+
+        Includes a circuit breaker: if total restarts across ALL processes
+        exceed ``max_restarts * num_enabled_processes`` within a 10-minute
+        rolling window, the supervisor stops all processes and emits a
+        ``swarm.circuit_breaker`` event to prevent infinite restart loops.
+        """
+        import json as _json
+
         _log("INFO", f"Starting supervisor monitor loop (interval={interval}s)")
+
+        # Circuit breaker state: list of (timestamp, process_name) for recent restarts.
+        _circuit_breaker_window: list = []
+        _CIRCUIT_BREAKER_WINDOW_SECONDS = 600  # 10 minutes
+
+        # Health checkpoint state
+        _last_health_checkpoint: float = time.time()
+        _HEALTH_CHECKPOINT_INTERVAL = 900  # 15 minutes
+
         try:
             while True:
+                now = time.time()
+
+                # -- Health checkpoint (Fix 15) --------------------------------
+                if now - _last_health_checkpoint >= _HEALTH_CHECKPOINT_INTERVAL:
+                    self._emit_health_checkpoint(_circuit_breaker_window)
+                    _last_health_checkpoint = now
+
+                # -- Prune stale circuit breaker entries ------------------------
+                _circuit_breaker_window = [
+                    (ts, pname) for ts, pname in _circuit_breaker_window
+                    if now - ts < _CIRCUIT_BREAKER_WINDOW_SECONDS
+                ]
+
                 for name in self._procs:
-                    if not proc_enabled(name, self.cfg.leader_agent, self.cfg.claude_lanes):
+                    if not proc_enabled(name, self.cfg.leader_agent, self.cfg.claude_lanes, self.cfg.mcp_auto_manager_active):
                         continue
-                    
+
                     ps = self._status_proc(name)
                     if ps.state == "dead":
                         # Skip restart if token budget is exhausted and window is still active.
@@ -715,24 +755,123 @@ class Supervisor:
                             _log("INFO", f"Budget window expired for {name}, cleared marker — allowing restart")
                         _log("WARN", f"Detected dead process: {name} (pid={ps.pid})")
                         if ps.restarts < self.cfg.max_restarts:
+                            # -- Circuit breaker check -------------------------
+                            num_enabled = sum(
+                                1 for p in self._procs
+                                if proc_enabled(p, self.cfg.leader_agent, self.cfg.claude_lanes, self.cfg.mcp_auto_manager_active)
+                            )
+                            cb_threshold = self.cfg.max_restarts * num_enabled
+                            if len(_circuit_breaker_window) >= cb_threshold:
+                                _log("ERROR",
+                                     f"CIRCUIT BREAKER: {len(_circuit_breaker_window)} total restarts "
+                                     f"in {_CIRCUIT_BREAKER_WINDOW_SECONDS}s (threshold={cb_threshold}). "
+                                     f"Stopping all processes.")
+                                try:
+                                    self.orchestrator.publish_event(
+                                        event_type="swarm.circuit_breaker",
+                                        source="supervisor",
+                                        payload={
+                                            "total_restarts": len(_circuit_breaker_window),
+                                            "threshold": cb_threshold,
+                                            "window_seconds": _CIRCUIT_BREAKER_WINDOW_SECONDS,
+                                            "recent_restarts": [
+                                                {"timestamp": ts, "process": pn}
+                                                for ts, pn in _circuit_breaker_window[-10:]
+                                            ],
+                                        },
+                                    )
+                                except Exception:
+                                    pass
+                                self.stop()
+                                return
+
                             # Calculate backoff: base * (2 ^ restarts)
                             delay = min(self.cfg.backoff_base * (2 ** ps.restarts), self.cfg.backoff_max)
                             _log("INFO", f"Restarting {name} in {delay}s (restart count={ps.restarts + 1}/{self.cfg.max_restarts})")
                             time.sleep(delay)
-                            
+
                             self._start_proc(name)
                             # Increment restart count
                             new_count = ps.restarts + 1
                             _restart_count_file(self.cfg.pid_dir, name).write_text(str(new_count))
+                            _circuit_breaker_window.append((time.time(), name))
                         else:
                             _log(
-                                "ERROR", 
+                                "ERROR",
                                 f"Process {name} reached max restarts ({self.cfg.max_restarts}). Manual intervention required."
                             )
-                
+
                 time.sleep(interval)
         except KeyboardInterrupt:
             _log("INFO", "Monitor loop stopped by user.")
+
+    # -- health checkpoint --------------------------------------------------
+
+    def _emit_health_checkpoint(self, recent_restarts: list = None) -> None:
+        """Emit a ``swarm.health_checkpoint`` event with current swarm health summary.
+
+        Called every 15 minutes from the monitor loop for overnight diagnostics.
+        """
+        if recent_restarts is None:
+            recent_restarts = []
+        try:
+            processes_alive = 0
+            processes_dead = 0
+            total_restarts = 0
+            for name in self._procs:
+                if not proc_enabled(name, self.cfg.leader_agent, self.cfg.claude_lanes, self.cfg.mcp_auto_manager_active):
+                    continue
+                ps = self._status_proc(name)
+                if ps.state == "running":
+                    processes_alive += 1
+                elif ps.state in ("dead", "stopped"):
+                    processes_dead += 1
+                total_restarts += ps.restarts
+
+            # Gather task status counts from orchestrator.
+            tasks_by_status: Dict[str, int] = {}
+            try:
+                tasks = self.orchestrator.list_tasks()
+                for t in tasks:
+                    status = str(t.get("status", "unknown"))
+                    tasks_by_status[status] = tasks_by_status.get(status, 0) + 1
+            except Exception:
+                pass
+
+            # Budget remaining: check if any budget markers exist.
+            budget_remaining = True
+            for name in self._procs:
+                if _is_budget_window_active(self.cfg.pid_dir, name):
+                    budget_remaining = False
+                    break
+
+            uptime_seconds = 0
+            supervisor_pid_file = _pid_file(self.cfg.pid_dir, "supervisor")
+            if supervisor_pid_file.exists():
+                try:
+                    uptime_seconds = int(time.time() - supervisor_pid_file.stat().st_mtime)
+                except OSError:
+                    pass
+
+            payload = {
+                "processes_alive": processes_alive,
+                "processes_dead": processes_dead,
+                "tasks_by_status": tasks_by_status,
+                "budget_remaining": budget_remaining,
+                "uptime_seconds": uptime_seconds,
+                "total_restarts": total_restarts,
+                "recent_restart_count": len(recent_restarts),
+            }
+            self.orchestrator.publish_event(
+                event_type="swarm.health_checkpoint",
+                source="supervisor",
+                payload=payload,
+            )
+            _log("INFO",
+                 f"health checkpoint: alive={processes_alive} dead={processes_dead} "
+                 f"restarts={total_restarts} tasks={tasks_by_status}")
+        except Exception as e:
+            _log("WARN", f"health checkpoint failed: {e}")
 
     # -- JSON-friendly status for MCP tools ---------------------------------
 
