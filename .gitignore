@@ -42,6 +42,7 @@ state/
 decisions/
 saves/
 .autopilot-logs/
+.autopilot-pids/
 .venv/
 .pytest_cache/
 agatha-quest/

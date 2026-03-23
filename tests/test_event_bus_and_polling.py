@@ -475,7 +475,10 @@ class EventDrivenWakeupTests(unittest.TestCase):
 
     def test_supervisor_event_driven_flag(self) -> None:
         from orchestrator.supervisor import SupervisorConfig, proc_cmd
-        cfg = SupervisorConfig(event_driven=True)
+        # persistent_workers=False so shell worker_loop.sh path is used which
+        # includes --event-driven; the persistent_worker Python path uses
+        # signal-file wakeups instead.
+        cfg = SupervisorConfig(event_driven=True, persistent_workers=False)
         cfg.finalise()
         for name in ("claude", "gemini", "codex_worker", "wingman"):
             self.assertIn("--event-driven", proc_cmd(name, cfg))
