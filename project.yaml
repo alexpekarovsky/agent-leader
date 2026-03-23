@@ -454,18 +454,41 @@ roadmap:
           configurable auto_approve_policy in policy.json.
         tags: [orchestration, quality, autonomy, open-swe-inspired]
       - id: stats-persistence-and-tui
-        title: "Daily/Weekly/Monthly statistics — persistent storage and TUI display"
+        title: "Production capacity dashboard — real-time throughput math in TUI"
         effort: M
         status: backlog
         details: >
-          Store task/commit/LOC/budget stats in state/stats_history.jsonl with daily
-          snapshots. Each entry: {date, tasks_done, commits, loc_added, loc_deleted,
-          loc_net, budget_used, budget_by_process, agent_breakdown, bugs_found,
-          bugs_fixed, avg_task_time, throughput_per_hour}. TUI shows daily/weekly/monthly
-          rollups in Code Output panel. Expose via orchestrator_status as
-          stats_daily/stats_weekly/stats_monthly fields. Lumen can read this for
-          dashboard display and Telegram /sprint summary reports.
-        tags: [analytics, tui, persistence, statistics]
+          Show the full production math in TUI so operators can see capacity, bottlenecks,
+          and budget health at a glance. Three sections:
+
+          THROUGHPUT (live):
+            LOC/hour actual vs target (e.g. 750/h actual → 100K/day target = 13% of goal)
+            Tasks/hour actual (per worker and total)
+            Commits/hour actual
+            LOC/task average (trends up = good, down = bloat)
+            Calls/task average (trends down = more efficient)
+
+          CAPACITY PLANNING:
+            Target: 100,000 LOC/day
+            Tasks needed: ~134 (at current LOC/task avg)
+            Calls needed: ~400 worker + ~200 manager + ~134 wingman = ~734 total
+            Budget remaining: 600/1000 (progress bar)
+            Budget burn rate: 42 calls/hour → exhausts in 14h
+            Workers active: 4/5 → bottleneck: codex offline
+            ETA to target: 8h at current rate
+
+          DAILY/WEEKLY/MONTHLY (persistent in state/stats_history.jsonl):
+            Today:   12 tasks | 15 commits | +3,200/-100 LOC | 42 calls used
+            This week: 89 tasks | 102 commits | +22,400/-800 LOC | 312 calls
+            This month: 467 tasks | 291 commits | +29,135/-1,199 LOC
+
+          Per-agent breakdown:
+            Claude:  8 tasks/day | 2,100 LOC/day | 0.3% bug rate | avg 12min/task
+            Gemini: 15 tasks/day | 1,800 LOC/day | 0.5% bug rate | avg 4min/task
+            Codex:   0 (offline — tokens exhausted)
+
+          Expose all via orchestrator_status for Lumen dashboard and Telegram reports.
+        tags: [analytics, tui, persistence, statistics, capacity-planning]
 
       - id: model-performance-analytics
         title: "Model performance analytics — per-model task stats for smart routing"
