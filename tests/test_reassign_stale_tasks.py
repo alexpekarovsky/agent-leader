@@ -235,8 +235,9 @@ class ReassignBlockedTests(unittest.TestCase):
 class ReassignEdgeCaseTests(unittest.TestCase):
     """Edge case tests for reassignment."""
 
-    def test_no_active_workers_no_reassignment(self) -> None:
-        """When no active workers exist, tasks should not be reassigned."""
+    def test_no_active_workers_requeues_to_assigned(self) -> None:
+        """When no active workers exist, stale tasks are reset to 'assigned' so
+        they become claimable when a worker comes back online."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             orch = _make_orch(root)
@@ -250,7 +251,13 @@ class ReassignEdgeCaseTests(unittest.TestCase):
                 source="codex", stale_after_seconds=600,
             )
 
-            self.assertEqual(0, result["reassigned_count"])
+            self.assertEqual(1, result["reassigned_count"])
+            self.assertIsNone(result["reassigned"][0]["to_owner"])
+            self.assertEqual("owner_stale_no_workers", result["reassigned"][0]["reason"])
+            # Verify the task status was reset to assigned.
+            tasks = json.loads((root / "state" / "tasks.json").read_text())
+            task = next(t for t in tasks if t["id"] == task_id)
+            self.assertEqual("assigned", task["status"])
 
     def test_no_tasks_returns_empty(self) -> None:
         """With no tasks, result should show zero reassignments."""

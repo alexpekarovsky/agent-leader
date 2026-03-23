@@ -1253,6 +1253,29 @@ class Orchestrator:
                     tasks=tasks,
                 )
                 if not new_owner:
+                    # No active workers available to reassign to, but the
+                    # current owner is stale — reset to "assigned" with cleared
+                    # lease so the task becomes claimable when a worker returns.
+                    old_owner = owner
+                    task["status"] = "assigned"
+                    task["updated_at"] = self._now()
+                    task["lease"] = None
+                    task["reassigned_from"] = old_owner
+                    task["reassigned_reason"] = f"owner stale, no active workers (> {threshold}s)"
+                    task["degraded_comm"] = True
+                    task["degraded_comm_reason"] = "stale owner requeued (no active workers)"
+                    changed = True
+
+                    payload = {
+                        "task_id": task.get("id"),
+                        "from_owner": old_owner,
+                        "to_owner": None,
+                        "reason": "owner_stale_no_workers",
+                        "threshold_seconds": threshold,
+                        "owner_diagnostic": owner_diag,
+                    }
+                    reassigned.append(payload)
+                    self.bus.emit("task.requeued_no_workers", payload, source=source)
                     continue
 
                 old_owner = owner
@@ -3030,6 +3053,14 @@ class Orchestrator:
             if connected and not is_manager_connect
             else None
         )
+        # If no new task was claimed, check for an existing in_progress task
+        # owned by this agent (e.g. from a previous crash/restart).  Without
+        # this, the worker would spin in an idle→connect→no-claim loop until
+        # the stale-requeue timer fires (~30 min), burning tokens.
+        if auto_claimed is None and connected and not is_manager_connect:
+            in_progress = self.list_tasks_for_owner(owner=agent, status="in_progress")
+            if in_progress:
+                auto_claimed = in_progress[0]
         reason = verification.get("reason")
         reason_message = self._connect_to_leader_reason_message(
             reason=str(reason) if reason is not None else "",
@@ -4186,6 +4217,40 @@ class Orchestrator:
         candidates = [name for name in active_names if name and name != owner]
         if not candidates:
             return None
+
+        # Read agent metadata to detect degraded agents.
+        _DEGRADED_STATUSES = {"budget_exhausted", "capacity_degraded"}
+        agents_data = self._read_json(self.agents_path)
+        if not isinstance(agents_data, dict):
+            agents_data = {}
+
+        def _agent_degraded_status(agent: str) -> Optional[str]:
+            entry = agents_data.get(agent, {})
+            meta = entry.get("metadata", {}) if isinstance(entry.get("metadata"), dict) else {}
+            status = str(meta.get("status", "")).strip()
+            if status in _DEGRADED_STATUSES:
+                return status
+            activity = str(meta.get("task_activity", "")).strip()
+            if activity in _DEGRADED_STATUSES:
+                return activity
+            return None
+
+        def _agent_capacity_errors(agent: str) -> int:
+            entry = agents_data.get(agent, {})
+            meta = entry.get("metadata", {}) if isinstance(entry.get("metadata"), dict) else {}
+            try:
+                return int(meta.get("capacity_errors", 0))
+            except (ValueError, TypeError):
+                return 0
+
+        # Exclude degraded agents from candidates.
+        healthy = [c for c in candidates if not _agent_degraded_status(c)]
+        if healthy:
+            candidates = healthy
+        else:
+            # All agents degraded — fall back to the least-degraded one
+            # (lowest capacity_errors count).
+            candidates = sorted(candidates, key=_agent_capacity_errors)
 
         # Prefer policy-routed owner for this workstream if active.
         preferred = self.policy.task_owner_for(str(task.get("workstream", "default")))

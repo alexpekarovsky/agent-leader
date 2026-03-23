@@ -298,7 +298,7 @@ class TestPersistentWorkerAutoResume(unittest.TestCase):
         self.worker.cfg.max_idle_cycles = 1
 
         cli_calls = []
-        self.worker._run_cli = lambda prompt: (cli_calls.append(prompt), 0)[1]
+        self.worker._run_cli = lambda prompt: ((cli_calls.append(prompt), 0)[1], "/dev/null")
         self.worker._wait_for_signal = lambda: False
 
         call_count = [0]

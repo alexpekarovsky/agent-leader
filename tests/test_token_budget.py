@@ -282,10 +282,14 @@ class PersistentWorkerBudgetTests(unittest.TestCase):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.log_dir = Path(self.tmpdir.name) / "logs"
         self.log_dir.mkdir()
+        self.pid_dir = Path(self.tmpdir.name) / "pids"
+        self.pid_dir.mkdir()
         self.cfg = PersistentWorkerConfig(
             agent="test-agent",
             cli="test-cli",
+            process_name="test-agent",
             log_dir=str(self.log_dir),
+            pid_dir=str(self.pid_dir),
             project_root=self.tmpdir.name,
             daily_token_budget=100,  # Set a low budget for testing
             hourly_token_budget=100,
@@ -318,7 +322,7 @@ class PersistentWorkerBudgetTests(unittest.TestCase):
         # Verify event was published
         self.assertEqual(len(self.published_events), 1)
         event = self.published_events[0]
-        self.assertEqual(event["type"], "agent.budget_exhausted")
+        self.assertEqual(event["event_type"], "agent.budget_exhausted")
         self.assertEqual(event["source"], self.cfg.agent)
         self.assertEqual(event["payload"]["budget_type"], "daily")
 
@@ -334,7 +338,7 @@ class PersistentWorkerBudgetTests(unittest.TestCase):
         # Verify event was published
         self.assertEqual(len(self.published_events), 1)
         event = self.published_events[0]
-        self.assertEqual(event["type"], "agent.budget_exhausted")
+        self.assertEqual(event["event_type"], "agent.budget_exhausted")
         self.assertEqual(event["source"], self.cfg.agent)
         self.assertEqual(event["payload"]["budget_type"], "hourly")
 

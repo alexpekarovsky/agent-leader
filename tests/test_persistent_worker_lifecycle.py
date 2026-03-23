@@ -145,7 +145,7 @@ class TestPersistentWorkerTaskChaining(TestCase):
                 return t
             return None
 
-        def _mock_run_cli(prompt: str) -> int:
+        def _mock_run_cli(prompt: str) -> tuple:
             cli_prompts.append(prompt)
             # Mark the task as done on disk.
             for line in prompt.splitlines():
@@ -157,7 +157,7 @@ class TestPersistentWorkerTaskChaining(TestCase):
                             ct["status"] = "done"
                     tasks_path.write_text(json.dumps(current), encoding="utf-8")
                     break
-            return 0
+            return 0, "/dev/null"
 
         worker._claim_next_task = _mock_claim
         worker._run_cli = _mock_run_cli
@@ -189,7 +189,7 @@ class TestPersistentWorkerTaskChaining(TestCase):
             return None
 
         worker._claim_next_task = _mock_claim
-        worker._run_cli = lambda prompt: 1  # Always fail.
+        worker._run_cli = lambda prompt: (1, "/dev/null")  # Always fail.
         worker._wait_for_signal = lambda: False
         rc = worker.run()
 
@@ -223,7 +223,7 @@ class TestPersistentWorkerTaskChaining(TestCase):
                 return t
             return None
 
-        def _alternate_cli(prompt: str) -> int:
+        def _alternate_cli(prompt: str) -> tuple:
             call_count[0] += 1
             # Mark done on disk.
             for line in prompt.splitlines():
@@ -235,7 +235,7 @@ class TestPersistentWorkerTaskChaining(TestCase):
                             ct["status"] = "done"
                     tasks_path.write_text(json.dumps(current), encoding="utf-8")
                     break
-            return 1 if call_count[0] == 1 else 0
+            return (1 if call_count[0] == 1 else 0), "/dev/null"
 
         worker._claim_next_task = _mock_claim
         worker._run_cli = _alternate_cli
@@ -278,7 +278,7 @@ class TestMaxTasksPerSession(TestCase):
             return None
 
         worker._claim_next_task = _mock_claim
-        worker._run_cli = lambda prompt: 0
+        worker._run_cli = lambda prompt: (0, "/dev/null")
         worker._wait_for_signal = lambda: False
         rc = worker.run()
 
@@ -311,7 +311,7 @@ class TestMaxTasksPerSession(TestCase):
             return None
 
         worker._claim_next_task = _mock_claim
-        worker._run_cli = lambda prompt: 0
+        worker._run_cli = lambda prompt: (0, "/dev/null")
         worker._wait_for_signal = lambda: False
         rc = worker.run()
 
@@ -363,7 +363,7 @@ class TestSessionMetrics(TestCase):
         tasks_path.write_text(json.dumps([task]), encoding="utf-8")
 
         worker._claim_next_task = lambda: task
-        worker._run_cli = lambda prompt: 0
+        worker._run_cli = lambda prompt: (0, "/dev/null")
         worker._wait_for_signal = lambda: False
         rc = worker.run()
         self.assertEqual(rc, 0)
