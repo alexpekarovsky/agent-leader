@@ -952,6 +952,76 @@ class DashboardTuiTests(unittest.TestCase):
             gemini_rows = [a for a in snap.active_agents if a["agent"] == "gemini"]
             self.assertEqual(len(gemini_rows), 0, "Offline agent with no running processes should be hidden")
 
+    def test_stale_agents_without_processes_hidden(self) -> None:
+        """Agents with stale heartbeat (>10min) and no running processes should
+        be filtered from the roster — not just fully-offline ones."""
+        from datetime import timedelta
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "state").mkdir(parents=True, exist_ok=True)
+            (root / "bus" / "reports").mkdir(parents=True, exist_ok=True)
+            (root / ".autopilot-logs").mkdir(parents=True, exist_ok=True)
+            (root / ".autopilot-pids").mkdir(parents=True, exist_ok=True)
+
+            project_root = "/tmp/my-project"
+            # 15 minutes ago → "stale" (between 600s and 1800s thresholds)
+            stale_ts = (mod._now_utc() - timedelta(minutes=15)).isoformat()
+
+            agents = {
+                "gemini": {
+                    "status": "active",
+                    "last_seen": stale_ts,
+                    "metadata": {"instance_id": "gemini#stale"},
+                },
+            }
+            (root / "state" / "tasks.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "blockers.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "bugs.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "agents.json").write_text(json.dumps(agents), encoding="utf-8")
+            (root / "bus" / "events.jsonl").write_text("", encoding="utf-8")
+
+            snap = mod.build_snapshot(project_root=project_root, root=root)
+            gemini_rows = [a for a in snap.active_agents if a["agent"] == "gemini"]
+            self.assertEqual(len(gemini_rows), 0, "Stale agent with no running processes should be hidden")
+
+    def test_stale_agent_with_live_process_still_visible(self) -> None:
+        """An agent with a stale heartbeat but a live process should remain
+        visible in the roster (process presence overrides stale heartbeat)."""
+        from datetime import timedelta
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "state").mkdir(parents=True, exist_ok=True)
+            (root / "bus" / "reports").mkdir(parents=True, exist_ok=True)
+            (root / ".autopilot-logs").mkdir(parents=True, exist_ok=True)
+            pid_dir = root / ".autopilot-pids"
+            pid_dir.mkdir(parents=True, exist_ok=True)
+
+            project_root = "/tmp/my-project"
+            stale_ts = (mod._now_utc() - timedelta(minutes=15)).isoformat()
+
+            agents = {
+                "gemini": {
+                    "status": "active",
+                    "last_seen": stale_ts,
+                    "metadata": {"instance_id": "gemini#stale-but-alive"},
+                },
+            }
+            (root / "state" / "tasks.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "blockers.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "bugs.json").write_text("[]", encoding="utf-8")
+            (root / "state" / "agents.json").write_text(json.dumps(agents), encoding="utf-8")
+            (root / "bus" / "events.jsonl").write_text("", encoding="utf-8")
+
+            # Simulate a live Gemini process
+            now_ts = mod._now_utc().timestamp()
+            pf = pid_dir / "gemini.pid"
+            pf.write_text(str(os.getpid()), encoding="utf-8")
+            os.utime(pf, (now_ts, now_ts))
+
+            snap = mod.build_snapshot(project_root=project_root, root=root)
+            gemini_rows = [a for a in snap.active_agents if a["agent"] == "gemini"]
+            self.assertEqual(len(gemini_rows), 1, "Stale agent with live process should remain visible")
+
 
 if __name__ == "__main__":
     unittest.main()

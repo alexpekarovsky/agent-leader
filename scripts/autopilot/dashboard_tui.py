@@ -805,9 +805,10 @@ def build_snapshot(project_root: str, root: Path, stale_seconds: int = 1800) -> 
         elif live_leader and agent != live_leader and effective_role == "Leader/Manager":
             effective_role = "Worker"
 
-        # Skip agents that are offline AND have no running processes — these are
-        # stale entries left over from previous sessions (fixes duplicate roster rows).
-        if heartbeat_state == "offline" and process_state == "down":
+        # Skip agents that are stale/offline/missing AND have no running processes —
+        # these are historical entries from previous sessions.  Only show agents
+        # with a recent heartbeat (active) or at least one live process.
+        if heartbeat_state != "active" and process_state == "down":
             continue
 
         active_agents.append(
