@@ -539,7 +539,7 @@ class Orchestrator:
             lease_owner_instance = explicit_instance_id or self._current_agent_instance_id_unlocked(owner)
             owner_scope = self._agent_project_scope_unlocked(owner)
             # Always re-read from disk under lock for multi-process safety.
-            tasks = self._read_json(self.tasks_path)
+            tasks = self._read_json(self.tasks_path, make_copy=True)
             overrides = self._read_json(self.claim_overrides_path, make_copy=True)
             if not isinstance(overrides, dict):
                 overrides = {}
@@ -816,7 +816,7 @@ class Orchestrator:
         task_id = report["task_id"]
         with self._state_lock():
             self._refresh_agent_presence_unlocked(str(report["agent"]))
-            tasks = self._read_json(self.tasks_path)
+            tasks = self._read_json(self.tasks_path, make_copy=True)
             task = next((item for item in tasks if item["id"] == task_id), None)
             if task is None:
                 raise ValueError(f"Task not found: {task_id}")
@@ -1556,7 +1556,7 @@ class Orchestrator:
         }
 
         with self._state_lock():
-            blockers = self._read_json_list(self.blockers_path)
+            blockers = self._read_json_list(self.blockers_path, make_copy=True)
             blockers.append(blocker)
             self._write_json(self.blockers_path, blockers)
         self.bus.emit(
@@ -1582,7 +1582,7 @@ class Orchestrator:
 
     def resolve_blocker(self, blocker_id: str, resolution: str, source: str) -> Dict[str, Any]:
         with self._state_lock():
-            blockers = self._read_json_list(self.blockers_path)
+            blockers = self._read_json_list(self.blockers_path, make_copy=True)
             blocker = next((item for item in blockers if item["id"] == blocker_id), None)
             if blocker is None:
                 raise ValueError(f"Blocker not found: {blocker_id}")
@@ -1763,7 +1763,7 @@ class Orchestrator:
         }
 
         with self._state_lock():
-            consults = self._read_json_list(self.consults_path)
+            consults = self._read_json_list(self.consults_path, make_copy=True)
             consults.append(consult)
             self._write_json(self.consults_path, consults)
 
@@ -1791,7 +1791,7 @@ class Orchestrator:
         or it can remain open for additional input.
         """
         with self._state_lock():
-            consults = self._read_json_list(self.consults_path)
+            consults = self._read_json_list(self.consults_path, make_copy=True)
             consult = next((c for c in consults if c["id"] == consult_id), None)
             if consult is None:
                 raise ValueError(f"Consult not found: {consult_id}")
@@ -1871,7 +1871,7 @@ class Orchestrator:
             created_by=created_by,
         )
         with self._state_lock():
-            stacks = self._read_json_list(self.pr_stacks_path)
+            stacks = self._read_json_list(self.pr_stacks_path, make_copy=True)
             stacks.append(stack)
             self._write_json(self.pr_stacks_path, stacks)
         self.bus.emit(
@@ -1893,7 +1893,7 @@ class Orchestrator:
     ) -> Dict[str, Any]:
         """Add a PR entry to an existing stack. Returns the new PR entry."""
         with self._state_lock():
-            stacks = self._read_json_list(self.pr_stacks_path)
+            stacks = self._read_json_list(self.pr_stacks_path, make_copy=True)
             stack = next((s for s in stacks if s["id"] == stack_id), None)
             if stack is None:
                 raise ValueError(f"PR stack not found: {stack_id}")
@@ -1923,7 +1923,7 @@ class Orchestrator:
         Returns a summary including any newly-ungated child PRs.
         """
         with self._state_lock():
-            stacks = self._read_json_list(self.pr_stacks_path)
+            stacks = self._read_json_list(self.pr_stacks_path, make_copy=True)
             stack = next((s for s in stacks if s["id"] == stack_id), None)
             if stack is None:
                 raise ValueError(f"PR stack not found: {stack_id}")
@@ -2076,7 +2076,7 @@ class Orchestrator:
 
         Must be called with _state_lock held.
         """
-        stacks = self._read_json_list(self.pr_stacks_path)
+        stacks = self._read_json_list(self.pr_stacks_path, make_copy=True)
         for stack in stacks:
             if stack.get("repo") != repo:
                 continue
@@ -2177,7 +2177,7 @@ class Orchestrator:
                             "pr_id": pr_entry["id"],
                             "pr_number": pr_number,
                         })
-                    stacks = self._read_json_list(self.pr_stacks_path) # Re-read all stacks to find the one that contains `current_stack` and update it
+                    stacks = self._read_json_list(self.pr_stacks_path, make_copy=True) # Re-read all stacks to find the one that contains `current_stack` and update it
                     for i, s in enumerate(stacks):
                         if s["id"] == current_stack["id"]:
                             stacks[i] = current_stack
@@ -2226,7 +2226,7 @@ class Orchestrator:
                                 ci_status=normalized_ci.get("state"),
                                 pr_number=pr_number, # Ensure pr_number is set if it wasn't before
                             )
-                            stacks = self._read_json_list(self.pr_stacks_path) # Re-read all stacks to find the one that contains `current_stack` and update it
+                            stacks = self._read_json_list(self.pr_stacks_path, make_copy=True) # Re-read all stacks to find the one that contains `current_stack` and update it
                             for i, s in enumerate(stacks):
                                 if s["id"] == current_stack["id"]:
                                     stacks[i] = current_stack
@@ -2255,7 +2255,7 @@ class Orchestrator:
                             ci_status=normalized_ci.get("state"),
                             pr_number=pr_entry.get("pr_number"),
                         )
-                        stacks = self._read_json_list(self.pr_stacks_path) # Re-read all stacks to find the one that contains `current_stack` and update it
+                        stacks = self._read_json_list(self.pr_stacks_path, make_copy=True) # Re-read all stacks to find the one that contains `current_stack` and update it
                         for i, s in enumerate(stacks):
                             if s["id"] == current_stack["id"]:
                                 stacks[i] = current_stack
@@ -3341,7 +3341,7 @@ class Orchestrator:
         return result
 
     def _close_bugs_for_task(self, task_id: str, note: str) -> None:
-        bugs = self._read_json_list(self.bugs_path)
+        bugs = self._read_json_list(self.bugs_path, make_copy=True)
         changed = False
         for bug in bugs:
             if bug.get("source_task") != task_id:
@@ -3422,7 +3422,7 @@ class Orchestrator:
         expected: str,
         actual: str,
     ) -> Dict[str, Any]:
-        bugs = self._read_json_list(self.bugs_path)
+        bugs = self._read_json_list(self.bugs_path, make_copy=True)
         bug_id = f"BUG-{uuid.uuid4().hex[:8]}"
         bug = {
             "id": bug_id,
@@ -3504,7 +3504,7 @@ class Orchestrator:
             action = "dry_run_github_issue_creation"
 
         with self._state_lock():
-            bugs = self._read_json_list(self.bugs_path)
+            bugs = self._read_json_list(self.bugs_path, make_copy=True)
             for b in bugs:
                 if b["id"] == bug_id:
                     b["github_issue"] = {
@@ -4215,8 +4215,8 @@ class Orchestrator:
         if not path.exists() or not isinstance(self._read_json(path), list):
             self._write_json(path, [])
 
-    def _read_json_list(self, path: Path) -> List[Dict[str, Any]]:
-        data = self._read_json(path)
+    def _read_json_list(self, path: Path, make_copy: bool = False) -> List[Dict[str, Any]]:
+        data = self._read_json(path, make_copy=make_copy)
         if isinstance(data, list):
             return data
         repaired: List[Dict[str, Any]] = []

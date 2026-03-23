@@ -137,6 +137,81 @@ class MtimeCacheTests(unittest.TestCase):
         self.assertEqual(cached_before[0]["status"], "in_progress",
                          "cache reference must not be mutated by reassign_stale_tasks")
 
+    def _register_operational_agent(self, name: str = "claude_code") -> None:
+        """Helper to register an agent with all required metadata fields."""
+        meta = {
+            "project_root": str(self.root), "cwd": str(self.root),
+            "verified": True, "same_project": True,
+            "client": "test", "model": "test", "permissions_mode": "auto",
+            "sandbox_mode": "off", "session_id": "s1", "connection_id": "c1",
+            "server_version": "1.0", "verification_source": "test",
+        }
+        agents = {name: {"status": "active", "last_seen": self.orch._now(),
+                          "metadata": meta}}
+        self.orch._write_json(self.orch.agents_path, agents)
+
+    def test_claim_next_task_does_not_corrupt_cache(self) -> None:
+        """claim_next_task mutates tasks; cache must stay pristine."""
+        task = {"id": "T-claim", "title": "claimable", "status": "assigned",
+                "owner": "claude_code", "updated_at": self.orch._now(),
+                "project_root": str(self.root), "project_name": self.root.name}
+        self.orch._write_json(self.orch.tasks_path, [task])
+        self._register_operational_agent()
+        # Warm cache — grab a read-only reference
+        cached_ref = self.orch._read_json(self.orch.tasks_path)
+        self.assertEqual(cached_ref[0]["status"], "assigned")
+        # Claim mutates the task to in_progress
+        claimed = self.orch.claim_next_task(owner="claude_code")
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed["status"], "in_progress")
+        # The read-only reference grabbed before must NOT be mutated
+        self.assertEqual(cached_ref[0]["status"], "assigned",
+                         "claim_next_task must not corrupt cached reference")
+
+    def test_ingest_report_does_not_corrupt_cache(self) -> None:
+        """ingest_report mutates task status; cache must stay pristine."""
+        task = {"id": "T-report", "title": "reportable", "status": "in_progress",
+                "owner": "claude_code", "updated_at": self.orch._now(),
+                "project_root": str(self.root), "project_name": self.root.name}
+        self.orch._write_json(self.orch.tasks_path, [task])
+        self._register_operational_agent()
+        # Warm cache
+        cached_ref = self.orch._read_json(self.orch.tasks_path)
+        self.assertEqual(cached_ref[0]["status"], "in_progress")
+        # Submit report
+        report = {
+            "task_id": "T-report",
+            "agent": "claude_code",
+            "status": "done",
+            "commit_sha": "abc123",
+            "test_summary": {"command": "pytest", "passed": 1, "failed": 0},
+        }
+        self.orch.ingest_report(report)
+        # Cached reference must be untouched
+        self.assertEqual(cached_ref[0]["status"], "in_progress",
+                         "ingest_report must not corrupt cached reference")
+
+    def test_read_json_list_make_copy(self) -> None:
+        """_read_json_list with make_copy=True returns independent copy."""
+        blocker = {"id": "BLK-1", "status": "open", "task_id": "T1"}
+        self.orch._write_json(self.orch.blockers_path, [blocker])
+        ref = self.orch._read_json_list(self.orch.blockers_path)
+        copy = self.orch._read_json_list(self.orch.blockers_path, make_copy=True)
+        self.assertEqual(ref, copy)
+        self.assertIsNot(ref, copy, "make_copy=True must return new object")
+        # Mutating copy must not affect cached ref
+        copy.append({"id": "BLK-2"})
+        ref_again = self.orch._read_json_list(self.orch.blockers_path)
+        self.assertEqual(len(ref_again), 1, "cache must not grow from copy mutation")
+
+    def test_read_json_list_default_returns_reference(self) -> None:
+        """_read_json_list default returns cached reference."""
+        blocker = {"id": "BLK-1", "status": "open", "task_id": "T1"}
+        self.orch._write_json(self.orch.blockers_path, [blocker])
+        ref1 = self.orch._read_json_list(self.orch.blockers_path)
+        ref2 = self.orch._read_json_list(self.orch.blockers_path)
+        self.assertIs(ref1, ref2, "default should return same cached object")
+
     def test_claim_next_task_under_1ms_warm_cache(self) -> None:
         """Benchmark: claim_next_task < 1ms with warm cache (no claimable tasks)."""
         # Pre-warm cache
