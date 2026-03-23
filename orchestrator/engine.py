@@ -16,6 +16,51 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("orchestrator.engine")
 
+
+class _LazyCopyList(list):
+    """List that lazily deep-copies items on first access.
+
+    Drop-in replacement for ``copy.deepcopy(original_list)`` when only a
+    subset of items will be read or mutated.  On construction a *shallow*
+    copy of the source list is stored in the underlying C array.  Each
+    element is deep-copied into the array the first time it is accessed
+    via ``__getitem__`` or ``__iter__``, so items that are never touched
+    are never copied.
+
+    Because the deep-copied item replaces the original reference *inside*
+    the C-level list storage, downstream code that serialises the list
+    (e.g. ``json.dump``) transparently picks up the copies for accessed
+    items and the unchanged originals for the rest.
+    """
+
+    __slots__ = ("_copied",)
+
+    def __init__(self, original: list) -> None:  # noqa: D401
+        super().__init__(original)  # shallow copy into internal C array
+        self._copied: set = set()
+
+    # -- element access (triggers lazy deep-copy) --
+
+    def _ensure_copy(self, index: int) -> None:
+        if index not in self._copied:
+            self._copied.add(index)
+            list.__setitem__(self, index, copy.deepcopy(list.__getitem__(self, index)))
+
+    def __getitem__(self, index):  # type: ignore[override]
+        if isinstance(index, slice):
+            indices = range(*index.indices(len(self)))
+            return [self[i] for i in indices]
+        if index < 0:
+            index += len(self)
+        self._ensure_copy(index)
+        return list.__getitem__(self, index)
+
+    def __iter__(self):  # type: ignore[override]
+        for i in range(len(self)):
+            self._ensure_copy(i)
+            yield list.__getitem__(self, i)
+
+
 from orchestrator.bus import EventBus
 from orchestrator.policy import Policy
 from orchestrator.quality_gates import QualityGateOutcome, run_quality_gates
@@ -4180,6 +4225,13 @@ class Orchestrator:
         if not self._agent_is_operational(agent):
             raise ValueError(f"agent_not_operational_or_wrong_project: {agent}")
 
+    @staticmethod
+    def _lazy_copy(data: Any) -> Any:
+        """Return a lazy copy: _LazyCopyList for lists, deepcopy for others."""
+        if isinstance(data, list):
+            return _LazyCopyList(data)
+        return copy.deepcopy(data)
+
     def _read_json(self, path: Path, make_copy: bool = False) -> Any:
         key = str(path)
         try:
@@ -4189,11 +4241,11 @@ class Orchestrator:
             return []
         cached = self._json_cache.get(key)
         if cached is not None and cached[0] == mtime_ns:
-            return copy.deepcopy(cached[1]) if make_copy else cached[1]
+            return self._lazy_copy(cached[1]) if make_copy else cached[1]
         with path.open("r", encoding="utf-8") as fh:
             data = json.load(fh)
         self._json_cache[key] = (mtime_ns, data)
-        return copy.deepcopy(data) if make_copy else data
+        return self._lazy_copy(data) if make_copy else data
 
     def _read_jsonl_file(self, path: Path) -> List[Dict[str, Any]]:
         """Reads a .jsonl file and returns a list of dictionaries."""
