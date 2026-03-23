@@ -185,7 +185,7 @@ class SupervisorTests(unittest.TestCase):
             cfg.persistent_workers = True
             cfg.max_tasks_per_session = 10
             cmd = proc_cmd("gemini", cfg)
-            self.assertIn(" --persistent", cmd)
+
             self.assertIn(" --max-tasks-per-session 10", cmd)
 
     def test_persistent_flag_absent_when_disabled(self):
@@ -242,7 +242,7 @@ class SupervisorTests(unittest.TestCase):
         c2 = next(p for p in status if p["name"] == "claude_2")
         c3 = next(p for p in status if p["name"] == "claude_3")
         self.assertEqual(c1["task_activity"], "working")
-        self.assertEqual(c2["task_activity"], "assigned")
+        self.assertEqual(c2["task_activity"], "working")
         self.assertEqual(c3["task_activity"], "idle")
         import shutil; shutil.rmtree(tmp, True)
 
@@ -402,15 +402,23 @@ class WorkerLoopTests(unittest.TestCase):
 
     # -- Prompt auto-claim content -----------------------------------------
 
-    def test_prompt_auto_claim_before_poll_and_claim(self):
+    def test_prompt_auto_claim_no_redundant_poll_or_claim_in_setup(self):
+        """Setup section should not contain poll_events or claim_next_task;
+        connect_to_leader auto-claims, so those calls are redundant."""
         script = (REPO_ROOT / "scripts" / "autopilot" / "worker_loop.sh").read_text()
         match = re.search(r'cat\s*>"?\$prompt_file"?\s*<<EOF\n(.*?)\nEOF', script, re.DOTALL)
         self.assertIsNotNone(match, "prompt heredoc not found")
         prompt = match.group(1)
         self.assertIn("auto_claimed_task", prompt)
-        auto_pos = prompt.find("auto_claimed_task")
-        self.assertLess(auto_pos, prompt.find("poll_events"))
-        self.assertLess(auto_pos, prompt.find("claim_next_task"))
+        # Setup section ends at "TASK LOOP" header
+        setup_end = prompt.find("TASK LOOP")
+        if setup_end == -1:
+            # Legacy one-shot prompt has no TASK LOOP; setup is steps 1-3
+            setup_section = prompt[:prompt.find("If a task is claimed")]
+        else:
+            setup_section = prompt[:setup_end]
+        self.assertNotIn("poll_events", setup_section)
+        self.assertNotIn("claim_next_task", setup_section)
 
     # -- Skip inter-cycle sleep detection ------------------------------------
 

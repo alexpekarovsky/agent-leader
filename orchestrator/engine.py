@@ -3005,11 +3005,14 @@ class Orchestrator:
                     },
                 )
 
+        # Team members auto-claim on connect; manager/leader should never auto-claim implementation work.
+        is_manager_connect = manager_same_instance or requested_role == "manager"
+
         event_payload = {
             "agent": agent,
             "status": status,
             "manager": manager,
-            "next_action": "poll_events_then_claim_once",
+            "next_action": "execute_auto_claimed_task" if not is_manager_connect else "manage_team",
             "verified": verification.get("verified"),
             "reason": verification.get("reason"),
         }
@@ -3020,9 +3023,6 @@ class Orchestrator:
                 payload=event_payload,
                 audience=[manager],
             )
-
-        # Team members auto-claim on connect; manager/leader should never auto-claim implementation work.
-        is_manager_connect = manager_same_instance or requested_role == "manager"
         auto_claimed = (
             self.claim_next_task(owner=agent, instance_id=str(details.get("instance_id", "")).strip() or None)
             if connected and not is_manager_connect
@@ -3048,9 +3048,12 @@ class Orchestrator:
             "reason": reason,
             "reason_message": reason_message,
             "auto_claimed_task": auto_claimed,
-            "next": [
+            "next": (
+                [f"execute auto_claimed_task (already claimed via connect)"]
+                if auto_claimed
+                else [f"no work available — idle"]
+            ) if not is_manager_connect else [
                 f"orchestrator_poll_events(agent={agent}, timeout_ms=120000)",
-                f"orchestrator_claim_next_task(agent={agent})",
             ],
         }
 

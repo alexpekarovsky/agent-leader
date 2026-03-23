@@ -360,23 +360,20 @@ have completed ${MAX_TASKS_PER_SESSION} tasks, whichever comes first.
 SETUP (once, at session start):
 1. Call orchestrator_connect_to_leader for agent="${AGENT}" with full identity metadata.
 2. Check the connect response for an auto_claimed_task field.
-   - If auto_claimed_task is present and contains a task, use it directly as your first claimed task (skip to TASK LOOP step 6).
-   - If auto_claimed_task is absent or null, proceed to step 3.
-3. Call orchestrator_poll_events(agent="${AGENT}", timeout_ms=1000).
-4. Call orchestrator_claim_next_task(${claim_args}).
-5. If no task is claimable (and none was auto-claimed), print "idle" and exit.
+   - If auto_claimed_task is present and contains a task, use it directly as your first claimed task (skip to TASK LOOP step 4).
+   - If auto_claimed_task is absent or null, print "idle" and exit (connect already attempted to claim; no work available).
 
 TASK LOOP (repeat for each claimed task):
-6. If a task is claimed:
+4. If a task is claimed:
 ${lane_rules}
 ${team_rules}
    - implement only that task in this project
    - run relevant tests/build checks
    - call orchestrator_submit_report with commit SHA and test results
    - if blocked, call orchestrator_raise_blocker instead of stalling
-7. After submitting the report, call orchestrator_claim_next_task(${claim_args}).
-8. If another task is claimed, go to step 6.
-9. If no more tasks are claimable, print "session_complete" and exit.
+5. After submitting the report, call orchestrator_claim_next_task(${claim_args}).
+6. If another task is claimed, go to step 4.
+7. If no more tasks are claimable, print "session_complete" and exit.
 
 Rules:
 - Work only inside $PROJECT_ROOT
@@ -396,19 +393,16 @@ Team: ${TEAM_ID:-none}
 Execute exactly one worker cycle and exit when done:
 1. Call orchestrator_connect_to_leader for agent="${AGENT}" with full identity metadata if needed.
 2. Check the connect response for an auto_claimed_task field.
-   - If auto_claimed_task is present and contains a task, use it directly as your claimed task (skip to step 5).
-   - If auto_claimed_task is absent or null, proceed to step 3.
-3. Call orchestrator_poll_events(agent="${AGENT}", timeout_ms=1000).
-4. Call orchestrator_claim_next_task(${claim_args}).
-5. If no task is claimable (and none was auto-claimed), print "idle" and exit.
-6. If a task is claimed (either auto-claimed or via step 4):
+   - If auto_claimed_task is present and contains a task, use it directly as your claimed task (skip to step 4).
+   - If auto_claimed_task is absent or null, print "idle" and exit (connect already attempted to claim; no work available).
+4. If a task is claimed:
 ${lane_rules}
 ${team_rules}
    - implement only that task in this project
    - run relevant tests/build checks
    - call orchestrator_submit_report with commit SHA and test results
    - if blocked, call orchestrator_raise_blocker instead of stalling
-7. Exit after one task attempt.
+5. Exit after one task attempt.
 
 Rules:
 - Work only inside $PROJECT_ROOT
