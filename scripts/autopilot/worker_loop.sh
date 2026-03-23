@@ -89,6 +89,38 @@ case "$CLI" in
 esac
 
 # ---------------------------------------------------------------------------
+# Release owned in_progress tasks on exit so they don't stay stuck for 30 min
+# ---------------------------------------------------------------------------
+_release_tasks_on_exit() {
+  python3 - "$PROJECT_ROOT" "$AGENT" <<'RELEASE_PY'
+import json, sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+agent = sys.argv[2]
+tasks_path = root / "state" / "tasks.json"
+if not tasks_path.exists():
+    sys.exit(0)
+try:
+    tasks = json.loads(tasks_path.read_text(encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+if not isinstance(tasks, list):
+    sys.exit(0)
+changed = False
+for task in tasks:
+    if (str(task.get("owner", "")).strip() == agent
+            and str(task.get("status", "")).strip().lower() == "in_progress"):
+        task["status"] = "assigned"
+        task["lease"] = None
+        changed = True
+if changed:
+    tasks_path.write_text(json.dumps(tasks, indent=2), encoding="utf-8")
+RELEASE_PY
+}
+trap _release_tasks_on_exit EXIT TERM INT
+
+# ---------------------------------------------------------------------------
 # Persistent mode: delegate to Python persistent worker.
 # Falls back to legacy spawn-per-cycle if the persistent worker exits non-zero.
 # ---------------------------------------------------------------------------

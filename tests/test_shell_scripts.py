@@ -103,7 +103,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(_default_cfg().idle_backoff, "30,60,120,300,900")
 
     def test_default_max_idle_cycles(self):
-        self.assertEqual(_default_cfg().max_idle_cycles, 30)
+        self.assertEqual(_default_cfg().max_idle_cycles, 200)
 
     def test_default_daily_call_budget(self):
         self.assertEqual(_default_cfg().daily_call_budget, 100)
