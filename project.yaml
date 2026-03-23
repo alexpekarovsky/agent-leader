@@ -453,6 +453,26 @@ roadmap:
           orchestrator_review_plan(task_id, action=approve|reject|edit),
           configurable auto_approve_policy in policy.json.
         tags: [orchestration, quality, autonomy, open-swe-inspired]
+      - id: multi-team-orchestration
+        title: "Multi-team: single orchestrator manages multiple project teams simultaneously"
+        effort: L
+        status: backlog
+        details: >
+          Currently one orchestrator instance = one project = one swarm. To run
+          multiple teams (e.g. Lumen Flow v0.3 visual designer + v0.4 connectors
+          in parallel), need one orchestrator managing multiple headless supervisors.
+          Each team has its own: supervisor processes, task queue, budget, workers.
+          Shared: event bus, agent registry, audit log.
+          WORKAROUND UNTIL BUILT: use Option A — multiple MCP server instances,
+          one per project. Lumen's .mcp.json has agent-leader-project-a,
+          agent-leader-project-b etc. each with its own ORCHESTRATOR_ROOT.
+          This works today with no code changes but requires manual MCP config.
+          Option B (this task): single orchestrator with project_id scoping on
+          all state — tasks, agents, supervisors, budgets. headless_start takes
+          a project_id param. Status/events filtered by project_id.
+          Prerequisite for Lumen meta-orchestrator managing parallel sprints.
+        tags: [architecture, multi-project, meta-orchestrator]
+
       - id: tool-consolidation-tags
         title: "Phase 1: Add [ROLE][SAFETY] description tags to all 50 MCP tools"
         effort: S
