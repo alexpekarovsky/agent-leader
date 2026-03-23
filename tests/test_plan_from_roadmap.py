@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from orchestrator.engine import Orchestrator
 from orchestrator.policy import Policy
+import orchestrator_mcp_server
+from orchestrator_mcp_server import _manager_cycle
 
 
 SAMPLE_PROJECT_YAML = """\
@@ -231,6 +234,61 @@ roadmap:
         payload = roadmap_events[-1]["payload"]
         self.assertEqual(payload["version"], "v1.1.0")
         self.assertEqual(payload["created_count"], 1)
+
+    def test_auto_plan_triggers_daily(self):
+        """Manager auto-plans daily or on first cycle when policy is enabled."""
+        self._write_project_yaml()
+
+        # Save original globals and set test values
+        original_orch = orchestrator_mcp_server.ORCH
+        original_policy = orchestrator_mcp_server.POLICY
+        try:
+            orchestrator_mcp_server.ORCH = self.orch
+            orchestrator_mcp_server.POLICY = self.orch.policy
+
+            # Configure the policy instance that the mock will return
+            self.orch.policy.triggers["auto_plan_from_roadmap"] = True
+            self.orch.policy.triggers["auto_plan_limit"] = 5  # Ensure all backlog items are created
+
+            # --- First cycle: Should plan ---
+            cycle1_result = _manager_cycle(strict=True)
+            self.assertTrue(cycle1_result["auto_plan"]["attempted"])
+            self.assertGreater(len(cycle1_result["auto_plan"]["created"]), 0)
+            self.assertIsNotNone(self.orch.last_auto_plan_timestamp)
+
+            first_plan_time = self.orch.last_auto_plan_timestamp
+            initial_tasks = self.orch.list_tasks()
+            self.assertEqual(len(initial_tasks), 3) # item-a, item-b, item-d
+
+            # --- Second cycle: Within 24 hours, should NOT plan ---
+            # Manually set timestamp to be just under 24 hours ago
+            self.orch.last_auto_plan_timestamp = first_plan_time # No need to subtract, just set to the first plan time
+            cycle2_result = _manager_cycle(strict=True)
+            self.assertFalse(cycle2_result["auto_plan"]["attempted"]) # Should not attempt to plan
+            self.assertEqual(len(cycle2_result["auto_plan"]["created"]), 0)
+            self.assertEqual(self.orch.last_auto_plan_timestamp, first_plan_time) # Should not have updated timestamp
+            # Verify no new tasks were created
+            self.assertEqual(len(self.orch.list_tasks()), 3)
+
+            # --- Third cycle: After 24 hours, should plan again ---
+            # Manually set timestamp to be > 24 hours ago
+            self.orch.last_auto_plan_timestamp = first_plan_time.replace(year=first_plan_time.year - 1) # Set to a year ago
+            cycle3_result = _manager_cycle(strict=True)
+            self.assertTrue(cycle3_result["auto_plan"]["attempted"])
+            self.assertGreater(len(cycle3_result["auto_plan"]["skipped"]), 0) # Should skip existing tasks
+            self.assertEqual(len(cycle3_result["auto_plan"]["created"]), 0) # No new tasks should be created due to deduplication
+            self.assertNotEqual(self.orch.last_auto_plan_timestamp, first_plan_time) # Should have updated timestamp
+            # Verify new tasks were created (it should re-plan and try to create the same tasks,
+            # which will then be skipped by deduplication. To actually see new tasks, we'd need
+            # more unique backlog items. For this test, we verify it *attempts* to plan again.)
+            self.assertGreaterEqual(len(self.orch.list_tasks()), 3)
+            # Check that it still attempts to plan.
+            self.assertIn("roadmap_id", cycle3_result["auto_plan"]["skipped"][0])
+
+        finally:
+            # Restore original globals
+            orchestrator_mcp_server.ORCH = original_orch
+            orchestrator_mcp_server.POLICY = original_policy
 
 
 if __name__ == "__main__":

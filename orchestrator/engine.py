@@ -113,6 +113,7 @@ class Orchestrator:
         self.tasks_path = self.state_dir / "tasks.json"
         self.bugs_path = self.state_dir / "bugs.json"
         self.blockers_path = self.state_dir / "blockers.json"
+        self.manager_state_path = self.state_dir / "manager_state.json"
         # Load initial tasks into memory
         try:
             self._current_tasks = self._read_json(self.tasks_path)
@@ -156,6 +157,8 @@ class Orchestrator:
     def bootstrap(self) -> None:
         if not self.tasks_path.exists():
             self.tasks_path.write_text("[]\n", encoding="utf-8")
+        if not self.manager_state_path.exists():
+            self.manager_state_path.write_text("{}\n", encoding="utf-8")
         if not self.bugs_path.exists():
             self.bugs_path.write_text("[]\n", encoding="utf-8")
         if not self.blockers_path.exists():
@@ -1458,6 +1461,37 @@ class Orchestrator:
                 except OSError as e:
                     print(f"WARNING: Could not remove old report file {report_file}: {e}", file=sys.stderr, flush=True)
         return removed_count
+
+    def _read_manager_state(self) -> Dict[str, Any]:
+        """Reads the manager-specific state from manager_state.json."""
+        try:
+            state = self._read_json(self.manager_state_path)
+            return state
+        except Exception:
+            return {}
+
+    def _write_manager_state(self, state: Dict[str, Any]) -> None:
+        """Writes the manager-specific state to manager_state.json."""
+        self._write_json(self.manager_state_path, state)
+
+    @property
+    def last_auto_plan_timestamp(self) -> Optional[datetime]:
+        """The timestamp of the last successful auto-planning run."""
+        state = self._read_manager_state()
+        raw_timestamp = state.get("last_auto_plan_timestamp")
+        if isinstance(raw_timestamp, str):
+            try:
+                return datetime.fromisoformat(raw_timestamp)
+            except ValueError:
+                pass
+        return None
+
+    @last_auto_plan_timestamp.setter
+    def last_auto_plan_timestamp(self, value: datetime) -> None:
+        """Sets the timestamp of the last successful auto-planning run."""
+        state = self._read_manager_state()
+        state["last_auto_plan_timestamp"] = value.isoformat()
+        self._write_manager_state(state)
 
     def validate_task(
         self,

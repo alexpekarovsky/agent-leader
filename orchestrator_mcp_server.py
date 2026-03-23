@@ -21,6 +21,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import gzip
 
+# Define auto-plan interval
+AUTO_PLAN_INTERVAL_SECONDS = 86400  # 24 hours
+
 # ── Structured logging setup ──
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 _LOG_LEVEL = os.getenv("ORCHESTRATOR_LOG_LEVEL", "INFO").upper()
@@ -1717,19 +1720,29 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
     for p in processed:
         logger.info("  report %s: %s", p.get("task_id"), "ACCEPTED" if p.get("passed") else "REJECTED")
 
-    # Auto-plan from roadmap when no pending tasks remain (or on first cycle).
-    auto_plan: Dict[str, Any] = {"attempted": False}
-    if pending_total == 0 and ORCH.policy.triggers.get("auto_plan_from_roadmap", True):
-        try:
-            auto_plan = ORCH.plan_from_roadmap(
-                source=ORCH.manager_agent(),
-                limit=int(ORCH.policy.triggers.get("auto_plan_limit", 5)),
-                team_id=str(ORCH.policy.triggers.get("auto_plan_team_id", "")) or None,
-            )
-            auto_plan["attempted"] = True
-        except Exception as exc:
-            auto_plan = {"attempted": True, "error": str(exc)}
-            logger.warning("manager_cycle.auto_plan_failed: %s", exc)
+    # Auto-plan from roadmap (daily or on first cycle if enabled).
+    auto_plan: Dict[str, Any] = {"attempted": False, "created": [], "skipped": []}
+    if ORCH.policy.triggers.get("auto_plan_from_roadmap", True):
+        last_auto_plan_timestamp = ORCH.last_auto_plan_timestamp
+        now_utc = datetime.now(timezone.utc)
+        elapsed_seconds = (
+            (now_utc - last_auto_plan_timestamp).total_seconds()
+            if last_auto_plan_timestamp
+            else float("inf")
+        )
+        if last_auto_plan_timestamp is None or elapsed_seconds >= AUTO_PLAN_INTERVAL_SECONDS:
+            try:
+                auto_plan = ORCH.plan_from_roadmap(
+                    source=ORCH.manager_agent(),
+                    limit=int(ORCH.policy.triggers.get("auto_plan_limit", 5)),
+                    team_id=str(ORCH.policy.triggers.get("auto_plan_team_id", "")) or None,
+                )
+                auto_plan["attempted"] = True
+                ORCH.last_auto_plan_timestamp = now_utc
+            except Exception as exc:
+                auto_plan = {"attempted": True, "error": str(exc)}
+                logger.warning("manager_cycle.auto_plan_failed: %s", exc)
+
 
     # Auto-stop supervisor when all tasks are done and no new work was created
     auto_stopped = False
