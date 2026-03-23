@@ -414,6 +414,64 @@ class ManagerCycleFullFlowTests(unittest.TestCase):
             done = [t for t in final_tasks if t["status"] == "done"]
             self.assertEqual(1, len(done))
 
+    def test_remaining_by_owner_uses_fresh_snapshot(self) -> None:
+        """After validate_task mutations, re-reading tasks must reflect updated state.
+
+        Regression test for stale-snapshot bug: the initial list_tasks() call
+        at the start of the cycle should NOT be used for the remaining_by_owner
+        summary — a fresh read after all mutations is required.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = _make_orch(root)
+            _connect_agent(orch, root, "claude_code")
+
+            # Create two tasks, report one
+            task1 = _create_claim_report(orch, "claude_code", "commit1")
+            task2 = orch.create_task(
+                title="Still pending",
+                workstream="backend",
+                owner="claude_code",
+                acceptance_criteria=["done"],
+            )
+
+            # Snapshot before mutations (like manager_cycle's initial read)
+            stale_tasks = orch.list_tasks()
+            reported_in_stale = [t for t in stale_tasks if t["status"] == "reported"]
+            self.assertEqual(1, len(reported_in_stale))
+
+            # Mutate: validate the reported task → status becomes "done"
+            orch.validate_task(
+                task_id=task1["id"],
+                passed=True,
+                notes="Accepted",
+                source="codex",
+            )
+
+            # The stale snapshot still shows "reported"
+            stale_reported = next(t for t in stale_tasks if t["id"] == task1["id"])
+            self.assertEqual("reported", stale_reported["status"])
+
+            # Fresh read (what the fix does) must show "done"
+            fresh_tasks = orch.list_tasks()
+            fresh_t1 = next(t for t in fresh_tasks if t["id"] == task1["id"])
+            self.assertEqual("done", fresh_t1["status"])
+
+            # Build remaining_by_owner from fresh snapshot
+            pending_statuses = {"assigned", "in_progress", "reported", "bug_open", "blocked"}
+            by_owner: dict = {}
+            for task in fresh_tasks:
+                owner = task.get("owner", "unknown")
+                bucket = by_owner.setdefault(owner, {"pending": 0, "done": 0})
+                if task.get("status") in pending_statuses:
+                    bucket["pending"] += 1
+                if task.get("status") == "done":
+                    bucket["done"] += 1
+
+            # task1 is done, task2 is assigned → 1 pending, 1 done
+            self.assertEqual(1, by_owner["claude_code"]["done"])
+            self.assertEqual(1, by_owner["claude_code"]["pending"])
+
     def test_cycle_publishes_task_contracts_event(self) -> None:
         """Manager cycle should publish task contract digest event."""
         with tempfile.TemporaryDirectory() as tmp:
