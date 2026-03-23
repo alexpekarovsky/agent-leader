@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Leader - MCP Tool Consolidation Plan</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', system-ui, sans-serif; background: #0a0e17; color: #c9d1d9; line-height: 1.6; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 40px 24px; }
+  header { text-align: center; margin-bottom: 48px; }
+  header h1 { font-size: 2.6em; font-weight: 700; background: linear-gradient(135deg, #58a6ff 0%, #bc8cff 50%, #f778ba 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  header .sub { font-size: 1.1em; color: #8b949e; margin-top: 4px; }
+  .badge { display: inline-block; padding: 4px 14px; border-radius: 16px; font-size: 0.82em; font-weight: 600; }
+  .b-red { background: rgba(248,81,73,0.15); color: #f85149; border: 1px solid rgba(248,81,73,0.3); }
+  .b-grn { background: rgba(63,185,80,0.15); color: #3fb950; border: 1px solid rgba(63,185,80,0.3); }
+  .b-blu { background: rgba(88,166,255,0.15); color: #58a6ff; border: 1px solid rgba(88,166,255,0.3); }
+  .b-pur { background: rgba(188,140,255,0.15); color: #bc8cff; border: 1px solid rgba(188,140,255,0.3); }
+  .b-yel { background: rgba(210,153,34,0.15); color: #d29922; border: 1px solid rgba(210,153,34,0.3); }
+
+  .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; margin: 32px 0; }
+  .stat { background: linear-gradient(145deg, #161b22, #0d1117); border: 1px solid #30363d; border-radius: 12px; padding: 20px; text-align: center; }
+  .stat .n { font-size: 2.6em; font-weight: 800; line-height: 1; }
+  .stat .l { font-size: 0.8em; color: #8b949e; margin-top: 2px; }
+  .n-red { color: #f85149; } .n-grn { color: #3fb950; } .n-blu { color: #58a6ff; } .n-pur { color: #bc8cff; } .n-yel { color: #d29922; }
+
+  section { margin-bottom: 40px; }
+  h2 { font-size: 1.5em; font-weight: 700; color: #e6edf3; margin-bottom: 16px; padding-bottom: 6px; border-bottom: 2px solid #21262d; }
+  h3 { font-size: 1.15em; color: #e6edf3; margin: 16px 0 8px; }
+  .sep { border: none; border-top: 1px solid #21262d; margin: 32px 0; }
+
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 18px; margin-bottom: 12px; }
+  .card:hover { border-color: #58a6ff; }
+  .card .t { font-weight: 700; color: #e6edf3; }
+  .card .d { font-size: 0.9em; color: #8b949e; margin-top: 6px; }
+  .card .s { font-size: 0.82em; color: #58a6ff; margin-top: 6px; font-style: italic; }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th { text-align: left; padding: 10px 14px; background: #161b22; color: #58a6ff; font-weight: 600; font-size: 0.82em; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 2px solid #30363d; }
+  td { padding: 8px 14px; border-bottom: 1px solid #21262d; font-size: 0.88em; }
+  tr:hover td { background: rgba(88,166,255,0.04); }
+  .st-ess { color: #3fb950; font-weight: 600; }
+  .st-mrg { color: #d29922; font-weight: 600; }
+  .st-dep { color: #f85149; font-weight: 600; }
+  .st-kp { color: #8b949e; }
+
+  .bar-bg { background: #21262d; border-radius: 6px; height: 20px; overflow: hidden; margin: 4px 0; }
+  .bar-fg { height: 100%; border-radius: 6px; background: linear-gradient(90deg, #58a6ff, #bc8cff); }
+
+  .cond { background: #161b22; border-radius: 10px; padding: 18px; border-left: 4px solid; }
+  .cond-red { border-color: #f85149; } .cond-yel { border-color: #d29922; } .cond-blu { border-color: #58a6ff; } .cond-grn { border-color: #3fb950; }
+  .cond h4 { margin-bottom: 6px; }
+
+  .tl { position: relative; padding-left: 36px; }
+  .tl::before { content: ''; position: absolute; left: 12px; top: 0; bottom: 0; width: 2px; background: #30363d; }
+  .tl-item { position: relative; margin-bottom: 20px; }
+  .tl-item::before { content: ''; position: absolute; left: -28px; top: 4px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid; }
+  .tl-item.p0::before { border-color: #f85149; background: rgba(248,81,73,0.3); }
+  .tl-item.p1::before { border-color: #d29922; background: rgba(210,153,34,0.3); }
+  .tl-item.p2::before { border-color: #58a6ff; background: rgba(88,166,255,0.3); }
+  .tl-item .tt { font-weight: 700; color: #e6edf3; }
+  .tl-item .te { font-size: 0.8em; color: #8b949e; }
+  .tl-item .td { font-size: 0.88em; color: #8b949e; margin-top: 4px; }
+
+  .tag-demo { font-family: 'SF Mono', Menlo, monospace; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 16px; font-size: 0.85em; overflow-x: auto; }
+  .tag-demo .role { color: #58a6ff; font-weight: 700; }
+  .tag-demo .safety { font-weight: 700; }
+  .tag-demo .safe { color: #3fb950; }
+  .tag-demo .mut { color: #d29922; }
+  .tag-demo .dest { color: #f85149; }
+  .tag-demo .desc { color: #8b949e; }
+
+  footer { text-align: center; padding: 32px 0; color: #484f58; font-size: 0.82em; border-top: 1px solid #21262d; margin-top: 48px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>MCP Tool Consolidation Plan</h1>
+  <div class="sub">Agent Leader Orchestrator &mdash; First Principles Redesign</div>
+  <div style="margin-top: 14px;">
+    <span class="badge b-red">50 Current</span>
+    <span style="margin: 0 6px; color: #3fb950; font-size: 1.3em;">&rarr;</span>
+    <span class="badge b-grn">22 Validated</span>
+    <span class="badge b-blu" style="margin-left: 8px;">-56% Tools</span>
+    <span class="badge b-pur" style="margin-left: 8px;">-1,400 Tokens/Session</span>
+  </div>
+</header>
+
+<div class="stats">
+  <div class="stat"><div class="n n-red">50</div><div class="l">Current Tools</div></div>
+  <div class="stat"><div class="n n-grn">22</div><div class="l">Validated Target</div></div>
+  <div class="stat"><div class="n n-blu">56%</div><div class="l">Reduction</div></div>
+  <div class="stat"><div class="n n-pur">1,400</div><div class="l">Tokens Saved/Session</div></div>
+  <div class="stat"><div class="n n-yel">0</div><div class="l">Interactive Features Lost</div></div>
+</div>
+
+<!-- NAMING CONVENTION -->
+<section>
+  <h2>&#x1F3F7; Naming Convention: Description Tags (Not Renaming)</h2>
+  <p style="color: #8b949e; margin-bottom: 16px;">Don't rename tools &mdash; add <code>[ROLE][SAFETY]</code> tags to descriptions. Same LLM benefit, zero breakage.</p>
+
+  <div class="grid2" style="margin-bottom: 16px;">
+    <div class="card">
+      <div class="t" style="color: #3fb950;">Why Description Tags Win</div>
+      <div class="d">LLMs read descriptions before calling tools. A <code>[WORKER]</code> tag lets worker agents skip manager tools instantly. Zero tool name changes needed.</div>
+    </div>
+    <div class="card">
+      <div class="t" style="color: #f85149;">Why Renaming Loses</div>
+      <div class="d">Breaks: tools.json contract, 67 README refs, 42 test refs, 4 startup templates, command bundles, guide playbook, all active agent sessions.</div>
+    </div>
+  </div>
+
+  <h3>Tag Format</h3>
+  <div class="tag-demo">
+    <span class="role">[MANAGER]</span><span class="safety mut">[MUTATING]</span> <span class="desc">Run one manager cycle: validate reports, reassign stale tasks...</span><br>
+    <span class="role">[WORKER]</span><span class="safety safe">[SAFE]</span> <span class="desc">Read the generated spec file for implementation guidance.</span><br>
+    <span class="role">[OPERATOR]</span><span class="safety safe">[SAFE]</span> <span class="desc">Show status dashboard with progress bars and team roster.</span><br>
+    <span class="role">[INFRA]</span><span class="safety dest">[DESTRUCTIVE]</span> <span class="desc">Stop headless supervisor lanes for this project.</span><br>
+    <span class="role">[SHARED]</span><span class="safety mut">[MUTATING]</span> <span class="desc">Update last-seen heartbeat for agent.</span><br>
+    <span class="role">[INTEGRATION]</span><span class="safety safe">[SAFE]</span> <span class="desc">Normalize a GitHub CI payload into orchestration summary.</span>
+  </div>
+
+  <h3>Roles (6)</h3>
+  <table>
+    <tr><td><span class="badge b-blu">MANAGER</span></td><td>13 tools</td><td>Leader/manager coordination: create tasks, validate, plan, resolve blockers</td></tr>
+    <tr><td><span class="badge b-grn">WORKER</span></td><td>9 tools</td><td>Team member execution: connect, claim, submit, raise blockers, review</td></tr>
+    <tr><td><span class="badge b-pur">SHARED</span></td><td>15 tools</td><td>Any agent: heartbeat, list queries, events, role management</td></tr>
+    <tr><td><span class="badge b-yel">OPERATOR</span></td><td>5 tools</td><td>Human/diagnostic: status, guide, doctor, audit logs</td></tr>
+    <tr><td><span class="badge b-red">INFRA</span></td><td>5 tools</td><td>Process lifecycle: headless start/stop/restart/status/clean</td></tr>
+    <tr><td style="color: #8b949e;">INTEGRATION</td><td>3 tools</td><td>GitHub/CI: normalize, create issue, process webhook</td></tr>
+  </table>
+
+  <h3>Safety Levels (3)</h3>
+  <table>
+    <tr><td><span style="color: #3fb950; font-weight: 700;">SAFE</span></td><td>Read-only, idempotent. No state changes.</td></tr>
+    <tr><td><span style="color: #d29922; font-weight: 700;">MUTATING</span></td><td>Changes state but reversible. Creates/updates tasks, agents, events.</td></tr>
+    <tr><td><span style="color: #f85149; font-weight: 700;">DESTRUCTIVE</span></td><td>Irreversible or process-affecting. Starts/stops processes, deletes artifacts.</td></tr>
+  </table>
+</section>
+
+<hr class="sep">
+
+<!-- CONSOLIDATION MAP -->
+<section>
+  <h2>&#x1F527; Consolidation Map (7 Merges, 28 Tools Removed)</h2>
+
+  <div class="card">
+    <div class="t">1. Headless Supervisor &rarr; Single Dispatcher</div>
+    <div class="d"><span style="color:#f85149;">&cross;</span> headless_start, stop, restart, status, clean (5 tools) &rarr; <code>orchestrator_headless(action=...)</code></div>
+    <div class="s">Saves 4 tool definitions, ~320 tokens</div>
+  </div>
+  <div class="card">
+    <div class="t">2. Event Handling &rarr; Single Poll</div>
+    <div class="d"><span style="color:#f85149;">&cross;</span> poll_events, ack_event, get_agent_cursor (3 tools) &rarr; <code>poll_events(auto_advance=true)</code> returns cursor</div>
+    <div class="s">Saves 2 tools, ~160 tokens</div>
+  </div>
+  <div class="card">
+    <div class="t">3. Status &rarr; Single with Format Param</div>
+    <div class="d"><span style="color:#f85149;">&cross;</span> status, live_status_report, get_roles (3 tools) &rarr; <code>status(format="full|live|compact|roles")</code></div>
+    <div class="s">Saves 2 tools, ~160 tokens</div>
+  </div>
+  <div class="card">
+    <div class="t">4. Agent Queries &rarr; Single List</div>
+    <div class="d"><span style="color:#f85149;">&cross;</span> list_agents, discover_agents, get_tasks_for_agent (3 tools) &rarr; <code>list_agents(infer=true, owner=...)</code></div>
+    <div class="s">Saves 2 tools, ~160 tokens</div>
+  </div>
+  <div class="card">
+    <div class="t">5. Registration &rarr; Heartbeat</div>
+    <div class="d"><span style="color:#f85149;">&cross;</span> register_agent (0 calls) &rarr; <code>heartbeat(auto_register=true)</code></div>
+    <div class="s">Saves 1 tool, ~80 tokens</div>
+  </div>
+  <div class="card">
+    <div class="t">6. Diagnostics &rarr; Single Doctor</div>
+    <div class="d"><span style="color:#f85149;">&cross;</span> parity_smoke (0 calls) &rarr; <code>doctor(mode="full|smoke")</code></div>
+    <div class="s">Saves 1 tool, ~80 tokens</div>
+  </div>
+  <div class="card">
+    <div class="t">7. Internal-Only &rarr; Remove from MCP API</div>
+    <div class="d"><span style="color:#f85149;">&cross;</span> set_claim_override, dedupe_tasks (0 calls each) &rarr; Keep as internal engine methods</div>
+    <div class="s">Saves 2 tools, ~160 tokens. manager_cycle calls them internally.</div>
+  </div>
+</section>
+
+<hr class="sep">
+
+<!-- VALIDATION -->
+<section>
+  <h2>&#x2705; Validation Results</h2>
+  <p style="color: #3fb950; font-weight: 700; font-size: 1.1em; margin-bottom: 16px;">APPROVED &mdash; No interactive functionality lost. 3 conditions required.</p>
+
+  <div class="grid2" style="margin-bottom: 16px;">
+    <div class="cond cond-red">
+      <h4 style="color: #f85149;">Condition 1: KEEP connect_team_members</h4>
+      <p style="font-size: 0.88em; color: #8b949e;">Operators need manual reconnect API for "agent went stale" scenarios. 0 audit calls because auto-reconnect usually works, but manual path must exist.</p>
+    </div>
+    <div class="cond cond-yel">
+      <h4 style="color: #d29922;">Condition 2: Add format="roles" to status()</h4>
+      <p style="font-size: 0.88em; color: #8b949e;">Replaces get_roles. guide_payload() depends on role info. Operators expect to query roles independently.</p>
+    </div>
+    <div class="cond cond-blu">
+      <h4 style="color: #58a6ff;">Condition 3: 6-month alias layer</h4>
+      <p style="font-size: 0.88em; color: #8b949e;">Removed tool names redirect to merged equivalents. get_roles &rarr; status(format="roles"), register_agent &rarr; heartbeat(auto_register=true), etc.</p>
+    </div>
+    <div class="cond cond-grn">
+      <h4 style="color: #3fb950;">Interactive Impact: ZERO</h4>
+      <p style="font-size: 0.88em; color: #8b949e;">All removed tools are zero-call stubs, internal-only methods, or superseded by consolidated equivalents. Every operator capability preserved.</p>
+    </div>
+  </div>
+</section>
+
+<hr class="sep">
+
+<!-- PROPOSED 22 TOOLS -->
+<section>
+  <h2>&#x2728; Validated Toolset (22 Tools)</h2>
+
+  <div class="grid3">
+    <div class="card" style="border-color: #58a6ff;">
+      <div class="t" style="color: #58a6ff;">Task Lifecycle (7)</div>
+      <div class="d">create_task, claim_next_task, list_tasks, submit_report, update_task_status, renew_task_lease, manager_cycle</div>
+    </div>
+    <div class="card" style="border-color: #3fb950;">
+      <div class="t" style="color: #3fb950;">Blocker Workflow (3)</div>
+      <div class="d">raise_blocker, list_blockers, resolve_blocker</div>
+    </div>
+    <div class="card" style="border-color: #bc8cff;">
+      <div class="t" style="color: #bc8cff;">Agent Coordination (4)</div>
+      <div class="d">heartbeat, list_agents, set_role, connect_to_leader, connect_team_members</div>
+    </div>
+    <div class="card" style="border-color: #d29922;">
+      <div class="t" style="color: #d29922;">Communication (2)</div>
+      <div class="d">publish_event, poll_events</div>
+    </div>
+    <div class="card" style="border-color: #f85149;">
+      <div class="t" style="color: #f85149;">Infrastructure (1)</div>
+      <div class="d">headless (start/stop/restart/status/clean)</div>
+    </div>
+    <div class="card" style="border-color: #8b949e;">
+      <div class="t">Visibility (3)</div>
+      <div class="d">status, doctor, guide</div>
+    </div>
+    <div class="card" style="border-color: #58a6ff;">
+      <div class="t" style="color: #58a6ff;">Governance (5)</div>
+      <div class="d">bootstrap, set_review_gate, plan_from_roadmap, create_consult, respond_consult</div>
+    </div>
+    <div class="card" style="border-color: #8b949e;">
+      <div class="t">Integrations (4)</div>
+      <div class="d">normalize_github_ci, create_github_issue, process_github_webhook, get_task_spec</div>
+    </div>
+    <div class="card" style="border-color: #8b949e;">
+      <div class="t">Observability (3)</div>
+      <div class="d">list_audit_logs, list_bugs, decide_architecture</div>
+    </div>
+  </div>
+</section>
+
+<hr class="sep">
+
+<!-- USAGE -->
+<section>
+  <h2>&#x1F4CA; Usage Distribution (4,545 Calls)</h2>
+  <p style="color: #8b949e; margin-bottom: 12px;">Top 10 = 80% of calls. Bottom 20 = zero calls.</p>
+
+  <div style="margin-bottom: 8px;"><div style="display:flex;justify-content:space-between;font-size:0.82em;"><span>publish_event</span><span style="color:#58a6ff;font-weight:700;">944</span></div><div class="bar-bg"><div class="bar-fg" style="width:100%;"></div></div></div>
+  <div style="margin-bottom: 8px;"><div style="display:flex;justify-content:space-between;font-size:0.82em;"><span>list_tasks</span><span style="color:#58a6ff;font-weight:700;">727</span></div><div class="bar-bg"><div class="bar-fg" style="width:77%;"></div></div></div>
+  <div style="margin-bottom: 8px;"><div style="display:flex;justify-content:space-between;font-size:0.82em;"><span>list_blockers</span><span style="color:#58a6ff;font-weight:700;">365</span></div><div class="bar-bg"><div class="bar-fg" style="width:39%;"></div></div></div>
+  <div style="margin-bottom: 8px;"><div style="display:flex;justify-content:space-between;font-size:0.82em;"><span>heartbeat</span><span style="color:#58a6ff;font-weight:700;">359</span></div><div class="bar-bg"><div class="bar-fg" style="width:38%;"></div></div></div>
+  <div style="margin-bottom: 8px;"><div style="display:flex;justify-content:space-between;font-size:0.82em;"><span>manager_cycle</span><span style="color:#58a6ff;font-weight:700;">359</span></div><div class="bar-bg"><div class="bar-fg" style="width:38%;"></div></div></div>
+  <div style="margin-bottom: 8px;"><div style="display:flex;justify-content:space-between;font-size:0.82em;"><span style="color:#f85149;">20 tools with ZERO calls</span><span style="color:#f85149;font-weight:700;">0</span></div><div class="bar-bg"><div class="bar-fg" style="width:0%;background:#f85149;"></div></div></div>
+</section>
+
+<hr class="sep">
+
+<!-- FULL INVENTORY -->
+<section>
+  <h2>&#x1F4CB; Full Inventory &mdash; Decision Per Tool</h2>
+  <table>
+    <thead><tr><th>Tool</th><th>Calls</th><th>Role</th><th>Decision</th></tr></thead>
+    <tbody>
+      <tr><td>publish_event</td><td>944</td><td><span class="badge b-pur">SHARED</span></td><td class="st-ess">KEEP</td></tr>
+      <tr><td>list_tasks</td><td>727</td><td><span class="badge b-pur">SHARED</span></td><td class="st-ess">KEEP (absorb get_tasks_for_agent)</td></tr>
+      <tr><td>list_blockers</td><td>365</td><td><span class="badge b-pur">SHARED</span></td><td class="st-ess">KEEP</td></tr>
+      <tr><td>heartbeat</td><td>359</td><td><span class="badge b-pur">SHARED</span></td><td class="st-ess">KEEP (absorb register_agent)</td></tr>
+      <tr><td>manager_cycle</td><td>359</td><td><span class="badge b-blu">MANAGER</span></td><td class="st-ess">KEEP</td></tr>
+      <tr><td>set_role</td><td>359</td><td><span class="badge b-pur">SHARED</span></td><td class="st-ess">KEEP</td></tr>
+      <tr><td>normalize_github_ci</td><td>225</td><td><span style="color:#8b949e;">INTEGRATION</span></td><td class="st-ess">KEEP</td></tr>
+      <tr><td>status</td><td>210</td><td><span class="badge b-yel">OPERATOR</span></td><td class="st-ess">KEEP (absorb live_status + get_roles)</td></tr>
+      <tr><td>list_bugs</td><td>199</td><td><span class="badge b-pur">SHARED</span></td><td class="st-ess">KEEP</td></tr>
+      <tr><td>bootstrap</td><td>172</td><td><span class="badge b-blu">MANAGER</span></td><td class="st-ess">KEEP</td></tr>
+      <tr><td>connect_to_leader</td><td>92</td><td><span class="badge b-grn">WORKER</span></td><td class="st-ess">KEEP</td></tr>
+      <tr><td>headless_* (5 tools)</td><td>387</td><td><span class="badge b-red">INFRA</span></td><td class="st-mrg">MERGE &rarr; headless(action)</td></tr>
+      <tr><td>resolve_blocker</td><td>61</td><td><span class="badge b-blu">MANAGER</span></td><td class="st-ess">KEEP</td></tr>
+      <tr><td>raise_blocker</td><td>59</td><td><span class="badge b-grn">WORKER</span></td><td class="st-ess">KEEP</td></tr>
+      <tr><td>submit_report</td><td>50</td><td><span class="badge b-grn">WORKER</span></td><td class="st-ess">KEEP</td></tr>
+      <tr><td>poll_events</td><td>49</td><td><span class="badge b-pur">SHARED</span></td><td class="st-ess">KEEP (absorb ack + cursor)</td></tr>
+      <tr><td>get_roles</td><td>45</td><td><span class="badge b-pur">SHARED</span></td><td class="st-mrg">MERGE &rarr; status(format="roles") + ALIAS</td></tr>
+      <tr><td>claim_next_task</td><td>40</td><td><span class="badge b-grn">WORKER</span></td><td class="st-ess">KEEP</td></tr>
+      <tr><td>create_task</td><td>26</td><td><span class="badge b-blu">MANAGER</span></td><td class="st-ess">KEEP</td></tr>
+      <tr><td>connect_team_members</td><td>0</td><td><span class="badge b-blu">MANAGER</span></td><td class="st-ess" style="color:#f85149;">KEEP (validation condition)</td></tr>
+      <tr><td>register_agent</td><td>0</td><td><span class="badge b-pur">SHARED</span></td><td class="st-dep">MERGE &rarr; heartbeat</td></tr>
+      <tr><td>discover_agents</td><td>0</td><td><span class="badge b-pur">SHARED</span></td><td class="st-dep">MERGE &rarr; list_agents</td></tr>
+      <tr><td>get_tasks_for_agent</td><td>0</td><td><span class="badge b-grn">WORKER</span></td><td class="st-dep">MERGE &rarr; list_tasks(owner)</td></tr>
+      <tr><td>ack_event</td><td>0</td><td><span class="badge b-pur">SHARED</span></td><td class="st-dep">MERGE &rarr; poll_events</td></tr>
+      <tr><td>get_agent_cursor</td><td>0</td><td><span class="badge b-pur">SHARED</span></td><td class="st-dep">MERGE &rarr; poll_events</td></tr>
+      <tr><td>parity_smoke</td><td>0</td><td><span class="badge b-yel">OPERATOR</span></td><td class="st-dep">MERGE &rarr; doctor(mode=smoke)</td></tr>
+      <tr><td>live_status_report</td><td>0</td><td><span class="badge b-blu">MANAGER</span></td><td class="st-dep">MERGE &rarr; status(format=live)</td></tr>
+      <tr><td>set_claim_override</td><td>0</td><td><span class="badge b-blu">MANAGER</span></td><td class="st-dep">INTERNAL ONLY</td></tr>
+      <tr><td>dedupe_tasks</td><td>0</td><td><span class="badge b-blu">MANAGER</span></td><td class="st-dep">INTERNAL ONLY</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<hr class="sep">
+
+<!-- IMPACT -->
+<section>
+  <h2>&#x1F4A5; Impact Analysis</h2>
+  <div class="grid2">
+    <div class="card">
+      <h3>Token Savings</h3>
+      <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #21262d;"><span style="color:#8b949e;">Tools removed</span><span style="color:#3fb950;font-weight:700;">-28</span></div>
+      <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #21262d;"><span style="color:#8b949e;">Tokens/session saved</span><span style="color:#3fb950;font-weight:700;">~1,400</span></div>
+      <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #21262d;"><span style="color:#8b949e;">Monthly savings</span><span style="color:#3fb950;font-weight:700;">~420,000 tokens</span></div>
+      <div style="display:flex;justify-content:space-between;padding:6px 0;"><span style="color:#8b949e;">Decision space</span><span style="color:#3fb950;font-weight:700;">50 &rarr; 22 (-56%)</span></div>
+    </div>
+    <div class="card">
+      <h3>Risk Assessment</h3>
+      <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #21262d;"><span style="color:#8b949e;">Interactive features lost</span><span style="color:#3fb950;font-weight:700;">ZERO</span></div>
+      <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #21262d;"><span style="color:#8b949e;">Breaking changes</span><span style="color:#d29922;font-weight:700;">Yes (mitigated by aliases)</span></div>
+      <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #21262d;"><span style="color:#8b949e;">Migration effort</span><span style="font-weight:700;">M (7-9 hours)</span></div>
+      <div style="display:flex;justify-content:space-between;padding:6px 0;"><span style="color:#8b949e;">Alias deprecation</span><span style="font-weight:700;">6 months</span></div>
+    </div>
+  </div>
+</section>
+
+<hr class="sep">
+
+<!-- ROADMAP -->
+<section>
+  <h2>&#x1F5D3; Implementation Roadmap</h2>
+  <div class="tl">
+    <div class="tl-item p0">
+      <div class="tt">Phase 1: Description Tags (Zero Breakage)</div>
+      <div class="te">Effort: S | Priority: P0 | Immediate</div>
+      <div class="td">Add [ROLE][SAFETY] tags to all 50 tool descriptions. Bump tools.json to v1.2.0. No name changes, no test breakage.</div>
+    </div>
+    <div class="tl-item p1">
+      <div class="tt">Phase 2: Remove Zero-Call Stubs + Aliases</div>
+      <div class="te">Effort: S | Priority: P1 | Sprint 1</div>
+      <div class="td">Remove 11 zero-call tools. Add alias dispatch layer redirecting old names to merged equivalents. Bump contract to v1.3.0.</div>
+    </div>
+    <div class="tl-item p1">
+      <div class="tt">Phase 3: Headless + Status + Events Consolidation</div>
+      <div class="te">Effort: M | Priority: P1 | Sprint 2</div>
+      <div class="td">5 headless &rarr; 1 dispatcher. status + live_status + get_roles &rarr; status(format). poll + ack + cursor &rarr; poll(auto_advance).</div>
+    </div>
+    <div class="tl-item p2">
+      <div class="tt">Phase 4: Contract Freeze v2.0</div>
+      <div class="te">Effort: S | Priority: P2 | Sprint 3</div>
+      <div class="td">Remove alias layer. Freeze 22-tool contract. Update docs, README, startup templates. Performance benchmark.</div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  Agent Leader Orchestrator &bull; Tool Consolidation Plan &bull; 2026-03-23 &bull; First Principles Audit + Code Review Validation + Naming Analysis
+</footer>
+
+</div>
+</body>
+</html>

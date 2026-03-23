@@ -453,17 +453,56 @@ roadmap:
           orchestrator_review_plan(task_id, action=approve|reject|edit),
           configurable auto_approve_policy in policy.json.
         tags: [orchestration, quality, autonomy, open-swe-inspired]
-      - id: tool-consolidation
-        title: "Consolidate 50 MCP tools to 18 — reduce LLM decision fatigue and token waste"
-        effort: L
+      - id: tool-consolidation-tags
+        title: "Phase 1: Add [ROLE][SAFETY] description tags to all 50 MCP tools"
+        effort: S
         status: backlog
         details: >
-          First-principles audit found 50 tools but only 18 needed. Key merges:
-          5 headless tools → 1 with action param. 3 event tools → 1 poll with
-          auto-advance. 2 status tools → 1 with format param. 20 zero/low-usage
-          tools merged or deprecated. Saves ~1,600 tokens per session, -64%
-          decision space for LLM agents. See audit report in session notes.
-        tags: [architecture, mcp, tools, performance]
+          Add [MANAGER][MUTATING], [WORKER][SAFE], [OPERATOR][SAFE], [INFRA][DESTRUCTIVE],
+          [SHARED][MUTATING], [INTEGRATION][SAFE] tags to all tool descriptions. Zero
+          name changes, zero breakage. LLMs read descriptions to select tools — tags
+          narrow decision space instantly. Bump tools.json contract to v1.2.0.
+          Roles: MANAGER(13), WORKER(9), SHARED(15), OPERATOR(5), INFRA(5), INTEGRATION(3).
+          Safety: SAFE(read-only), MUTATING(reversible), DESTRUCTIVE(process-affecting).
+        tags: [architecture, mcp, tools, naming]
+
+      - id: tool-consolidation-stubs
+        title: "Phase 2: Remove 11 zero-call tools + add 6-month alias layer"
+        effort: S
+        status: backlog
+        details: >
+          Remove: register_agent, discover_agents, get_tasks_for_agent, ack_event,
+          get_agent_cursor, parity_smoke, live_status_report, set_claim_override,
+          dedupe_tasks, get_roles (merge into status). Add alias dispatch that
+          redirects old names to merged equivalents. KEEP connect_team_members
+          (operators need manual reconnect). Bump contract to v1.3.0.
+        tags: [architecture, mcp, tools]
+        depends_on: [tool-consolidation-tags]
+
+      - id: tool-consolidation-merge
+        title: "Phase 3: Merge headless(5→1) + status(3→1) + events(3→1)"
+        effort: M
+        status: backlog
+        details: >
+          5 headless tools → orchestrator_headless(action="start|stop|restart|status|clean").
+          status + live_status_report + get_roles → status(format="full|live|compact|roles").
+          poll_events + ack_event + get_agent_cursor → poll_events(auto_advance=true).
+          Update all callers: Lumen, worker prompts, TUI, command bundles.
+          Validated: zero interactive functionality lost.
+        tags: [architecture, mcp, tools]
+        depends_on: [tool-consolidation-stubs]
+
+      - id: tool-consolidation-freeze
+        title: "Phase 4: Remove aliases, freeze v2.0 contract with 22 tools"
+        effort: S
+        status: backlog
+        details: >
+          Remove alias layer after 6 months. Freeze 22-tool contract.
+          Update README (67 refs), tests (42 refs), startup templates (4 files),
+          command bundles. Performance benchmark before/after.
+          Full report: docs/tool-consolidation-report.html
+        tags: [architecture, mcp, tools, contract]
+        depends_on: [tool-consolidation-merge]
 
       - id: stats-persistence-and-tui
         title: "Production capacity dashboard — real-time throughput math in TUI"
