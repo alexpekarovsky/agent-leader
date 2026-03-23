@@ -15,6 +15,9 @@ CLI_TIMEOUT=300
 IDLE_BACKOFF="30,60,120,300,900"
 MAX_IDLE_CYCLES=30
 DAILY_CALL_BUDGET=100
+DAILY_TOKEN_BUDGET=0
+HOURLY_TOKEN_BUDGET=0
+TOKENS_PER_CALL=10000
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -28,6 +31,9 @@ while [[ $# -gt 0 ]]; do
     --idle-backoff) IDLE_BACKOFF="$2"; shift 2 ;;
     --max-idle-cycles) MAX_IDLE_CYCLES="$2"; shift 2 ;;
     --daily-call-budget) DAILY_CALL_BUDGET="$2"; shift 2 ;;
+    --daily-token-budget) DAILY_TOKEN_BUDGET="$2"; shift 2 ;;
+    --hourly-token-budget) HOURLY_TOKEN_BUDGET="$2"; shift 2 ;;
+    --tokens-per-call) TOKENS_PER_CALL="$2"; shift 2 ;;
     --once) ONCE=true; shift ;;
     *) log ERROR "Unknown arg: $1"; exit 1 ;;
   esac
@@ -82,6 +88,17 @@ while true; do
     idle_streak=0
     if ! consume_daily_budget "$DAILY_CALL_BUDGET" "manager-${CLI}-${LEADER_AGENT}" "$LOG_DIR"; then
       log WARN "daily call budget exhausted (budget=$DAILY_CALL_BUDGET); exiting manager loop"
+      exit 0
+    fi
+    if ! consume_token_budget "$DAILY_TOKEN_BUDGET" "$HOURLY_TOKEN_BUDGET" "$TOKENS_PER_CALL" "manager-${CLI}-${LEADER_AGENT}" "$LOG_DIR"; then
+      local _exhaust_window="daily"
+      if [[ "$HOURLY_TOKEN_BUDGET" =~ ^[0-9]+$ ]] && (( HOURLY_TOKEN_BUDGET > 0 )); then
+        _exhaust_window="hourly"
+      fi
+      log WARN "token budget exhausted (daily=$DAILY_TOKEN_BUDGET hourly=$HOURLY_TOKEN_BUDGET); exiting manager loop"
+      write_budget_exhaustion_marker "$PROJECT_ROOT/.autopilot-pids" "manager-${CLI}-${LEADER_AGENT}" "$_exhaust_window"
+      emit_token_budget_alert "$PROJECT_ROOT" "$LEADER_AGENT" "$_exhaust_window" \
+        "$(( DAILY_TOKEN_BUDGET > 0 ? DAILY_TOKEN_BUDGET : HOURLY_TOKEN_BUDGET ))" "0"
       exit 0
     fi
   fi
