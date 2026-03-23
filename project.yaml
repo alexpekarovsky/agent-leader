@@ -453,6 +453,18 @@ roadmap:
           orchestrator_review_plan(task_id, action=approve|reject|edit),
           configurable auto_approve_policy in policy.json.
         tags: [orchestration, quality, autonomy, open-swe-inspired]
+      - id: tool-consolidation
+        title: "Consolidate 50 MCP tools to 18 — reduce LLM decision fatigue and token waste"
+        effort: L
+        status: backlog
+        details: >
+          First-principles audit found 50 tools but only 18 needed. Key merges:
+          5 headless tools → 1 with action param. 3 event tools → 1 poll with
+          auto-advance. 2 status tools → 1 with format param. 20 zero/low-usage
+          tools merged or deprecated. Saves ~1,600 tokens per session, -64%
+          decision space for LLM agents. See audit report in session notes.
+        tags: [architecture, mcp, tools, performance]
+
       - id: stats-persistence-and-tui
         title: "Production capacity dashboard — real-time throughput math in TUI"
         effort: M

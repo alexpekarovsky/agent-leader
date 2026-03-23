@@ -2850,6 +2850,8 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         if name == "orchestrator_guide":
+            if ORCH is None:
+                return _ok_and_audit(request_id, name, args, {"error": "orchestrator not initialized", "hint": "Check ORCHESTRATOR_ROOT and ORCHESTRATOR_POLICY settings."})
             return _ok_and_audit(request_id, name, args, _guide_payload())
 
         if name == "orchestrator_doctor":
@@ -2971,7 +2973,9 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             return _ok_and_audit(request_id, name, args, payload)
 
         if name == "orchestrator_create_github_issue":
-            bug_id = args["bug_id"]
+            if ORCH is None:
+                return _ok_and_audit(request_id, name, args, {"error": "orchestrator not initialized"})
+            bug_id = args.get("bug_id", "")
             repo = args.get("repo")
             result = ORCH.orchestrator_create_github_issue(bug_id=bug_id, repo=repo)
             return _ok_and_audit(request_id, name, args, result)
