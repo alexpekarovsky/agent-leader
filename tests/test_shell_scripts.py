@@ -412,6 +412,59 @@ class WorkerLoopTests(unittest.TestCase):
         self.assertLess(auto_pos, prompt.find("poll_events"))
         self.assertLess(auto_pos, prompt.find("claim_next_task"))
 
+    # -- Skip inter-cycle sleep detection ------------------------------------
+
+    def test_auto_claim_next_regex_detects_task_id(self):
+        """The regex in worker_loop.sh should detect TASK IDs near auto_claim_next."""
+        # Simulated CLI output containing an auto_claim_next with a task ID
+        output_with_task = (
+            'Tool result: {"ok": true, "result": {"submitted": true, '
+            '"auto_claim_next": {"id": "TASK-3c9ffcbc", "title": "Do stuff", '
+            '"status": "in_progress"}}}\n'
+        )
+        result = subprocess.run(
+            ["python3", "-c",
+             'import re,sys; sys.exit(0 if re.search(r"auto_claim_next.*?TASK-[0-9a-f]+",sys.stdin.read(),re.DOTALL) else 1)'],
+            input=output_with_task, capture_output=True, text=True,
+        )
+        self.assertEqual(0, result.returncode, "Should detect TASK ID in auto_claim_next")
+
+    def test_auto_claim_next_regex_rejects_null(self):
+        """No false positive when auto_claim_next is null."""
+        output_null = (
+            'Tool result: {"ok": true, "result": {"submitted": true, '
+            '"auto_claim_next": null}}\n'
+        )
+        result = subprocess.run(
+            ["python3", "-c",
+             'import re,sys; sys.exit(0 if re.search(r"auto_claim_next.*?TASK-[0-9a-f]+",sys.stdin.read(),re.DOTALL) else 1)'],
+            input=output_null, capture_output=True, text=True,
+        )
+        self.assertNotEqual(0, result.returncode, "Should NOT detect task when auto_claim_next is null")
+
+    def test_auto_claim_next_regex_rejects_no_match(self):
+        """No false positive when auto_claim_next is absent."""
+        output_no_claim = 'Task completed. All done.\n'
+        result = subprocess.run(
+            ["python3", "-c",
+             'import re,sys; sys.exit(0 if re.search(r"auto_claim_next.*?TASK-[0-9a-f]+",sys.stdin.read(),re.DOTALL) else 1)'],
+            input=output_no_claim, capture_output=True, text=True,
+        )
+        self.assertNotEqual(0, result.returncode, "Should NOT detect task when auto_claim_next absent")
+
+    def test_skip_sleep_fallback_uses_claimable_work_check(self):
+        """worker_loop.sh should have a worker_has_claimable_work fallback for skip_sleep."""
+        script = (REPO_ROOT / "scripts" / "autopilot" / "worker_loop.sh").read_text()
+        # Verify the fallback pattern exists: check claimable work after task completion
+        self.assertIn("worker_has_claimable_work", script)
+        # The skip_sleep fallback should appear in the post-cycle section (after run_cli_prompt)
+        post_cycle = script[script.index("run_cli_prompt"):]
+        self.assertRegex(
+            post_cycle,
+            r'skip_sleep.*false.*worker_has_claimable_work',
+            "skip_sleep fallback should check worker_has_claimable_work",
+        )
+
     # -- Max-logs pruning --------------------------------------------------
 
     def test_worker_max_logs_prunes_own_prefix(self):

@@ -436,12 +436,19 @@ EOF
       log INFO "persistent session completed multiple tasks; skipping inter-cycle sleep."
       skip_sleep=true
     fi
-    if grep -q "auto_claim_next" "$out_file"; then
-      # Extract auto_claim_next object and check for 'id' field
-      if python3 -c 'import json, sys; data = json.load(sys.stdin); print(data.get("auto_claim_next", {}).get("id"))' < "$out_file" | grep -q "TASK-"; then
+    if [[ "$skip_sleep" == false ]] && grep -q "auto_claim_next" "$out_file"; then
+      # The CLI output is a conversation log, not raw JSON. Use regex to
+      # detect a task ID (TASK-xxx) near the auto_claim_next key.
+      if python3 -c 'import re,sys; sys.exit(0 if re.search(r"auto_claim_next.*?TASK-[0-9a-f]+",sys.stdin.read(),re.DOTALL) else 1)' < "$out_file"; then
         log INFO "auto_claim_next returned a new task; skipping inter-cycle sleep."
         skip_sleep=true
       fi
+    fi
+    # Fallback: even without auto_claim_next in the output, skip the sleep
+    # if claimable work exists — eliminates 25s dead time between tasks.
+    if [[ "$skip_sleep" == false ]] && worker_has_claimable_work; then
+      log INFO "claimable work available after task completion; skipping inter-cycle sleep."
+      skip_sleep=true
     fi
     if (( capacity_streak > 0 )); then
       log INFO "capacity recovery: clearing capacity_streak=$capacity_streak after successful cycle"
