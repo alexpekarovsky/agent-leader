@@ -499,5 +499,89 @@ class ManagerCycleFullFlowTests(unittest.TestCase):
             self.assertGreaterEqual(len(contract_events[0]["payload"]["contracts"]), 1)
 
 
+class ManagerCycleNonBlockingConnectTests(unittest.TestCase):
+    """Tests for non-blocking connect_team_members in manager cycle."""
+
+    def test_non_blocking_connect_returns_immediately(self) -> None:
+        """blocking=False should return triggered_non_blocking without polling."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = _make_orch(root)
+            _connect_agent(orch, root, "claude_code")
+
+            result = orch.connect_team_members(
+                source="codex",
+                team_members=["claude_code"],
+                timeout_seconds=30,
+                blocking=False,
+            )
+
+            self.assertEqual("triggered_non_blocking", result["status"])
+            self.assertEqual(["claude_code"], result["requested"])
+            self.assertEqual([], result["connected"])
+            self.assertEqual(["claude_code"], result["missing"])
+            self.assertEqual(0, result["elapsed_seconds"])
+
+    def test_non_blocking_connect_emits_event(self) -> None:
+        """Non-blocking mode should still emit the connect event for workers."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = _make_orch(root)
+            _connect_agent(orch, root, "claude_code")
+
+            # Clear events
+            orch.bus.events_path.write_text("", encoding="utf-8")
+
+            orch.connect_team_members(
+                source="codex",
+                team_members=["claude_code"],
+                timeout_seconds=10,
+                blocking=False,
+            )
+
+            events = list(orch.bus.iter_events())
+            connect_events = [e for e in events if e.get("type") == "manager.connect_team_members"]
+            self.assertEqual(1, len(connect_events))
+            self.assertIn("claude_code", connect_events[0]["payload"]["team_members"])
+
+    def test_non_blocking_does_not_emit_result_event(self) -> None:
+        """Non-blocking mode should NOT emit a result event (no poll happened)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = _make_orch(root)
+            _connect_agent(orch, root, "claude_code")
+
+            orch.bus.events_path.write_text("", encoding="utf-8")
+
+            orch.connect_team_members(
+                source="codex",
+                team_members=["claude_code"],
+                timeout_seconds=10,
+                blocking=False,
+            )
+
+            events = list(orch.bus.iter_events())
+            result_events = [e for e in events if e.get("type") == "manager.connect_team_members.result"]
+            self.assertEqual(0, len(result_events))
+
+    def test_blocking_connect_still_polls(self) -> None:
+        """blocking=True (default) should still poll and return connected agents."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = _make_orch(root)
+            _connect_agent(orch, root, "claude_code")
+            orch.heartbeat("claude_code", _full_metadata(root, "claude_code"))
+
+            result = orch.connect_team_members(
+                source="codex",
+                team_members=["claude_code"],
+                timeout_seconds=5,
+                blocking=True,
+            )
+
+            self.assertEqual("connected", result["status"])
+            self.assertIn("claude_code", result["connected"])
+
+
 if __name__ == "__main__":
     unittest.main()
