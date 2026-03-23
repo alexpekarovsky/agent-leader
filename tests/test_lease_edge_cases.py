@@ -282,6 +282,41 @@ class CooldownTests(unittest.TestCase):
             self.assertIsNone(orch.claim_next_task("claude_code", engine_initiated=True))
             self.assertIsNone(orch.claim_next_task("claude_code"))  # not throttled
 
+    def test_engine_initiated_claim_bypasses_active_cooldown(self):
+        """Engine-initiated claims must never be throttled, even if a cooldown
+        is active from a prior worker-initiated empty claim."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = _make_orch(root)
+            _reg(orch, root, "claude_code")
+            # Worker-initiated empty claim → cooldown recorded
+            orch.claim_next_task("claude_code")
+            # Verify cooldown is active
+            throttled = orch.claim_next_task("claude_code")
+            self.assertTrue(throttled.get("throttled"))
+            # Engine-initiated claim must bypass the active cooldown
+            result = orch.claim_next_task("claude_code", engine_initiated=True)
+            self.assertIsNone(result)  # None (no task), but NOT throttled
+
+    def test_submit_report_auto_claim_does_not_penalize_next_worker_claim(self):
+        """Full bug scenario: worker finishes task → submit_report auto_claim_next
+        finds no next task → worker_loop restarts within 5s → claim must NOT be
+        throttled."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = _make_orch(root)
+            _reg(orch, root, "claude_code")
+            # Worker claims and completes a task
+            task = _create(orch, "claude_code")
+            claimed = orch.claim_next_task("claude_code")
+            self.assertEqual("in_progress", claimed["status"])
+            # Simulate submit_report → auto_claim_next (engine_initiated, no next task)
+            auto = orch.claim_next_task("claude_code", engine_initiated=True)
+            self.assertIsNone(auto)
+            # Simulate worker_loop restart within 5s — legitimate claim must not be throttled
+            result = orch.claim_next_task("claude_code")
+            self.assertIsNone(result)  # None (no task), but NOT a throttled dict
+
     def test_override_bypasses_cooldown(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

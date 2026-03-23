@@ -557,8 +557,10 @@ class Orchestrator:
         # --- Anti-spam cooldown for rapid empty claims ---
         # Uses tasks file mtime to detect new work; only throttles when the
         # tasks file is unchanged since the last empty claim.
+        # Engine-initiated claims (e.g. auto_claim_next after submit_report)
+        # bypass the cooldown check entirely — they must never be throttled.
         cooldown = self._claim_cooldown_seconds()
-        if cooldown > 0:
+        if cooldown > 0 and not engine_initiated:
             last_info = self._claim_cooldowns.get(owner)
             if last_info is not None:
                 last_ts, last_mtime = last_info
