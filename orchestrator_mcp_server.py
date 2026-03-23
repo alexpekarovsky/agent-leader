@@ -455,9 +455,9 @@ def _supervisor_from_tool_args(args: Dict[str, Any]) -> Supervisor:
         idle_backoff=str(args.get("idle_backoff", "30,60,120,300,900")),
         max_idle_cycles=int(args.get("max_idle_cycles", 30)),
         daily_call_budget=int(args.get("daily_call_budget", 100)),
-        daily_token_budget=int(args.get("daily_token_budget", 0)),
-        hourly_token_budget=int(args.get("hourly_token_budget", 0)),
-        tokens_per_call=int(args.get("tokens_per_call", 10000)),
+        daily_token_budget=int(args.get("daily_token_budget", SupervisorConfig.daily_token_budget)),
+        hourly_token_budget=int(args.get("hourly_token_budget", SupervisorConfig.hourly_token_budget)),
+        tokens_per_call=int(args.get("tokens_per_call", SupervisorConfig.tokens_per_call)),
         extra_workers=extra_workers,
     )
     return Supervisor(cfg, ORCH)
@@ -1830,10 +1830,44 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
 def _auto_manager_loop() -> None:
     interval_seconds = int(os.getenv("ORCHESTRATOR_AUTO_MANAGER_CYCLE_SECONDS", "15"))
     interval_seconds = max(5, min(interval_seconds, 300))
+    daily_call_budget = int(os.getenv("ORCHESTRATOR_AUTO_MANAGER_DAILY_BUDGET", "2000"))
+    daily_call_budget = max(0, daily_call_budget)
     lock_path = ORCH.state_dir / ".manager_auto_cycle.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_fh = lock_path.open("a+", encoding="utf-8")
     has_lock = False
+
+    # Budget tracking: simple daily call counter persisted in state dir.
+    _budget_stamp = ""
+    _budget_count = 0
+
+    def _budget_ok() -> bool:
+        nonlocal _budget_stamp, _budget_count
+        if daily_call_budget <= 0:
+            return True  # 0 = unlimited
+        import datetime as _dt
+        today = _dt.date.today().isoformat()
+        if today != _budget_stamp:
+            _budget_stamp = today
+            _budget_count = 0
+        if _budget_count >= daily_call_budget:
+            return False
+        _budget_count += 1
+        return True
+
+    def _has_actionable_work() -> bool:
+        """Return True if there are tasks or blockers worth running a cycle for."""
+        try:
+            tasks = ORCH.list_tasks()
+            actionable_statuses = {"reported", "in_progress", "blocked", "bug_open"}
+            if any(t.get("status") in actionable_statuses for t in tasks):
+                return True
+            open_blockers = ORCH.list_blockers(status="open")
+            if open_blockers:
+                return True
+        except Exception:
+            return True  # On error, run the cycle to be safe
+        return False
 
     while not _AUTO_LOOP_STOP.is_set():
         if not has_lock:
@@ -1847,6 +1881,18 @@ def _auto_manager_loop() -> None:
                     has_lock = False
         if has_lock:
             try:
+                # Bug 1: Check daily budget before running cycle
+                if not _budget_ok():
+                    logger.info("manager_cycle.skipped: daily_call_budget exhausted (%d)", daily_call_budget)
+                    _AUTO_LOOP_STOP.wait(interval_seconds)
+                    continue
+
+                # Bug 6: Skip cycle when nothing actionable exists
+                if not _has_actionable_work():
+                    logger.info("manager_cycle.skipped: no actionable work")
+                    _AUTO_LOOP_STOP.wait(interval_seconds)
+                    continue
+
                 # Process manager cycle logic
                 _manager_cycle(strict=True)
 

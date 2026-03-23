@@ -358,18 +358,26 @@ consume_daily_budget() {
   local safe_key
   safe_key="$(echo "$key" | tr -cs 'a-zA-Z0-9._-' '_')"
   local file="$root/.budget-${safe_key}-${stamp}.count"
-  local current=0
-  if [[ -f "$file" ]]; then
-    current="$(cat "$file" 2>/dev/null || echo 0)"
-  fi
-  if [[ ! "$current" =~ ^[0-9]+$ ]]; then
-    current=0
-  fi
-  if (( current >= budget )); then
-    return 1
-  fi
-  echo $(( current + 1 )) > "$file"
-  return 0
+  local lock_file="${file}.lock"
+  local rc=0
+  (
+    # Bug 3: flock around read-check-write to prevent budget race condition
+    flock -x 9 2>/dev/null || true  # Graceful fallback if flock unavailable
+    local current=0
+    if [[ -f "$file" ]]; then
+      current="$(cat "$file" 2>/dev/null || echo 0)"
+    fi
+    if [[ ! "$current" =~ ^[0-9]+$ ]]; then
+      current=0
+    fi
+    if (( current >= budget )); then
+      exit 1
+    fi
+    echo $(( current + 1 )) > "$file"
+    exit 0
+  ) 9>"$lock_file"
+  rc=$?
+  return $rc
 }
 
 # ---------------------------------------------------------------------------

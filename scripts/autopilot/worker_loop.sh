@@ -210,9 +210,27 @@ def looks_qa(task):
     return any(k in txt for k in ("qa", "regression", "test"))
 
 for task in tasks:
-    if str(task.get("owner", "")).strip() != agent:
+    status = str(task.get("status", "")).strip().lower()
+    owner = str(task.get("owner", "")).strip()
+
+    # Bug 5: Wingman lane — also pass idle gate for reported tasks with pending review
+    if lane == "wingman":
+        if status == "reported":
+            rg = task.get("review_gate") if isinstance(task.get("review_gate"), dict) else {}
+            rg_status = str(rg.get("status", "")).strip().lower()
+            if rg_status in {"pending", ""}:
+                if team_id:
+                    tid = str(task.get("team_id", "")).strip().lower()
+                    if tid and tid != team_id:
+                        continue
+                if not task_matches_project_scope(task):
+                    continue
+                raise SystemExit(0)
+
+    if owner != agent:
         continue
-    if str(task.get("status", "")).strip().lower() not in {"assigned", "bug_open"}:
+    # Bug 2: Also keep worker alive for in_progress tasks (resume/continue)
+    if status not in {"assigned", "bug_open", "in_progress"}:
         continue
     if team_id:
         tid = str(task.get("team_id", "")).strip().lower()
