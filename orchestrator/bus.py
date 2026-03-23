@@ -14,12 +14,17 @@ from pathlib import Path
 from typing import Any, Deque, Dict, Iterable, Iterator, Optional, Tuple
 import gzip
 
-logger = logging.getLogger("orchestrator.bus")
-
 try:
     import fcntl
 except Exception:  # pragma: no cover
     fcntl = None
+
+try:
+    import inotify_simple
+except ImportError:
+    inotify_simple = None
+
+logger = logging.getLogger("orchestrator.bus")
 
 
 class EventBus:
@@ -82,6 +87,7 @@ class EventBus:
         if timeout_sec <= 0:
             return False
 
+        # 1. Try kqueue for BSD/macOS
         if hasattr(select, "kqueue") and path.exists():
             fd = -1
             kq = None
@@ -92,19 +98,46 @@ class EventBus:
                     fd,
                     filter=select.KQ_FILTER_VNODE,
                     flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
-                    fflags=select.KQ_NOTE_WRITE | select.KQ_NOTE_EXTEND,
+                    # Watch for writes and attribute changes (e.g., size changes)
+                    # KQ_NOTE_EXTEND is important for files being appended to
+                    fflags=select.KQ_NOTE_WRITE | select.KQ_NOTE_EXTEND | select.KQ_NOTE_ATTRIB,
                 )
                 events = kq.control([ev], 1, timeout_sec)
                 return len(events) > 0
-            except OSError:
-                pass  # fall through to sleep-based fallback
+            except OSError as e:
+                # Log the error but fall through to other mechanisms
+                logger.debug("kqueue failed: %s", e)
             finally:
                 if kq is not None:
                     kq.close()
                 if fd >= 0:
                     os.close(fd)
 
-        # Fallback: sleep for min(remaining, 0.5s) and assume possible change.
+        # 2. Try inotify for Linux
+        if inotify_simple is not None and sys.platform.startswith("linux") and path.exists():
+            ino = None
+            try:
+                ino = inotify_simple.INotify()
+                # Watch the file for modify (IN_MODIFY) and close-write (IN_CLOSE_WRITE) events.
+                # IN_ATTRIB for metadata changes
+                watch_flags = (
+                    inotify_simple.flags.MODIFY
+                    | inotify_simple.flags.CLOSE_WRITE
+                    | inotify_simple.flags.ATTRIB
+                )
+                ino.add_watch(str(path), watch_flags)
+
+                # Use select to wait for events on the inotify file descriptor
+                rlist, _, _ = select.select([ino.fd], [], [], timeout_sec)
+                return bool(rlist) # If rlist is not empty, an event occurred
+
+            except Exception as e:
+                logger.debug("inotify failed: %s", e)
+            finally:
+                if ino is not None:
+                    ino.close()
+
+        # 3. Fallback: sleep for min(remaining, _POLL_FALLBACK_SLEEP) and assume possible change.
         time.sleep(min(timeout_sec, self._POLL_FALLBACK_SLEEP))
         return True
 
