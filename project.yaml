@@ -487,6 +487,29 @@ roadmap:
             Gemini: 15 tasks/day | 1,800 LOC/day | 0.5% bug rate | avg 4min/task
             Codex:   0 (offline — tokens exhausted)
 
+          COST EFFICIENCY:
+            Cost/task: ~$0.15 avg (tokens × model price)
+            Cost/LOC: ~$0.0002
+            Wasted spend: 32% (idle manager cycles, failed tasks, orphaned claims)
+            Budget efficiency: 68% of calls produced actual output
+
+          QUALITY SIGNALS:
+            First-pass success: 78% (accepted on first submission)
+            Rework rate: 22% (rejected → resubmitted)
+            Code churn: 5% (lines added then deleted same sprint = wasted work)
+            Review rejection rate: Claude 8%, Gemini 15%
+
+          RELIABILITY:
+            Swarm uptime: 62% (time workers active vs wall clock)
+            Mean time between deaths: 4.2h
+            Orphaned tasks: 3 (claimed but never reported — lost to crashes)
+            Avg blocker resolution: 45min
+
+          VELOCITY TRENDS:
+            Sprint velocity: [sparkline over last 5 sprints]
+            Cycle time p50/p90: 8min / 25min
+            Queue wait time: 2min avg (assigned → claimed)
+
           Expose all via orchestrator_status for Lumen dashboard and Telegram reports.
         tags: [analytics, tui, persistence, statistics, capacity-planning]
 
