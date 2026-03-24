@@ -46,3 +46,4 @@ saves/
 .venv/
 .pytest_cache/
 agatha-quest/
+agent_leader.egg-info/
