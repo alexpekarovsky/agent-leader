@@ -423,6 +423,18 @@ roadmap:
           respawn workers when it creates new tasks.
         tags: [resilience, headless, supervisor]
 
+      - id: auto-mark-backlog-done
+        title: "Manager auto-marks project.yaml backlog items as done when matching tasks complete"
+        effort: S
+        status: backlog
+        details: >
+          When manager validates a task as done, check if the task has a roadmap:*
+          tag. If yes, find the matching item in project.yaml and update its status
+          from backlog/in_progress to done. This is bookkeeping only — the manager
+          never creates, removes, or reprioritizes backlog items. Product decisions
+          stay with the human operator or Lumen.
+        tags: [automation, planning, bookkeeping]
+
       - id: auto-planner-dedup-guard
         title: "Auto-planner must check existing tasks before creating from roadmap"
         effort: S
