@@ -173,7 +173,7 @@ roadmap:
       - id: persistent-worker-sessions
         title: "Persistent worker sessions — eliminate CLI cold-start per task"
         effort: L
-        status: backlog
+        status: done
         details: >
           Keep a long-running CLI session per worker instead of spawn-per-cycle.
           Workers receive tasks via stdin/file signal, maintain hot MCP context.
@@ -183,7 +183,7 @@ roadmap:
       - id: kill-inter-cycle-sleep
         title: "Skip inter-cycle sleep when work is available"
         effort: S
-        status: backlog
+        status: done
         details: >
           After successful task completion, if auto_claim_next returned a new task,
           skip the 25s sleep_with_jitter in worker_loop.sh. Only sleep when idle.
@@ -204,7 +204,7 @@ roadmap:
       - id: remove-redundant-worker-ceremony
         title: "Remove redundant poll_events + claim_next_task from worker prompt"
         effort: XS
-        status: backlog
+        status: done
         details: >
           connect_to_leader already auto-claims a task. Worker prompt then calls
           poll_events(1s wait) + claim_next_task again. Wasted LLM turn + 1s.
@@ -214,7 +214,7 @@ roadmap:
       - id: fix-double-claim-cooldown
         title: "BUG: claim_cooldown penalizes legitimate fast workers"
         effort: S
-        status: backlog
+        status: done
         details: >
           Auto_claim_next (line 2991) fires after submit_report. If no next task,
           cooldown records a miss. When worker_loop restarts within 5s, legitimate
@@ -224,7 +224,7 @@ roadmap:
       - id: non-blocking-reconnect
         title: "Make connect_team_members non-blocking in manager_cycle"
         effort: S
-        status: backlog
+        status: done
         details: >
           Manager_cycle blocks up to 15s on connect_team_members polling (line 1457).
           Happens every cycle. Fix: emit reconnect event, check on next cycle.
@@ -233,7 +233,7 @@ roadmap:
       - id: stale-snapshot-bug
         title: "BUG: manager_cycle uses stale task snapshot for final summary"
         effort: XS
-        status: backlog
+        status: done
         details: >
           list_tasks() called at line 1339, mutations happen throughout cycle,
           but remaining_by_owner summary uses the stale initial snapshot.
@@ -243,7 +243,7 @@ roadmap:
       - id: event-bus-busy-wait
         title: "BUG: Event bus wait_for_event_index uses 100ms busy-wait polling"
         effort: S
-        status: backlog
+        status: done
         details: >
           bus.py line 143-146 does time.sleep(0.1) in tight loop counting file lines.
           For 1s poll_events that's 10 stat ops. Replace with inotify/kqueue wakeup.
@@ -252,7 +252,7 @@ roadmap:
       - id: auto-resume-on-completion
         title: "Auto-resume — when backlog has items, workers self-restart"
         effort: S
-        status: backlog
+        status: done
         details: >
           After all current tasks complete, check if backlog/roadmap has more items.
           If yes, auto-create next batch and resume. If no, sleep until signaled.
@@ -262,7 +262,7 @@ roadmap:
       - id: daily-task-planning
         title: "Daily auto-planning — manager generates today's tasks from roadmap"
         effort: M
-        status: backlog
+        status: done
         details: >
           Every morning (or on daemon start), manager reads project.yaml roadmap,
           picks next milestone items, breaks them into tasks, assigns workers.
@@ -276,7 +276,7 @@ roadmap:
       - id: token-budget-guardrails
         title: "Hard daily/hourly token budget with automatic shutdown"
         effort: M
-        status: backlog
+        status: done
         details: >
           Track tokens per headless session. Hard ceiling (configurable).
           When budget exhausted: gracefully stop workers, emit alert, don't restart
@@ -286,7 +286,7 @@ roadmap:
       - id: idle-detection-auto-stop
         title: "Auto-stop workers after N consecutive idle cycles"
         effort: S
-        status: backlog
+        status: done
         details: >
           If worker has no claimable work for X consecutive cycles (default 3),
           stop the worker process entirely. Don't burn CLI cold-starts on empty polls.
@@ -296,7 +296,7 @@ roadmap:
       - id: bus-rotation-cleanup
         title: "Automated bus/ rotation and archive cleanup"
         effort: S
-        status: backlog
+        status: done
         details: >
           bus/ is 1GB (895MB archive, 159MB audit.jsonl). Add automatic rotation:
           archive files older than 7 days, compress, delete after 30 days.
@@ -316,7 +316,7 @@ roadmap:
       - id: autopilot-log-rotation
         title: "Auto-rotate .autopilot-logs/ (1,257 files currently)"
         effort: XS
-        status: backlog
+        status: done
         details: >
           Add log rotation: keep last 50 per worker, compress older, delete after 7 days.
         tags: [hygiene, disk]
@@ -324,7 +324,7 @@ roadmap:
       - id: reduce-fsync-overhead
         title: "Reduce _write_json double-fsync overhead"
         effort: S
-        status: backlog
+        status: done
         details: >
           Two fsyncs per JSON write (file + directory). Tasks.json written 3+ times
           per task lifecycle = 6+ fsyncs. Remove directory fsync, batch writes.
@@ -333,7 +333,7 @@ roadmap:
       - id: deepcopy-cache-optimization
         title: "Replace deepcopy in _read_json cache with lazy copy"
         effort: S
-        status: backlog
+        status: done
         details: >
           Every _read_json cache hit does full copy.deepcopy of entire tasks list.
           O(n) on every read. Return reference for read-only callers, copy only for mutations.
@@ -356,7 +356,7 @@ roadmap:
       - id: tui-empty-instance-tags
         title: "BUG: Instance ID tags show empty '#' — lane instance_id not propagated to TUI"
         effort: XS
-        status: backlog
+        status: done
         details: >
           Team roster shows 'Claude Code #' with no tag. The instance_id field
           from lane_details is not being extracted correctly. Fix: ensure
@@ -376,7 +376,7 @@ roadmap:
       - id: tui-rdy-vs-wrk-mismatch
         title: "BUG: Claude lanes show RDY while actively working on tasks"
         effort: S
-        status: backlog
+        status: done
         details: >
           Lane rows use per-process alive/dead state for badge, but task_activity
           comes from the parent agent. When claude_code has in_progress tasks,
@@ -387,7 +387,7 @@ roadmap:
       - id: tui-stale-instance-cleanup
         title: "Filter stale/offline instances from team roster"
         effort: S
-        status: backlog
+        status: done
         details: >
           Team roster shows every historical instance — dozens of offline entries.
           Only show instances with heartbeat within timeout or active processes.
@@ -476,7 +476,7 @@ roadmap:
       - id: tool-consolidation-tags
         title: "Phase 1: Add [ROLE][SAFETY] description tags to all 50 MCP tools"
         effort: S
-        status: backlog
+        status: done
         details: >
           Add [MANAGER][MUTATING], [WORKER][SAFE], [OPERATOR][SAFE], [INFRA][DESTRUCTIVE],
           [SHARED][MUTATING], [INTEGRATION][SAFE] tags to all tool descriptions. Zero
