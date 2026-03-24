@@ -2019,17 +2019,21 @@ def _auto_manager_loop() -> None:
         return True
 
     def _has_actionable_work() -> bool:
-        """Return True if there are tasks or blockers worth running a cycle for."""
+        """Return True if there are tasks or blockers worth running a cycle for,
+        OR if auto-planning might create new work from the roadmap backlog."""
         try:
             tasks = ORCH.list_tasks()
-            actionable_statuses = {"reported", "in_progress", "blocked", "bug_open"}
+            actionable_statuses = {"reported", "in_progress", "blocked", "bug_open", "assigned"}
             if any(t.get("status") in actionable_statuses for t in tasks):
                 return True
             open_blockers = ORCH.list_blockers(status="open")
             if open_blockers:
                 return True
+            # Check if auto-planning is due (might create new tasks from roadmap)
+            if ORCH.policy.triggers.get("auto_plan_from_roadmap", True):
+                return True  # Let the cycle run — plan_from_roadmap will decide if there's backlog
         except Exception:
-            return True  # On error, run the cycle to be safe
+            return True
         return False
 
     while not _AUTO_LOOP_STOP.is_set():
