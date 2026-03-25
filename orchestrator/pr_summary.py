@@ -39,7 +39,7 @@ def generate_pr_summary(
     # -- Title / summary ----------------------------------------------------
     title = task.get("title", "Untitled task")
     task_id = task.get("id", "")
-    sections.append(f"## Summary\n")
+    sections.append("## Summary\n")
     if task_id:
         sections.append(f"**Task:** `{task_id}`\n")
     sections.append(f"{title}\n")
@@ -66,8 +66,8 @@ def generate_pr_summary(
         command = test_summary.get("command", "")
 
         lines = ["## Test summary\n"]
-        lines.append(f"| Passed | Failed | Total |")
-        lines.append(f"|--------|--------|-------|")
+        lines.append("| Passed | Failed | Total |")
+        lines.append("|--------|--------|-------|")
         lines.append(f"| {passed} | {failed} | {total} |")
         if command:
             lines.append(f"\n```\n{command}\n```")

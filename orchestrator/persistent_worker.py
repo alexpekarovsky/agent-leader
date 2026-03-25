@@ -11,7 +11,6 @@ Falls back to legacy spawn-per-cycle on repeated failures.
 """
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import signal as signal_mod
@@ -19,10 +18,9 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
-
 
 # Store original time.strftime for use in mocks that need to call the original.
 _original_time_strftime = time.strftime
@@ -249,7 +247,7 @@ class PersistentWorker:
             _log("DEBUG", f"_has_claimable_work: failed to read or parse tasks.json: {e}")
             return False
         if not isinstance(tasks, list):
-            _log("DEBUG", f"_has_claimable_work: tasks.json content is not a list.")
+            _log("DEBUG", "_has_claimable_work: tasks.json content is not a list.")
             return False
 
         for task in tasks:
@@ -313,7 +311,7 @@ class PersistentWorker:
         description = task.get("description", "")
         criteria = task.get("acceptance_criteria", [])
         criteria_text = "\n".join(f"  - {c}" for c in criteria) if criteria else "  (none specified)"
-        task_team_id = str(task.get("team_id", "")).strip()
+        str(task.get("team_id", "")).strip()
 
         lane_rules = ""
         if self.cfg.lane == "wingman":
@@ -671,7 +669,9 @@ class PersistentWorker:
         via ``_is_budget_window_active``.  Uses the same JSON format as the shell
         ``write_budget_exhaustion_marker`` in common.sh.
         """
-        from datetime import datetime as _dt, timedelta, timezone as _tz
+        from datetime import datetime as _dt
+        from datetime import timedelta
+        from datetime import timezone as _tz
         process_key = self.cfg.process_name
         pid_dir = self.cfg.pid_dir
         os.makedirs(pid_dir, exist_ok=True)

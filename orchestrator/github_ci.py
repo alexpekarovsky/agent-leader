@@ -8,8 +8,8 @@ Also provides utilities for creating GitHub issues from orchestrator bug records
 from __future__ import annotations
 
 import json
-import urllib.request
 import urllib.error
+import urllib.request
 from typing import Any, Dict, Optional
 
 
@@ -45,7 +45,7 @@ def normalize_github_ci_result(payload: Dict[str, Any]) -> Dict[str, Any]:
     log_url = str(payload.get("output", {}).get("log_url") or payload.get("log_url") or "").strip()
     if log_url:
         ci_logs.append(log_url)
-    
+
     # ci_logs might also be a list of urls
     if isinstance(payload.get("ci_logs"), list):
         for log in payload.get("ci_logs"):

@@ -509,7 +509,7 @@ class Supervisor:
             return ProcessStatus(name, "disabled", None, restarts, "unknown", "no_tasks")
 
         pid = _read_pid(self.cfg.pid_dir, name)
-        
+
         heartbeat_status = "unknown"
         task_activity = "no_tasks"
 
@@ -523,7 +523,7 @@ class Supervisor:
             "wingman": self.cfg.wingman_agent,
             "gemini": "gemini",
         }
-        
+
         agent_base_name = _proc_to_agent_base_name.get(name)
         if agent_base_name: # Only proceed if it's a known agent process
             # Determine the specific instance_id for this process
@@ -628,7 +628,7 @@ class Supervisor:
             else:
                 self._stop_proc(name)
         print(f"Supervisor started. PID dir: {self.cfg.pid_dir}")
-        print(f"Check status: supervisor.sh status")
+        print("Check status: supervisor.sh status")
 
     def stop(self) -> None:
         """Stop all processes."""
@@ -712,7 +712,6 @@ class Supervisor:
         rolling window, the supervisor stops all processes and emits a
         ``swarm.circuit_breaker`` event to prevent infinite restart loops.
         """
-        import json as _json
 
         _log("INFO", f"Starting supervisor monitor loop (interval={interval}s)")
 
@@ -1046,7 +1045,7 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> Tuple[str, Supe
         backoff_base=args.backoff_base,
         backoff_max=args.backoff_max,
     )
-    # Patch monitor interval into cfg if we want to store it there, 
+    # Patch monitor interval into cfg if we want to store it there,
     # but for now we'll just return it as a local var or use a custom action.
     # To keep it simple, I'll pass it to main.
     setattr(cfg, "monitor_interval", args.monitor_interval)
@@ -1082,16 +1081,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     policy_path = Path(cfg.project_root) / "config" / "policy.balanced.json"
     if not policy_path.exists():
         _log("WARN", f"Policy file not found: {policy_path}. This may lead to unexpected behavior.")
-        # Attempt to load a default policy without a file path if not found, 
+        # Attempt to load a default policy without a file path if not found,
         # or handle this error more gracefully based on project conventions.
         # For now, we'll let Policy.load() fail if it strictly requires a file.
         # Alternatively, we could create a dummy Policy object here.
         # Given the orchestrator.policy.py, it expects a path.
         # Let's assume for now that if it doesn't exist, it's an error.
         raise FileNotFoundError(f"Policy file not found: {policy_path}")
-    
+
     policy = Policy.load(path=policy_path)
-    
+
     orchestrator = Orchestrator(root=Path(cfg.project_root), policy=policy)
 
     sup = Supervisor(cfg, orchestrator)
