@@ -28,7 +28,7 @@ jobs:
           pip install pytest
 
       - name: Run tests
-        run: python -m pytest -q --tb=short
+        run: python -m unittest discover tests/ -q
 
   lint:
     runs-on: ubuntu-latest
