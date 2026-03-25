@@ -2163,9 +2163,11 @@ def _collect_commit_metrics(commit_sha: str) -> Dict[str, Any]:
     sha = str(commit_sha).strip()
     if not sha:
         return {"collected": False, "error": "empty_commit_sha", "provenance": "git"}
+    if not re.fullmatch(r'[0-9a-fA-F]{4,40}', sha):
+        return {"collected": False, "error": "invalid_commit_sha", "provenance": "git"}
     try:
         proc = subprocess.run(
-            ["git", "diff-tree", "--no-commit-id", "--numstat", "-r", sha],
+            ["git", "diff-tree", "--no-commit-id", "--numstat", "-r", "--", sha],
             cwd=str(ROOT_DIR),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

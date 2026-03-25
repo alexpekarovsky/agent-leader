@@ -142,6 +142,14 @@ class Orchestrator:
                 flush=True,
             )
 
+    @staticmethod
+    def _validate_agent_name(name: str) -> None:
+        """Reject agent names that could cause path traversal or other injection."""
+        if not re.fullmatch(r'[a-zA-Z0-9_.\-]+', str(name)):
+            raise ValueError(
+                f"Invalid agent name {name!r}: must contain only alphanumerics, underscores, dots, or hyphens"
+            )
+
     @contextmanager
     def _state_lock(self) -> Any:
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -551,6 +559,7 @@ class Orchestrator:
         team_id: Optional[str] = None,
         engine_initiated: bool = False,
     ) -> Optional[Dict[str, Any]]:
+        self._validate_agent_name(owner)
         self._assert_agent_operational(owner)
         normalized_team_id = str(team_id or "").strip().lower()
 
@@ -2909,6 +2918,7 @@ class Orchestrator:
         }
 
     def register_agent(self, agent: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        self._validate_agent_name(agent)
         with self._state_lock():
             agents = self._read_json(self.agents_path, make_copy=True)
             if not isinstance(agents, dict):
@@ -2927,6 +2937,7 @@ class Orchestrator:
         return entry
 
     def heartbeat(self, agent: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        self._validate_agent_name(agent)
         with self._state_lock():
             agents = self._read_json(self.agents_path, make_copy=True)
             if not isinstance(agents, dict):
@@ -2957,6 +2968,7 @@ class Orchestrator:
         announce: bool = True,
         source: Optional[str] = None,
     ) -> Dict[str, Any]:
+        self._validate_agent_name(agent)
         metadata_payload = metadata if isinstance(metadata, dict) else {}
         explicit_role_provided = "role" in metadata_payload and bool(str(metadata_payload.get("role", "")).strip())
 
@@ -4475,6 +4487,10 @@ class Orchestrator:
                     if owner:
                         agents_with_work.add(owner)
             for agent in agents_with_work:
+                try:
+                    self._validate_agent_name(agent)
+                except ValueError:
+                    continue  # Skip agents with invalid names
                 signal_path = self.state_dir / f".wakeup-{agent}"
                 signal_path.write_text(self._now(), encoding="utf-8")
         except Exception:

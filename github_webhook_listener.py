@@ -1,29 +1,39 @@
+import hashlib
+import hmac
 import http.server
 import json
+import logging
 import os
 import sys
 import requests
+
+logger = logging.getLogger(__name__)
 
 # Configuration
 PORT = int(os.getenv("GITHUB_WEBHOOK_PORT", 8000))
 MCP_PORT = int(os.getenv("MCP_PORT", 9000)) # Default to 9000 if not set
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", f"http://localhost:{MCP_PORT}/mcp") 
-GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET") # For signature verification, omitted for now
+GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
 
 class GitHubWebhookHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         # Read the request body
         content_length = int(self.headers['Content-Length'])
         payload = self.rfile.read(content_length)
-        
-        # Optionally verify the webhook signature (omitted for brevity)
-        # if GITHUB_WEBHOOK_SECRET:
-        #     expected_signature = self.headers.get("X-Hub-Signature-256")
-        #     if not self._verify_signature(payload, expected_signature):
-        #         self.send_response(401)
-        #         self.end_headers()
-        #         self.wfile.write(b"Invalid signature")
-        #         return
+
+        # Verify the webhook signature (fail-closed)
+        if not GITHUB_WEBHOOK_SECRET:
+            logger.warning("GITHUB_WEBHOOK_SECRET is not set -- rejecting all webhook requests (fail-closed)")
+            self.send_response(403)
+            self.end_headers()
+            self.wfile.write(b"Webhook secret not configured")
+            return
+        expected_signature = self.headers.get("X-Hub-Signature-256")
+        if not self._verify_signature(payload, expected_signature):
+            self.send_response(401)
+            self.end_headers()
+            self.wfile.write(b"Invalid signature")
+            return
 
         try:
             payload_json = json.loads(payload.decode('utf-8'))
@@ -80,14 +90,11 @@ class GitHubWebhookHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"GitHub Webhook Listener is running and ready.")
 
-    # Helper for signature verification (requires 'hmac' and 'hashlib')
-    # def _verify_signature(self, payload, expected_signature):
-    #     if not expected_signature:
-    #         return False
-    #     import hmac
-    #     import hashlib
-    #     mac = hmac.new(GITHUB_WEBHOOK_SECRET.encode('utf-8'), payload, hashlib.sha256)
-    #     return hmac.compare_digest(f"sha256={mac.hexdigest()}", expected_signature)
+    def _verify_signature(self, payload, expected_signature):
+        if not expected_signature:
+            return False
+        mac = hmac.new(GITHUB_WEBHOOK_SECRET.encode('utf-8'), payload, hashlib.sha256)
+        return hmac.compare_digest(f"sha256={mac.hexdigest()}", expected_signature)
 
 
 if __name__ == "__main__":

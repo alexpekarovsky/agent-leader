@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -125,31 +126,31 @@ class SupervisorConfig:
     def _token_budget_args(self) -> str:
         parts = ""
         if self.daily_token_budget > 0:
-            parts += f" --daily-token-budget {self.daily_token_budget}"
+            parts += f" --daily-token-budget {shlex.quote(str(self.daily_token_budget))}"
         if self.hourly_token_budget > 0:
-            parts += f" --hourly-token-budget {self.hourly_token_budget}"
+            parts += f" --hourly-token-budget {shlex.quote(str(self.hourly_token_budget))}"
         if self.tokens_per_call != 10000:
-            parts += f" --tokens-per-call {self.tokens_per_call}"
+            parts += f" --tokens-per-call {shlex.quote(str(self.tokens_per_call))}"
         return parts
 
     def _persistent_worker_args(self, name: str, lane: str, cli: str, agent: str, team_id: str, project_root: str) -> str:
         instance_id = _get_instance_id(name, lane)
-        session_arg = f" --max-tasks-per-session {self.max_tasks_per_session}" if self.max_tasks_per_session > 0 else ""
+        session_arg = f" --max-tasks-per-session {shlex.quote(str(self.max_tasks_per_session))}" if self.max_tasks_per_session > 0 else ""
         return (
-            f" --cli {cli}"
-            f" --agent {agent}"
-            f" --lane {lane}{_team_arg(team_id)}"
-            f" --instance-id {instance_id}"
-            f" --project-root {project_root}"
-            f" --repo-root {self.repo_root}"
-            f" --log-dir {self.log_dir}"
-            f" --pid-dir {self.pid_dir}"
-            f" --process-name {name}"
-            f" --cli-timeout {self.worker_cli_timeout}"
-            f" --heartbeat-interval {self.worker_interval}"
-            f" --idle-backoff {self.idle_backoff}"
-            f" --max-idle-cycles {self.max_idle_cycles}"
-            f" --daily-call-budget {self.daily_call_budget}"
+            f" --cli {shlex.quote(cli)}"
+            f" --agent {shlex.quote(agent)}"
+            f" --lane {shlex.quote(lane)}{_team_arg(team_id)}"
+            f" --instance-id {shlex.quote(instance_id)}"
+            f" --project-root {shlex.quote(project_root)}"
+            f" --repo-root {shlex.quote(self.repo_root)}"
+            f" --log-dir {shlex.quote(self.log_dir)}"
+            f" --pid-dir {shlex.quote(self.pid_dir)}"
+            f" --process-name {shlex.quote(name)}"
+            f" --cli-timeout {shlex.quote(str(self.worker_cli_timeout))}"
+            f" --heartbeat-interval {shlex.quote(str(self.worker_interval))}"
+            f" --idle-backoff {shlex.quote(str(self.idle_backoff))}"
+            f" --max-idle-cycles {shlex.quote(str(self.max_idle_cycles))}"
+            f" --daily-call-budget {shlex.quote(str(self.daily_call_budget))}"
             f"{session_arg}"
             f"{self._token_budget_args()}"
         )
@@ -157,17 +158,17 @@ class SupervisorConfig:
     def _worker_loop_args(self, name: str, lane: str, cli: str, agent: str, team_id: str, project_root: str) -> str:
         instance_id = _get_instance_id(name, lane)
         return (
-            f" --cli {cli}"
-            f" --agent {agent}"
-            f" --lane {lane}{_team_arg(team_id)}"
-            f" --instance-id {instance_id}"
-            f" --project-root {project_root}"
-            f" --interval {self.worker_interval}"
-            f" --cli-timeout {self.worker_cli_timeout}"
-            f" --log-dir {self.log_dir}"
-            f" --idle-backoff {self.idle_backoff}"
-            f" --max-idle-cycles {self.max_idle_cycles}"
-            f" --daily-call-budget {self.daily_call_budget}"
+            f" --cli {shlex.quote(cli)}"
+            f" --agent {shlex.quote(agent)}"
+            f" --lane {shlex.quote(lane)}{_team_arg(team_id)}"
+            f" --instance-id {shlex.quote(instance_id)}"
+            f" --project-root {shlex.quote(project_root)}"
+            f" --interval {shlex.quote(str(self.worker_interval))}"
+            f" --cli-timeout {shlex.quote(str(self.worker_cli_timeout))}"
+            f" --log-dir {shlex.quote(self.log_dir)}"
+            f" --idle-backoff {shlex.quote(str(self.idle_backoff))}"
+            f" --max-idle-cycles {shlex.quote(str(self.max_idle_cycles))}"
+            f" --daily-call-budget {shlex.quote(str(self.daily_call_budget))}"
             f"{self._token_budget_args()}"
             f"{_event_driven_arg(self)}"
         )
@@ -260,7 +261,7 @@ def _get_instance_id(name: str, lane: str = "default") -> str:
     return f"{name}#headless-{lane}"
 
 def _team_arg(tid: str) -> str:
-    return f" --team-id {tid}" if tid else ""
+    return f" --team-id {shlex.quote(tid)}" if tid else ""
 
 def _event_driven_arg(cfg: SupervisorConfig) -> str:
     return " --event-driven" if cfg.event_driven else ""
@@ -278,16 +279,16 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
 
     if name == "manager":
         return (
-            f"{cfg.scripts}/manager_loop.sh"
-            f" --cli {cfg.leader_cli}"
-            f" --leader-agent {cfg.leader_agent}"
-            f" --project-root {cfg.project_root}"
-            f" --interval {cfg.manager_interval}"
-            f" --cli-timeout {cfg.manager_cli_timeout}"
-            f" --log-dir {cfg.log_dir}"
-            f" --idle-backoff {cfg.idle_backoff}"
-            f" --max-idle-cycles {cfg.max_idle_cycles}"
-            f" --daily-call-budget {cfg.daily_call_budget}"
+            f"{shlex.quote(str(cfg.scripts))}/manager_loop.sh"
+            f" --cli {shlex.quote(cfg.leader_cli)}"
+            f" --leader-agent {shlex.quote(cfg.leader_agent)}"
+            f" --project-root {shlex.quote(cfg.project_root)}"
+            f" --interval {shlex.quote(str(cfg.manager_interval))}"
+            f" --cli-timeout {shlex.quote(str(cfg.manager_cli_timeout))}"
+            f" --log-dir {shlex.quote(cfg.log_dir)}"
+            f" --idle-backoff {shlex.quote(str(cfg.idle_backoff))}"
+            f" --max-idle-cycles {shlex.quote(str(cfg.max_idle_cycles))}"
+            f" --daily-call-budget {shlex.quote(str(cfg.daily_call_budget))}"
             f"{cfg._token_budget_args()}"
         )
     if name == "wingman":
@@ -298,7 +299,7 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             )
         else:
             return (
-                f"{cfg.scripts}/worker_loop.sh"
+                f"{shlex.quote(str(cfg.scripts))}/worker_loop.sh"
                 f"{cfg._worker_loop_args(name, 'wingman', cfg.wingman_cli, cfg.wingman_agent, cfg.wingman_team_id, cfg.wingman_project_root)}"
             )
     if name in ("claude", "claude_2", "claude_3"):
@@ -309,17 +310,17 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             )
         else:
             return (
-                f"{cfg.scripts}/worker_loop.sh"
+                f"{shlex.quote(str(cfg.scripts))}/worker_loop.sh"
                 f"{cfg._worker_loop_args(name, 'default', 'claude', 'claude_code', cfg.claude_team_id, cfg.claude_project_root)}"
             )
     if name == "gemini":
         env_parts = []
         if cfg.gemini_model:
-            env_parts.append(f"ORCHESTRATOR_GEMINI_MODEL={cfg.gemini_model}")
+            env_parts.append(f"ORCHESTRATOR_GEMINI_MODEL={shlex.quote(cfg.gemini_model)}")
         if cfg.gemini_fallback_model:
-            env_parts.append(f"ORCHESTRATOR_GEMINI_FALLBACK_MODEL={cfg.gemini_fallback_model}")
-        env_parts.append(f"ORCHESTRATOR_GEMINI_CAPACITY_RETRIES={cfg.gemini_capacity_retries}")
-        env_parts.append(f"ORCHESTRATOR_GEMINI_CAPACITY_BACKOFF_SECONDS={cfg.gemini_capacity_backoff}")
+            env_parts.append(f"ORCHESTRATOR_GEMINI_FALLBACK_MODEL={shlex.quote(cfg.gemini_fallback_model)}")
+        env_parts.append(f"ORCHESTRATOR_GEMINI_CAPACITY_RETRIES={shlex.quote(str(cfg.gemini_capacity_retries))}")
+        env_parts.append(f"ORCHESTRATOR_GEMINI_CAPACITY_BACKOFF_SECONDS={shlex.quote(str(cfg.gemini_capacity_backoff))}")
         env_prefix = " ".join(env_parts) + " " if env_parts else ""
         if cfg.persistent_workers:
             return (
@@ -328,7 +329,7 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             )
         else:
             return (
-                f"{env_prefix}{cfg.scripts}/worker_loop.sh"
+                f"{env_prefix}{shlex.quote(str(cfg.scripts))}/worker_loop.sh"
                 f"{cfg._worker_loop_args(name, 'default', 'gemini', 'gemini', cfg.gemini_team_id, cfg.gemini_project_root)}"
             )
     if name == "codex_worker":
@@ -339,15 +340,15 @@ def proc_cmd(name: str, cfg: SupervisorConfig,
             )
         else:
             return (
-                f"{cfg.scripts}/worker_loop.sh"
+                f"{shlex.quote(str(cfg.scripts))}/worker_loop.sh"
                 f"{cfg._worker_loop_args(name, 'default', 'codex', 'codex', cfg.codex_team_id, cfg.codex_project_root)}"
             )
     if name == "watchdog":
         return (
-            f"{cfg.scripts}/watchdog_loop.sh"
-            f" --project-root {cfg.project_root}"
+            f"{shlex.quote(str(cfg.scripts))}/watchdog_loop.sh"
+            f" --project-root {shlex.quote(cfg.project_root)}"
             f" --interval 15"
-            f" --log-dir {cfg.log_dir}"
+            f" --log-dir {shlex.quote(cfg.log_dir)}"
         )
     raise ValueError(f"unknown process name: {name}")
 
