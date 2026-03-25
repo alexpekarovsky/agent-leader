@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 import logging
 import os
@@ -12,7 +13,6 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Deque, Dict, Iterable, Iterator, Optional, Tuple
-import gzip
 
 try:
     import fcntl
@@ -246,7 +246,7 @@ class EventBus:
         for f in archive_dir.iterdir():
             if not f.is_file():
                 continue
-            
+
             try:
                 # Check creation/modification time
                 file_mtime = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc)
@@ -281,7 +281,7 @@ class EventBus:
             return
 
         now = datetime.now(timezone.utc)
-        files_to_process: List[Tuple[float, Path]] = []
+        files_to_process: list[tuple[float, Path]] = []
 
         for f in log_dir.iterdir():
             if not f.is_file():
@@ -317,7 +317,7 @@ class EventBus:
                     logger.info("Compressed old log file (age > %d days): %s", compress_after_days, f.name)
                 except Exception as e:
                     logger.warning("Error compressing log file %s: %s", f.name, e)
-        
+
         # Finally, delete any files that are still left and exceed max_files (if not already handled by age)
         # Re-list to get the current state after age-based processing
         current_files_for_prefix = []
@@ -353,7 +353,7 @@ class EventBus:
 
             # Read raw lines (preserves original JSON exactly).
             with self.events_path.open("r", encoding="utf-8") as fh:
-                lines = [l for l in fh if l.strip()]
+                lines = [line for line in fh if line.strip()]
 
             total = len(lines)
             if total <= retention_limit:

@@ -298,10 +298,10 @@ def _migrate_events_file(
         if dry_run:
             lines = events_path.read_text(encoding="utf-8").splitlines()
             needs = any(
-                isinstance((obj := _safe_json(l)), dict)
+                isinstance((obj := _safe_json(line)), dict)
                 and "schema_version" not in obj
-                for l in lines
-                if l.strip()
+                for line in lines
+                if line.strip()
             )
             (report["migrated"] if needs else report["skipped"]).append("events.jsonl")
         else:

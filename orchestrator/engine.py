@@ -61,14 +61,19 @@ class _LazyCopyList(list):
             yield list.__getitem__(self, i)
 
 
-from orchestrator.bus import EventBus
-from orchestrator.policy import Policy
-from orchestrator.quality_gates import QualityGateOutcome, run_quality_gates
-from orchestrator.self_review import SelfReviewConfig
-from orchestrator.github_ci import normalize_github_ci_result, build_github_issue_payload, post_github_issue
-from orchestrator import pr_stack as _pr_stack
-from orchestrator.migration import migrate_state as _migrate_state
-from orchestrator.spec_kit import generate_spec as _generate_spec, read_spec as _read_spec
+from orchestrator import pr_stack as _pr_stack  # noqa: E402
+from orchestrator.bus import EventBus  # noqa: E402
+from orchestrator.github_ci import (  # noqa: E402
+    build_github_issue_payload,
+    normalize_github_ci_result,
+    post_github_issue,
+)
+from orchestrator.migration import migrate_state as _migrate_state  # noqa: E402
+from orchestrator.policy import Policy  # noqa: E402
+from orchestrator.quality_gates import QualityGateOutcome, run_quality_gates  # noqa: E402
+from orchestrator.self_review import SelfReviewConfig  # noqa: E402
+from orchestrator.spec_kit import generate_spec as _generate_spec  # noqa: E402
+from orchestrator.spec_kit import read_spec as _read_spec  # noqa: E402
 
 try:
     import fcntl
@@ -2097,14 +2102,6 @@ class Orchestrator:
             "next_ready": [{"id": p["id"], "branch": p["branch"]} for p in ready_prs],
         }
 
-        return {
-            "status": "success",
-            "action": "simulated_github_issue_creation",
-            "task_id": task_id,
-            "issue_title": issue_title,
-            "log_message": log_message,
-        }
-
     def process_github_handoff_event(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Process a github.handoff_required event and simulate GitHub API interaction.
 
@@ -2150,18 +2147,18 @@ class Orchestrator:
                 f"CI Run URL: {normalized_ci.get('url', 'N/A')}\n\n"
                 "Please investigate the failure and address the underlying issues."
             )
-            
+
             # Simulate GitHub API call
             print(f"INFO: Simulating GitHub API call to create issue/comment for task {task_id}", file=sys.stderr, flush=True)
             print(f"  Issue Title: {issue_title}", file=sys.stderr, flush=True)
             print(f"  Issue Body: {issue_body}", file=sys.stderr, flush=True)
-            
+
             # In a real scenario:
             # from github import Github
             # g = Github(github_token)
             # repo = g.get_user().get_repo("your-repo-name") # Need to determine repo context
             # repo.create_issue(title=issue_title, body=issue_body, labels=["bug", "ci-failure"])
-            
+
             return {
                 "status": "success",
                 "action": "simulated_github_issue_creation",
@@ -2169,7 +2166,7 @@ class Orchestrator:
                 "issue_title": issue_title,
                 "log_message": log_message,
             }
-        
+
         return {
             "status": "unhandled_action",
             "reason": f"No specific handler for action_required: {action_required}",
@@ -2264,7 +2261,7 @@ class Orchestrator:
                         state=pr_state,
                         pr_number=pr_number,
                     )
-                    
+
                     if action == "closed":
                         if pr_merged:
                             ungated_prs = _pr_stack.process_merge_event(current_stack, pr_entry["id"])
@@ -2320,7 +2317,7 @@ class Orchestrator:
                     return {**processed_summary, "status": "skipped", "details": "check_run missing head_sha"}
 
                 updated_prs: List[Dict[str, Any]] = []
-                
+
                 # Prioritize matching via linked pull_requests in the check_run payload
                 if pull_requests:
                     for pr_link in pull_requests:
@@ -2353,7 +2350,7 @@ class Orchestrator:
                             })
                         else:
                             print(f"INFO: Check run for PR {pr_number} ({pr_branch}) in {repo_full_name} received, but PR not found in any stack.", file=sys.stderr, flush=True)
-                
+
                 # If no linked PRs or if PRs were not found in stacks, try matching directly by branch/SHA
                 if not updated_prs and check_run.get("head_branch"):
                     branch = check_run.get("head_branch")
@@ -2402,13 +2399,6 @@ class Orchestrator:
 
             self.bus.emit(f"github.webhook.unhandled.{event_type}", payload, source=source)
             return processed_summary
-        
-        return {
-            "status": "unhandled_action",
-            "reason": f"No specific handler for action_required: {action_required}",
-            "task_id": task_id,
-            "log_message": log_message,
-        }
 
     # ------------------------------------------------------------------
     # Unsupervised stop / escalation policy
@@ -3094,9 +3084,9 @@ class Orchestrator:
             "reason_message": reason_message,
             "auto_claimed_task": auto_claimed,
             "next": (
-                [f"execute auto_claimed_task (already claimed via connect)"]
+                ["execute auto_claimed_task (already claimed via connect)"]
                 if auto_claimed
-                else [f"no work available — idle"]
+                else ["no work available — idle"]
             ) if not is_manager_connect else [
                 f"orchestrator_poll_events(agent={agent}, timeout_ms=120000)",
             ],
@@ -4457,7 +4447,7 @@ class Orchestrator:
             logger.warning("Attempted to flush dirty tasks, but _current_tasks is None.")
             self._tasks_dirty = False
             return
-        
+
         try:
             self._write_json(self.tasks_path, self._current_tasks)
             self._tasks_dirty = False

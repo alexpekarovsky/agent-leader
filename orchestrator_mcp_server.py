@@ -7,22 +7,22 @@ Expose configurable multi-agent orchestration tools via MCP JSON-RPC.
 from __future__ import annotations
 
 import atexit
-import logging
-import re
+import gzip
 import hashlib
 import io
 import json
+import logging
 import os
+import re
 import signal
 import subprocess
 import sys
 import threading
+import time
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-import gzip
-import time
 
 # Define auto-plan interval
 AUTO_PLAN_INTERVAL_SECONDS = 86400  # 24 hours
@@ -38,17 +38,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("orchestrator.mcp")
 
-from orchestrator.command_bundles import (
-    get_command_bundle,
-    list_command_bundles,
-    list_startup_templates,
-    load_startup_template,
-)
-from orchestrator.doctor import build_doctor_payload
-from orchestrator.engine import Orchestrator
-from orchestrator.github_ci import normalize_github_ci_result
-from orchestrator.policy import Policy
-from orchestrator.supervisor import ExtraWorker, Supervisor, SupervisorConfig
+from orchestrator.doctor import build_doctor_payload  # noqa: E402
+from orchestrator.engine import Orchestrator  # noqa: E402
+from orchestrator.github_ci import normalize_github_ci_result  # noqa: E402
+from orchestrator.policy import Policy  # noqa: E402
+from orchestrator.supervisor import ExtraWorker, Supervisor, SupervisorConfig  # noqa: E402
 
 try:
     import fcntl
@@ -1533,7 +1527,7 @@ def _prune_logs_directory(
                 logger.info("Compressed old log file (age > %d days): %s", compress_after_days, f.name)
             except Exception as e:
                 logger.warning("Error compressing log file %s: %s", f.name, e)
-    
+
     # Finally, delete any files that are still left and exceed max_files (if not already handled by age)
     # Re-list to get the current state after age-based processing
     current_files_for_prefix = []
@@ -1898,7 +1892,6 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
 
 
     # Auto-stop supervisor when all tasks are done and no new work was created
-    auto_stopped = False
     if stop_policy.get("stop_required"):
         reason_codes = stop_policy.get("reason_codes", [])
         if "all_tasks_complete" in reason_codes:
@@ -1908,7 +1901,6 @@ def _manager_cycle(strict: bool) -> Dict[str, Any]:
                 try:
                     supervisor = _supervisor_from_tool_args({})
                     _run_supervisor_action(supervisor, "stop")
-                    auto_stopped = True
                 except Exception as exc:
                     logger.warning("manager_cycle: auto-stop failed: %s", exc)
 
@@ -2288,7 +2280,7 @@ def _collect_audit_metrics() -> Dict[str, int]:
     counts: Dict[str, int] = {}
     try:
         # Bounded read for performance if file is very large.
-        audit_records = ORCH.bus.read_audit(limit=2000) 
+        audit_records = ORCH.bus.read_audit(limit=2000)
         for record in audit_records:
             if record.get("category") == "mcp_tool_call":
                 tool = record.get("tool", "unknown")
@@ -2422,7 +2414,7 @@ def _aggregate_by_project_root(
     for project_identifier, data in summary.items():
         data["agents"] = sorted(list(data["agents"]))
         data["active_agent_count"] = len(data["agents"])
-        
+
         # Try to get project_name from project.yaml within that root if not already set
         if not data["project_name"] and data["project_root"] != "<unknown_root>":
             project_yaml_path = Path(data["project_root"]) / "project.yaml"
@@ -2539,14 +2531,14 @@ def _status_metrics(tasks: List[Dict[str, Any]], bugs_open: List[Dict[str, Any]]
 
 
 def _suggest_recovery_actions(
-    tasks: List[Dict[str, Any]], 
-    blockers: List[Dict[str, Any]], 
+    tasks: List[Dict[str, Any]],
+    blockers: List[Dict[str, Any]],
     bugs: List[Dict[str, Any]]
 ) -> List[Dict[str, str]]:
     """Analyze state to suggest recovery actions for the operator."""
     actions = []
     now = datetime.now(timezone.utc)
-    
+
     # 1. Stale in_progress tasks
     for task in tasks:
         if task.get("status") == "in_progress":
@@ -2558,7 +2550,7 @@ def _suggest_recovery_actions(
                         "type": "stale_task",
                         "task_id": task["id"],
                         "message": f"Task {task['id']} has been in_progress for {int(age//60)}m. If the agent is dead, reassign it.",
-                        "action": f"orchestrator_reassign_stale_tasks(stale_after_seconds=600)"
+                        "action": "orchestrator_reassign_stale_tasks(stale_after_seconds=600)"
                     })
 
     # 2. Open blockers
@@ -2604,7 +2596,7 @@ def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
     # Wingman Lane Visibility: tasks with review_gate status 'pending' or 'rejected'
     wingman_pending = [t for t in tasks if isinstance(t.get("review_gate"), dict) and t["review_gate"].get("status") == "pending"]
     wingman_rejected = [t for t in tasks if isinstance(t.get("review_gate"), dict) and t["review_gate"].get("status") == "rejected"]
-    wingman_count = len(wingman_pending) + len(wingman_rejected)
+    len(wingman_pending) + len(wingman_rejected)
 
     recovery_actions = _suggest_recovery_actions(tasks, blockers_open, bugs_open)
 
@@ -2697,11 +2689,11 @@ def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
 
     # Unified Header for both Interactive and Headless
     leader = str(roles.get("leader", "codex"))
-    leader_identity = _agent_identity(leader, by_agent.get(leader, {}))
+    _agent_identity(leader, by_agent.get(leader, {}))
     team_agents = sorted(roles.get("team_members", []) or [])
-    team = ", ".join(_agent_identity(agent).get("display_name", agent) for agent in team_agents)
+    ", ".join(_agent_identity(agent).get("display_name", agent) for agent in team_agents)
     status_state = "Active" if any(a.get("status") == "active" for a in agents_all) else "Idle"
-    in_progress_count = len([t for t in tasks if t.get("status") == "in_progress"])
+    len([t for t in tasks if t.get("status") == "in_progress"])
     assigned_count = len([t for t in tasks if t.get("status") == "assigned"])
 
     # Unicode progress bar helper
@@ -2726,7 +2718,7 @@ def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
 
     # LIVE STATUS
     lines.append("")
-    lines.append(f"\u25b6 LIVE STATUS")
+    lines.append("\u25b6 LIVE STATUS")
     ip_tasks = [t for t in tasks if t.get("status") == "in_progress"]
     if ip_tasks:
         for t in ip_tasks[:4]:
@@ -2735,11 +2727,11 @@ def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
     elif assigned_count > 0:
         lines.append(f"  \u25cb {assigned_count} task(s) queued, waiting for workers")
     else:
-        lines.append(f"  \u25cb All work done. Swarm idle.")
+        lines.append("  \u25cb All work done. Swarm idle.")
 
     # TEAM ROSTER
     lines.extend(["", sep])
-    lines.append(f"\u2692 TEAM")
+    lines.append("\u2692 TEAM")
     lines.append(f"  {'Agent':<20} {'Role':<10} {'Status':<10} {'Model':<18}  {'Activity'}")
 
     role_by_agent: Dict[str, str] = {}
@@ -2778,7 +2770,7 @@ def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
 
     # VELOCITY
     lines.extend(["", sep])
-    lines.append(f"\u26a1 VELOCITY")
+    lines.append("\u26a1 VELOCITY")
     metrics = _status_metrics(tasks=tasks, bugs_open=bugs_open, blockers_open=blockers_open)
     tp = metrics.get("throughput", {})
     tm = metrics.get("timings_seconds", {})
@@ -2796,7 +2788,7 @@ def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
         code = report_metrics.get("totals", {})
         code["by_agent"] = report_metrics.get("by_agent", {})
     lines.extend(["", sep])
-    lines.append(f"\u2692 CODE OUTPUT")
+    lines.append("\u2692 CODE OUTPUT")
     lines.append(f"  Commits: {code.get('unique_commits', 0)}  |  +{code.get('lines_added_total', 0)}/-{code.get('lines_deleted_total', 0)} ({code.get('net_lines_total', 0)} net lines)")
     for ag_name, ag_stats in sorted((code.get("by_agent") or {}).items()):
         if isinstance(ag_stats, dict) and ag_stats.get("commits", 0) > 0:
@@ -2808,7 +2800,7 @@ def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
     blocked = [t for t in tasks if t.get("status") == "blocked"]
     if queued or blocked:
         lines.extend(["", sep])
-        lines.append(f"\u2630 WORK QUEUE")
+        lines.append("\u2630 WORK QUEUE")
         for t in queued[:5]:
             own = _agent_identity(str(t.get("owner", ""))).get("display_name", "?")
             lines.append(f"  \u25b7 {own:<14} {str(t.get('title',''))[:45]}  [{t.get('id','-')}]")
@@ -2818,7 +2810,7 @@ def _live_status_report(args: Dict[str, Any]) -> Dict[str, Any]:
     # RECOVERY ACTIONS
     if recovery_actions:
         lines.extend(["", sep])
-        lines.append(f"\u26a0 RECOVERY ACTIONS")
+        lines.append("\u26a0 RECOVERY ACTIONS")
         for action in recovery_actions[:5]:
             lines.append(f"  [{action['type']}] {action['message']}")
 
@@ -2913,14 +2905,14 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
         if name == "orchestrator_parity_smoke":
             checks = []
             overall_status = "pass"
-            
+
             # 1. Lifecycle: Check if ORCH engine is loaded
             if ORCH is None:
                 checks.append({"name": "engine_loaded", "status": "fail", "reason": "Orchestrator engine not initialized.", "action": "Check project root binding and configuration (ORCHESTRATOR_ROOT, ORCHESTRATOR_POLICY)."})
                 overall_status = "fail"
             else:
                 checks.append({"name": "engine_loaded", "status": "pass", "reason": "Engine loaded successfully.", "action": None})
-                
+
                 # 2. Status: Check roles
                 roles = ORCH.get_roles()
                 if not roles.get("leader"):
@@ -2928,7 +2920,7 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                     overall_status = "fail"
                 else:
                     checks.append({"name": "leader_assigned", "status": "pass", "reason": f"Leader is {roles['leader']}.", "action": None})
-                
+
                 # 3. Task flow: Check tasks can be listed
                 try:
                     tasks = ORCH.list_tasks()
