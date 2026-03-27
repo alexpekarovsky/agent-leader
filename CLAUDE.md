@@ -1,3 +1,19 @@
+## GitHub Actions Security (MANDATORY)
+
+**NEVER use tag-based references for GitHub Actions.** Always pin to the full commit SHA.
+
+Bad: `uses: actions/checkout@v4`
+Good: `uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4`
+
+Why: Tags can be force-pushed by attackers (see Trivy supply chain attack, March 2026). SHAs are immutable.
+
+When adding or updating any GitHub Action:
+1. Find the SHA: `gh api repos/OWNER/REPO/git/ref/tags/TAG --jq '.object.sha'`
+2. Use the SHA in the workflow file
+3. Add a `# vX` comment after the SHA for readability
+
+---
+
 ## Project Tracking (Lumen)
 
 This project is tracked by Lumen Project Command Center.
