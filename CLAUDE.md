@@ -12,6 +12,12 @@ When adding or updating any GitHub Action:
 2. Use the SHA in the workflow file
 3. Add a `# vX` comment after the SHA for readability
 
+**4-Point CI/CD Security Checklist (enforce on every workflow change):**
+1. **No `pull_request_target`** — runs with repo owner permissions, trivially exploitable from forks
+2. **Pin all actions to SHA** — tags are mutable, SHAs are not
+3. **Explicit `permissions: contents: read`** — without this, GitHub defaults to read+write on everything
+4. **Minimal secrets** — never expose secrets to fork PRs, scope to specific jobs
+
 ---
 
 ## Project Tracking (Lumen)
