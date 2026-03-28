@@ -801,6 +801,58 @@ class Supervisor:
                                 f"Process {name} reached max restarts ({self.cfg.max_restarts}). Manual intervention required."
                             )
 
+                # -- Swarm death recovery ----------------------------------------
+                # Detect "all workers dead + tasks still assigned/in_progress"
+                # and reset restart counters so workers can be restarted on the
+                # next monitor pass.  This prevents the swarm from staying dead
+                # after max_restarts was hit while work remains.
+                _NON_WORKER_PROCS = {"manager", "wingman", "watchdog"}
+                worker_procs = [
+                    p for p in self._procs
+                    if p not in _NON_WORKER_PROCS
+                    and proc_enabled(p, self.cfg.leader_agent, self.cfg.claude_lanes, self.cfg.mcp_auto_manager_active)
+                ]
+                if worker_procs:
+                    all_workers_dead = all(
+                        self._status_proc(wp).state in ("dead", "stopped")
+                        for wp in worker_procs
+                    )
+                    if all_workers_dead:
+                        # Check if there are assigned or in_progress tasks.
+                        has_pending_tasks = False
+                        try:
+                            tasks = self.orchestrator.list_tasks()
+                            has_pending_tasks = any(
+                                t.get("status") in ("assigned", "in_progress", "bug_open")
+                                for t in tasks
+                            )
+                        except Exception:
+                            pass
+                        if has_pending_tasks:
+                            _log("WARN",
+                                 "SWARM DEATH RECOVERY: all workers dead but tasks remain assigned — "
+                                 "resetting restart counters and restarting workers")
+                            try:
+                                self.orchestrator.publish_event(
+                                    event_type="swarm.death_recovery",
+                                    source="supervisor",
+                                    payload={
+                                        "workers": worker_procs,
+                                        "reason": "all_workers_dead_tasks_pending",
+                                    },
+                                )
+                            except Exception:
+                                pass
+                            for wp in worker_procs:
+                                # Skip budget-exhausted workers.
+                                if _is_budget_window_active(self.cfg.pid_dir, wp):
+                                    _log("INFO", f"Skipping recovery restart of {wp}: budget exhausted")
+                                    continue
+                                # Reset restart counter so the worker can restart.
+                                rcf = _restart_count_file(self.cfg.pid_dir, wp)
+                                rcf.write_text("0")
+                                _log("INFO", f"Reset restart counter for {wp}, will restart next cycle")
+
                 time.sleep(interval)
         except KeyboardInterrupt:
             _log("INFO", "Monitor loop stopped by user.")

@@ -5,6 +5,9 @@ description = "MCP orchestration server for multi-agent software delivery"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
+dependencies = [
+    "pyyaml>=6.0",
+]
 authors = [
     {name = "Alex Pekarovsky"},
 ]

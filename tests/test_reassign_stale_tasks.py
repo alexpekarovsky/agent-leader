@@ -426,5 +426,76 @@ class ReassignResultStructureTests(unittest.TestCase):
             self.assertGreaterEqual(len(reassign_events), 1)
 
 
+class ReassignExhaustedAgentTests(unittest.TestCase):
+    """Tests for token exhaustion exclusion during reassignment."""
+
+    def test_exhausted_agent_excluded_from_active_pool(self) -> None:
+        """An agent with budget_exhausted metadata should not receive reassigned tasks."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = _make_orch(root)
+            _register_agent(orch, "claude_code")
+            _register_agent(orch, "gemini")
+            _register_agent(orch, "codex_worker")
+
+            task_id = _create_and_claim(orch, "Exhaustion test task", "claude_code")
+
+            _make_agent_stale(orch, "claude_code")
+
+            # Mark gemini as budget_exhausted via heartbeat metadata.
+            orch.heartbeat("gemini", metadata={
+                "client": "test-client", "model": "test-model",
+                "cwd": str(root), "project_root": str(root),
+                "permissions_mode": "default", "sandbox_mode": "workspace-write",
+                "session_id": "sess-gemini", "connection_id": "cid-gemini",
+                "server_version": "0.1.0", "verification_source": "test",
+                "status": "budget_exhausted",
+            })
+            # codex_worker is healthy.
+            orch.heartbeat("codex_worker", metadata={
+                "client": "test-client", "model": "test-model",
+                "cwd": str(root), "project_root": str(root),
+                "permissions_mode": "default", "sandbox_mode": "workspace-write",
+                "session_id": "sess-codex", "connection_id": "cid-codex",
+                "server_version": "0.1.0", "verification_source": "test",
+            })
+
+            result = orch.reassign_stale_tasks_to_active_workers(
+                source="codex", stale_after_seconds=600,
+            )
+
+            # gemini should be excluded; task should go to codex_worker.
+            self.assertIn("gemini", result["exhausted_agents"])
+            self.assertNotIn("gemini", result["active_agents"])
+            self.assertEqual(1, result["reassigned_count"])
+
+    def test_capacity_degraded_agent_excluded(self) -> None:
+        """An agent with capacity_degraded task_activity should be excluded."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orch = _make_orch(root)
+            _register_agent(orch, "claude_code")
+            _register_agent(orch, "gemini")
+
+            task_id = _create_and_claim(orch, "Degraded test task", "claude_code")
+            _make_agent_stale(orch, "claude_code")
+
+            # Mark gemini with capacity_degraded via task_activity.
+            orch.heartbeat("gemini", metadata={
+                "client": "test-client", "model": "test-model",
+                "cwd": str(root), "project_root": str(root),
+                "permissions_mode": "default", "sandbox_mode": "workspace-write",
+                "session_id": "sess-gemini", "connection_id": "cid-gemini",
+                "server_version": "0.1.0", "verification_source": "test",
+                "task_activity": "capacity_degraded",
+            })
+
+            result = orch.reassign_stale_tasks_to_active_workers(
+                source="codex", stale_after_seconds=600,
+            )
+
+            self.assertIn("gemini", result["exhausted_agents"])
+
+
 if __name__ == "__main__":
     unittest.main()

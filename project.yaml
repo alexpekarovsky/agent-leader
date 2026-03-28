@@ -5,13 +5,51 @@ revenue: true
 
 architecture:
   design_doc: docs/lumen-agent-leader-integration-design.md
-  flow: "User → Lumen (clarify, consult, plan, approve) → project.yaml milestones → agent-leader (leader breaks into tasks, workers execute, wingman reviews) → Lumen monitors + escalates blockers → completion summary"
   hierarchy: "Version → Milestone → Task"
-  team_template:
-    leader: "any model, headless, manages + validates + plans"
-    wingman: "claude/ccm, pure code reviewer, never implements"
-    workers: "3 claude lanes + gemini + codex (different providers for diversity)"
-  lumen_integration: "Lumen v0.4.8 Agent Swarm — meta-orchestrator drives agent-leader teams via MCP"
+
+  roles:
+    leader:
+      model: "any (default: Codex)"
+      responsibility: "Plans work, creates tasks, assigns to team, validates after review, opens bugs on failure, manages full lifecycle"
+      permissions: "create/assign tasks, validate, merge worktrees, open/close bugs, reassign stale"
+      codes: false
+    wingman:
+      model: "claude/ccm (default)"
+      responsibility: "Pure code reviewer — security + quality gate. Approves or rejects before leader can validate. Never implements."
+      permissions: "review_gate approve/reject only"
+      codes: false
+    workers:
+      models: "3 claude lanes + gemini + codex (different providers for diversity)"
+      responsibility: "Claim tasks, implement in isolated worktree, commit with SHA, submit delivery report. Loop on bug fixes if rejected."
+      permissions: "claim tasks, commit to worktree branch only, submit reports, raise blockers"
+      codes: true
+
+  task_lifecycle:
+    - step: 1. Plan
+      actor: leader
+      action: "Breaks milestones into tasks (plan_from_roadmap), creates with acceptance criteria"
+    - step: 2. Assign + Worktree
+      actor: leader
+      action: "Assigns task to worker. Creates isolated git worktree on dedicated branch (git worktree add)"
+    - step: 3. Implement
+      actor: worker
+      action: "Claims task, codes in isolated worktree. Cannot touch main. Commits with SHA reference"
+    - step: 4. Self-review
+      actor: worker
+      action: "2-3 rounds of self-critique before submission. Submits structured delivery report"
+    - step: 5. Code Review
+      actor: wingman
+      action: "Reviews diff — security + code quality. Approves or rejects via review_gate. Rejection → back to step 3"
+    - step: 6. Validate
+      actor: leader
+      action: "Checks acceptance criteria met, tests pass, commits correct. If fail → opens bug, worker loops back to step 3"
+    - step: 7. Merge + Cleanup
+      actor: leader
+      action: "Merges worktree branch into main. Removes worktree (git worktree remove). Task status → done"
+
+  flow_summary: "User → Lumen (clarify, plan, approve) → project.yaml milestones → Leader (break into tasks, assign + create worktrees) → Workers (implement in isolation) → Wingman (review gate) → Leader (validate + merge) → Lumen (monitor, escalate blockers, completion summary)"
+
+  lumen_integration: "Lumen v0.4.8 Agent Swarm — meta-orchestrator dispatches via Telegram, drives agent-leader teams via MCP, monitors progress, escalates blockers to human"
 
 version:
   current: v1.0.0
@@ -401,7 +439,7 @@ roadmap:
       - id: auto-detect-token-exhaustion
         title: "Auto-detect agent token exhaustion and remove from team"
         effort: M
-        status: backlog
+        status: done
         details: >
           When an agent (codex, claude, gemini) hits API rate limits or token
           exhaustion, the supervisor should detect it (from CLI exit codes,
@@ -414,7 +452,7 @@ roadmap:
       - id: swarm-death-recovery
         title: "Auto-restart workers when swarm dies due to idle-gate or stale state"
         effort: M
-        status: backlog
+        status: done
         details: >
           Workers exit on max_idle_cycles but the supervisor doesn't restart them
           when new tasks appear. The auto-planner creates tasks for a dead swarm.
@@ -426,7 +464,7 @@ roadmap:
       - id: auto-mark-backlog-done
         title: "Manager auto-marks project.yaml backlog items as done when matching tasks complete"
         effort: S
-        status: backlog
+        status: done
         details: >
           When manager validates a task as done, check if the task has a roadmap:*
           tag. If yes, find the matching item in project.yaml and update its status
@@ -438,7 +476,7 @@ roadmap:
       - id: auto-planner-dedup-guard
         title: "Auto-planner must check existing tasks before creating from roadmap"
         effort: S
-        status: backlog
+        status: done
         details: >
           plan_from_roadmap creates duplicate tasks because it doesn't check if
           tasks for the same roadmap item already exist. Fix: check for existing
@@ -653,6 +691,25 @@ roadmap:
           Workers call this after completing tasks or encountering surprises.
           Makes workers progressively smarter about the project over time.
         tags: [coordination, knowledge, squad-inspired]
+
+      - id: worktree-per-task
+        title: "Worktree-per-task — each assigned task gets an isolated git worktree"
+        effort: M
+        status: backlog
+        details: >
+          Each assign_task auto-creates a git worktree (git worktree add) on a
+          dedicated branch. Worker operates in isolated directory — cannot touch
+          main. On task completion + wingman approval + leader validation, leader
+          merges the worktree branch into main and cleans up (git worktree remove).
+          Benefits: parallel workers never conflict, each task has clean diff,
+          failed tasks can be discarded without affecting main. Prerequisite for
+          Lumen integration — enables Lumen to dispatch multiple parallel tasks
+          via Telegram without merge conflicts. Implementation: hook into
+          orchestrator_create_task (create worktree), orchestrator_claim_next_task
+          (pass worktree path to worker), orchestrator_validate_task (merge + cleanup).
+          Store worktree_path in task state. Configurable: worktree_enabled in
+          policy.json (default false until stable).
+        tags: [parallelism, git, isolation, lumen-integration, velocity]
 
   - version: v0.3.0
     name: "UX and Operator Experience"

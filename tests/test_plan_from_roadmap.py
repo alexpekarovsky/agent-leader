@@ -291,5 +291,110 @@ roadmap:
             orchestrator_mcp_server.POLICY = original_policy
 
 
+class TestAutoMarkBacklogDone(unittest.TestCase):
+    """Tests for auto-marking project.yaml roadmap items as done on validation."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.orch = _make_orch(self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write_project_yaml(self, content: str = SAMPLE_PROJECT_YAML) -> None:
+        (self.root / "project.yaml").write_text(content, encoding="utf-8")
+
+    def _read_project_yaml(self):
+        import yaml
+        return yaml.safe_load((self.root / "project.yaml").read_text(encoding="utf-8"))
+
+    def test_validate_done_marks_roadmap_item_done(self):
+        """When validate_task passes, the matching roadmap item should be marked done."""
+        self._write_project_yaml()
+        result = self.orch.plan_from_roadmap(source="codex", limit=1)
+        self.assertEqual(len(result["created"]), 1)
+        task_id = result["created"][0]["task_id"]
+        roadmap_id = result["created"][0]["roadmap_id"]
+
+        # Validate task as passed (source must be the manager agent).
+        self.orch.validate_task(
+            task_id=task_id,
+            passed=True,
+            notes="All criteria met",
+            source="codex",
+        )
+
+        # Verify project.yaml was updated.
+        data = self._read_project_yaml()
+        items = data["roadmap"][0]["items"]
+        item = next(i for i in items if i["id"] == roadmap_id)
+        self.assertEqual(item["status"], "done")
+
+    def test_validate_fail_does_not_mark_done(self):
+        """When validate_task fails, the roadmap item should NOT be marked done."""
+        self._write_project_yaml()
+        result = self.orch.plan_from_roadmap(source="codex", limit=1)
+        task_id = result["created"][0]["task_id"]
+        roadmap_id = result["created"][0]["roadmap_id"]
+
+        self.orch.validate_task(
+            task_id=task_id,
+            passed=False,
+            notes="Failing test",
+            source="codex",
+        )
+
+        data = self._read_project_yaml()
+        items = data["roadmap"][0]["items"]
+        item = next(i for i in items if i["id"] == roadmap_id)
+        self.assertEqual(item["status"], "backlog")
+
+    def test_no_roadmap_tag_no_update(self):
+        """A task without roadmap: tag should not touch project.yaml."""
+        self._write_project_yaml()
+        task = self.orch.create_task(
+            title="No roadmap tag task",
+            workstream="backend",
+            acceptance_criteria=["done"],
+        )
+        # Manually move to reported so validation works.
+        tasks = self.orch._read_json(self.orch.tasks_path, make_copy=True)
+        for t in tasks:
+            if t["id"] == task["id"]:
+                t["status"] = "reported"
+        self.orch._write_tasks_json(tasks)
+
+        self.orch.validate_task(
+            task_id=task["id"],
+            passed=True,
+            notes="OK",
+            source="codex",
+        )
+
+        data = self._read_project_yaml()
+        # All backlog items should still be backlog.
+        items = data["roadmap"][0]["items"]
+        backlog_items = [i for i in items if isinstance(i, dict) and i.get("status") == "backlog"]
+        self.assertEqual(len(backlog_items), 3)  # item-a, item-b, item-d
+
+    def test_emits_roadmap_item_done_event(self):
+        """Marking a roadmap item done should emit a roadmap.item_done event."""
+        self._write_project_yaml()
+        result = self.orch.plan_from_roadmap(source="codex", limit=1)
+        task_id = result["created"][0]["task_id"]
+
+        self.orch.validate_task(
+            task_id=task_id,
+            passed=True,
+            notes="All done",
+            source="codex",
+        )
+
+        events = list(self.orch.bus.iter_events())
+        done_events = [e for e in events if e.get("type") == "roadmap.item_done"]
+        self.assertGreaterEqual(len(done_events), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

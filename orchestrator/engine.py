@@ -1239,7 +1239,36 @@ class Orchestrator:
         with self._state_lock():
             tasks = self._read_json(self.tasks_path, make_copy=True)
             active_agents = self.list_agents(active_only=True, stale_after_seconds=threshold)
-            active_names = [a.get("agent") for a in active_agents if isinstance(a.get("agent"), str)]
+
+            # --- Token exhaustion / capacity degradation filter ----------------
+            # Exclude agents whose heartbeat metadata signals budget_exhausted or
+            # capacity_degraded so they are not considered for reassignment.
+            _DEGRADED_STATUSES = {"budget_exhausted", "capacity_degraded"}
+            agents_data = self._read_json(self.agents_path)
+            if not isinstance(agents_data, dict):
+                agents_data = {}
+            exhausted_agents: List[str] = []
+
+            def _is_agent_exhausted(agent_name: str) -> bool:
+                entry = agents_data.get(agent_name, {})
+                meta = entry.get("metadata", {}) if isinstance(entry.get("metadata"), dict) else {}
+                status_val = str(meta.get("status", "")).strip()
+                activity_val = str(meta.get("task_activity", "")).strip()
+                return status_val in _DEGRADED_STATUSES or activity_val in _DEGRADED_STATUSES
+
+            filtered_active: List[str] = []
+            for a in active_agents:
+                name = a.get("agent")
+                if not isinstance(name, str):
+                    continue
+                if _is_agent_exhausted(name):
+                    exhausted_agents.append(name)
+                    logger.info("reassign_stale.excluded_exhausted agent=%s", name)
+                else:
+                    filtered_active.append(name)
+            active_names = filtered_active
+            # -------------------------------------------------------------------
+
             # Do not reassign reported tasks: manager validation should run first.
             task_statuses = {"in_progress"}
             if include_blocked:
@@ -1321,6 +1350,7 @@ class Orchestrator:
                 "threshold_seconds": threshold,
                 "reassigned": reassigned,
                 "active_agents": active_names,
+                "exhausted_agents": exhausted_agents,
                 "timestamp": now.isoformat(),
             }
 
@@ -1621,7 +1651,92 @@ class Orchestrator:
         decision = "ACCEPTED" if passed else "REJECTED"
         logger.info("task.validated id=%s decision=%s owner=%s notes=%s", task_id, decision, task.get("owner"), notes[:80])
         self.bus.emit(event, payload, source=source)
+
+        # --- Auto-mark project.yaml backlog item as done -----------------------
+        if passed:
+            self._auto_mark_roadmap_done(task)
+
         return payload
+
+    def _auto_mark_roadmap_done(self, task: Dict[str, Any]) -> None:
+        """If *task* has a ``roadmap:{item_id}`` tag, mark the matching item
+        in ``project.yaml`` as ``status: done``.  Pure bookkeeping — never
+        creates, removes, or reprioritises items.
+        """
+        tags = task.get("tags") or []
+        roadmap_id: Optional[str] = None
+        for tag in tags:
+            if isinstance(tag, str) and tag.startswith("roadmap:"):
+                roadmap_id = tag[len("roadmap:"):]
+                break
+        if not roadmap_id:
+            return
+
+        try:
+            import yaml  # type: ignore
+        except ImportError:
+            logger.warning("auto_mark_roadmap_done: pyyaml not installed, skipping")
+            return
+
+        project_yaml_path = self.root / "project.yaml"
+        if not project_yaml_path.exists():
+            return
+
+        try:
+            raw_text = project_yaml_path.read_text(encoding="utf-8")
+            raw = yaml.safe_load(raw_text)
+        except Exception as exc:
+            logger.warning("auto_mark_roadmap_done: failed to parse project.yaml: %s", exc)
+            return
+
+        if not isinstance(raw, dict):
+            return
+
+        updated = False
+        # Search roadmap items.
+        for block in (raw.get("roadmap") or []):
+            if not isinstance(block, dict):
+                continue
+            for item in (block.get("items") or []):
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("id", "")).strip() == roadmap_id:
+                    old_status = str(item.get("status", ""))
+                    if old_status != "done":
+                        item["status"] = "done"
+                        updated = True
+                    break
+            if updated:
+                break
+
+        # Also search version milestones.
+        if not updated:
+            version_block = raw.get("version")
+            if isinstance(version_block, dict):
+                for ms in (version_block.get("milestones") or []):
+                    if not isinstance(ms, dict):
+                        continue
+                    if str(ms.get("id", "")).strip() == roadmap_id:
+                        old_status = str(ms.get("status", ""))
+                        if old_status != "done":
+                            ms["status"] = "done"
+                            updated = True
+                        break
+
+        if updated:
+            try:
+                project_yaml_path.write_text(
+                    yaml.dump(raw, default_flow_style=False, sort_keys=False, allow_unicode=True),
+                    encoding="utf-8",
+                )
+                logger.info("auto_mark_roadmap_done: marked roadmap item %s as done in project.yaml", roadmap_id)
+                self.bus.emit(
+                    "roadmap.item_done",
+                    {"roadmap_id": roadmap_id, "task_id": task.get("id")},
+                    source="engine",
+                )
+            except Exception as exc:
+                logger.warning("auto_mark_roadmap_done: failed to write project.yaml: %s", exc)
 
     def list_bugs(self, status: Optional[str] = None, owner: Optional[str] = None) -> List[Dict[str, Any]]:
         bugs = self._read_json_list(self.bugs_path)
@@ -2643,10 +2758,10 @@ class Orchestrator:
             if not isinstance(t, dict):
                 continue
             t_status = str(t.get("status", "")).strip().lower()
-            # Skip terminal failure states — tasks that were superseded by a
-            # newer duplicate or explicitly cancelled should not block
-            # re-planning the same roadmap item.
-            if t_status in ("cancelled",):
+            # Skip terminal failure states — tasks that were superseded or
+            # explicitly cancelled should not block re-planning the same
+            # roadmap item.
+            if t_status in ("cancelled", "superseded"):
                 continue
             for tag in (t.get("tags") or []):
                 if isinstance(tag, str) and tag.startswith("roadmap:"):
@@ -2669,12 +2784,14 @@ class Orchestrator:
                 item_tags = []
             effort = str(item.get("effort", "")).strip()
 
-            # Check if a task already exists for this roadmap item (any status
-            # except cancelled).  This catches duplicates that title-based dedup
-            # misses when the earlier task is done, superseded, or in_progress.
+            # Dedup guard: check if a task already exists for this roadmap item
+            # in ANY status except cancelled/superseded.  This catches duplicates
+            # that title-based dedup misses when the earlier task is done or
+            # in_progress.
             if item_id:
                 roadmap_tag = f"roadmap:{item_id}".lower()
                 if roadmap_tag in existing_roadmap_tags:
+                    logger.info("plan_from_roadmap.dedup_skip item_id=%s title=%s reason=roadmap_tag_exists", item_id, title[:60])
                     skipped.append({"roadmap_id": item_id, "title": title, "reason": "roadmap_tag_exists"})
                     continue
 
