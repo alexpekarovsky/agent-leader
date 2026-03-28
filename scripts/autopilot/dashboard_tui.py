@@ -1829,7 +1829,24 @@ def _render_gemini_v3b(snapshot, completed, auto_stopped, color_enabled=True):
     # ── ROW 2: TEAM ROSTER + VELOCITY ──
     stats_by = {r.get("display_name", ""): r for r in (snapshot.agent_delivery_stats or [])}
     team_rows = []
-    for a in snapshot.active_agents[:12]:
+
+    # Deduplicate active_agents by agent name — keep the entry with the most
+    # recent heartbeat (smallest age_s) so stale duplicate instances (e.g.
+    # codex appearing as both "codex_worker" and "manager") collapse to one row.
+    _seen_agents: Dict[str, Dict[str, Any]] = {}
+    for _a in snapshot.active_agents:
+        _name = _a.get("agent", "")
+        prev = _seen_agents.get(_name)
+        if prev is None:
+            _seen_agents[_name] = _a
+        else:
+            prev_age = prev.get("age_s") if prev.get("age_s") is not None else float("inf")
+            cur_age = _a.get("age_s") if _a.get("age_s") is not None else float("inf")
+            if cur_age < prev_age:
+                _seen_agents[_name] = _a
+    deduped_agents = list(_seen_agents.values())[:12]
+
+    for a in deduped_agents:
         dn = a.get("display_name", a["agent"])
         inst = str(a.get("instance_id", "") or "")
         tag = inst[-4:] if len(inst) >= 4 else inst
@@ -1837,7 +1854,9 @@ def _render_gemini_v3b(snapshot, completed, auto_stopped, color_enabled=True):
         activity = str(a.get("task_activity", "idle"))
         hb = str(a.get("heartbeat_state", "?"))
         ps = a.get("process_state", "down")
-        lane_details = a.get("lane_details", [])
+        # Filter out dead lane entries — only show lanes where alive == True
+        # to prevent zombie lanes from previous sessions appearing in the roster.
+        lane_details = [ld for ld in a.get("lane_details", []) if ld.get("alive")]
 
         def _badge(act, pstate, hbeat):
             if act == "working":
@@ -1862,13 +1881,8 @@ def _render_gemini_v3b(snapshot, completed, auto_stopped, color_enabled=True):
                 lane_name = ld.get("lane_label", "?")
                 lane_inst = str(ld.get("instance_id", "") or "")
                 lane_tag = lane_inst[-4:] if len(lane_inst) >= 4 else lane_inst
-                lane_alive = ld.get("alive", False)
-                if not lane_alive:
-                    this_badge = c("31", "\u25cf OFF")
-                else:
-                    this_badge = lane_badge_val
                 label = f"{dn} #{lane_tag}"
-                team_rows.append(f" {label:<18} {lane_name:<8} {this_badge}  t={td} c={cm} L={lo}")
+                team_rows.append(f" {label:<18} {lane_name:<8} {lane_badge_val}  t={td} c={cm} L={lo}")
         else:
             label = f"{dn} #{tag}" if tag else dn
             badge = _badge(activity, ps, hb)
